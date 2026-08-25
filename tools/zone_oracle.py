@@ -165,6 +165,36 @@ class ZoneOracle:
             if n in self.syms:
                 self.uc.mem_write(self.syms[n], bytes([0xB8]) + struct.pack("<I", ptd) + bytes([0xC3]))
 
+    # AssertClass entries, with the stack bytes each pops. An assert that actually runs reaches string
+    # formatting, the clock and ShineExit, none of which are emulated -- so a function whose validation
+    # branch fires dies with a CPU exception instead of returning. That looks like the function being
+    # unreachable when it is really the harness being incomplete.
+    #
+    # The cleanup byte counts are READ FROM THE CALL SITES, not guessed: getting one wrong corrupts the
+    # stack and the caller returns into garbage, which is far harder to diagnose than the original fault.
+    ASSERT_STUBS = {
+        "?ac_AssertFail@AssertClass@@AAEXPBD0@Z": 8,        # __thiscall, 2 args
+        "?ac_AssertFail@AssertClass@@AAEXPBDHH@Z": 12,      # __thiscall, 3 args
+        "?ac_DateTime@AssertClass@@AAEXXZ": 0,
+        "?ShineExit@@YAXPAD@Z": None,                       # __cdecl -- caller cleans, so a plain ret
+    }
+
+    def stub_asserts(self, extra=()):
+        """Neutralise assertion reporting so a validation branch RETURNS instead of faulting.
+
+        `extra` takes (va, pop_bytes) pairs for entries whose symbol name is unreliable -- the PDB's public
+        record for the assert helper reached from DamageTable::operator[] reads as a truncated `?ac_As`,
+        so that one is stubbed by address with the cleanup read off its call site."""
+        for sym, pop in self.ASSERT_STUBS.items():
+            if sym not in self.syms:
+                continue
+            code = bytes([0xC3]) if pop is None else bytes([0xC2]) + struct.pack("<H", pop)
+            self.uc.mem_write(self.syms[sym], code)
+        for va, pop in extra:
+            code = bytes([0xC3]) if pop is None else bytes([0xC2]) + struct.pack("<H", pop)
+            self.uc.mem_write(va, code)
+
+
     def _set_fpu(self):
         """x87 precision control to 53-bit, which is what a real MSVC process runs.
 
