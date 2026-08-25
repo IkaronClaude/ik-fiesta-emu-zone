@@ -1,0 +1,25 @@
+# ---- BYO: never commit game binaries or data -------------------------------------------------------
+# The emulator is built FROM Zone.exe/Zone.pdb but must never carry them. Operators supply them locally.
+*.exe
+*.pdb
+*.dll
+!**/bin/**/Fiesta.Emu.*.dll
+Zone*/
+9Data/
+ressystem/
+*.shn
+*.pcap
+*.pcapng
+
+# ---- build -----------------------------------------------------------------------------------------
+bin/
+obj/
+*.user
+
+# ---- local scratch ---------------------------------------------------------------------------------
+CLAUDE.md
+tickets.md
+.venv/
+__pycache__/
+*.pyc
+_scratch/
