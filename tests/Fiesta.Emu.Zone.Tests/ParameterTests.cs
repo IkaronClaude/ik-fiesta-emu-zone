@@ -179,17 +179,82 @@ public class ParameterContainerTests
     }
 }
 
-/// <summary>⚠️ KNOWN RED — deliberately. See PROJECT_PLAN.md: known-red tests mark what has not been read,
-/// and are closed by reading the binary, never by asserting current behaviour.</summary>
+/// <summary>The base weapon and armour slots — resolved. This class previously held a deliberately red
+/// test claiming the eight per-class virtuals were "unread"; the premise was wrong, and reading them
+/// turned out to be easier than assumed rather than harder.</summary>
 public class BaseCombatStatTests
 {
+    /// <summary>`c_Storepure` fills cluster slots 5..14 from eight virtual methods, and all eight resolve to
+    /// the SAME address, 0x00449600, whose entire body is:
+    ///
+    /// <code>xor eax, eax
+    /// ret 8</code>
+    ///
+    /// <para>They share an address because Identical Code Folding merges functions with identical bodies —
+    /// eight <c>return 0</c>s collapse into one. And no player class overrides them: across all 32
+    /// `CharClass` subclasses there is exactly ONE symbol for each of WC, AC, MA, MR, TH, TB, MH and MB.</para>
+    ///
+    /// <para>So this is not a missing piece of the port. A player's base weapon and armour values ARE zero,
+    /// and every point of them comes from equipment.</para></summary>
     [Fact]
-    public void BaseWeaponAndArmourStatsAreUnreadPerClassVirtuals()
-        => Assert.Fail(
-            "Unread: the eight per-class virtual methods that fill the base WC/AC/TH/TB/MA/MR/MH/MB slots. "
-            + "c_Storepure writes slots 5..14 from virtual calls on the CharClass object, so each class "
-            + "computes its own -- there is no shared stat-to-attack formula. CharClass's own bodies are all "
-            + "folded to 0x00449600 (MaxHP 0x00449610, MaxSP 0x00449660); the per-class overrides have not "
-            + "been located. Until then CharacterParameters.StorePure leaves those slots at zero. "
-            + "See docs/PARAMETERS.md. Expected red.");
+    public void BaseWeaponAndArmourSlotsAreZeroBecauseTheClassVirtualsReturnZero()
+    {
+        var c = new ParameterContainer();
+        CharacterParameters.StorePure(c, TinyTable(), level: 40, new FreeStats(Str: 50, Con: 50));
+
+        foreach (var slot in new[]
+                 {
+                     Stat.WCmin, Stat.WCmax, Stat.AC, Stat.TH, Stat.TB,
+                     Stat.MAmin, Stat.MAmax, Stat.MR, Stat.MH, Stat.MB,
+                 })
+            c.Base[slot].ShouldBe(0, $"{slot} should come from gear, not from the class");
+    }
+
+    /// <summary>The tail of `c_Storepure`: <c>mov eax, 0x3E8</c> into three slots, then zeroes.</summary>
+    [Fact]
+    public void MoveSpeedAndRecoveryStartAtOneThousand()
+    {
+        var c = new ParameterContainer();
+        CharacterParameters.StorePure(c, TinyTable(), level: 1);
+
+        c.Base[Stat.MoveSpeed].ShouldBe(1000);
+        c.Base[Stat.HPRecover].ShouldBe(1000);
+        c.Base[Stat.SPRecover].ShouldBe(1000);
+        c.Base[Stat.CastingTime].ShouldBe(0);
+    }
+
+    /// <summary>`CharClass::MaxHP` is the table column PLUS five per spent Constitution point. Reading the
+    /// column alone — which an earlier version of this port did — robs a character of the HP it bought.</summary>
+    [Fact]
+    public void SpentConstitutionPointsAreWorthFiveHpEach()
+    {
+        var table = TinyTable();
+
+        var plain = CharacterParameters.Build(table, 10);
+        var beefy = CharacterParameters.Build(table, 10, new FreeStats(Con: 12));
+
+        CharacterParameters.MaxHp(table, 10, plain.MakeTotal()).ShouldBe(500);
+        CharacterParameters.MaxHp(table, 10, beefy.MakeTotal()).ShouldBe(500 + 12 * 5);
+    }
+
+    [Fact]
+    public void SpentMentalPowerPointsAreWorthFiveSpEach()
+    {
+        var table = TinyTable();
+        var wise = CharacterParameters.Build(table, 10, new FreeStats(Men: 8));
+
+        CharacterParameters.MaxSp(table, 10, wise.MakeTotal()).ShouldBe(200 + 8 * 5);
+    }
+
+    /// <summary>A two-row stand-in, so these run without a server-files tree.</summary>
+    private static ClassParamTable TinyTable() => new()
+    {
+        ClassName = "Test",
+        ByLevel = new Dictionary<int, ClassParamRow>
+        {
+            [1] = new(1, 5, 4, 1, 3, 4, 46, 32, 32, 15, 3, 25, 11, 1),
+            [10] = new(10, 25, 17, 11, 19, 16, 500, 200, 120, 21, 13, 159, 22, 7),
+            [40] = new(40, 80, 60, 30, 55, 45, 2000, 700, 400, 40, 30, 500, 40, 20),
+        },
+    };
 }

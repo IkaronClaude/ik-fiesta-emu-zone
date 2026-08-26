@@ -73,7 +73,50 @@ cluster, then `c_MakeTotal`.
    `charClass + 0x10858`. Above the cap it falls back to row 0.
 2. `rep movsd` the plus eraser over the base cluster.
 3. Fill the five primaries as **row value + allocated free stat points** (a virtual call per stat).
-4. Fill slots 5..14 from **eight virtual methods on the class object**.
+4. Fill slots 5..14 from **eight virtual methods on the class object** — see below; they all return 0.
+5. Write **1000** into MoveSpeed, HPRecover and SPRecover (`mov eax, 0x3E8`), then explicitly zero slots
+   22..31 (CastingTime through MagCriDam), and stop. **It never touches the MaxHP or MaxSP slots.**
+
+### The eight weapon/armour virtuals all return zero
+
+`CharClass::WC`, `::AC`, `::TH`, `::TB`, `::MA`, `::MR`, `::MH`, `::MB` resolve to the *same address*,
+0x00449600, and the entire body there is:
+
+```asm
+xor eax, eax
+ret 8
+```
+
+They share an address because **Identical Code Folding** merges functions with byte-identical bodies — eight
+`return 0`s collapse into one. (Same mechanism as the universal empty-body function at 0x00549070, just with
+a different body.)
+
+And **no player class overrides them.** Across all 32 `CharClass` subclasses the binary contains exactly one
+symbol for each of the eight. So this is not an unread gap: **a player's base weapon and armour values ARE
+zero, and every point of them comes from equipment.**
+
+The complete set of stat virtuals, all twelve:
+
+| method | implementations |
+|---|---|
+| `WC` `AC` `MA` `MR` `TH` `TB` `MH` `MB` | `CharClass` only — all folded at 0x00449600, `return 0` |
+| `MaxHP` | `CharClass` (0x00449610) and `CharClassMob` (0x004496F0) |
+| `MaxSP` | `CharClass` (0x00449660) and `CharClassSentinel` (0x0064F610) |
+
+`CharClassMob::MaxHP` ignores the cluster entirely and reads the mob's own info record at `+0x46`.
+`CharClassSentinel::MaxSP` is `mov eax, 1; ret 8` — a flat 1 SP, whatever the level.
+
+### MaxHP and MaxSP are computed, not stored
+
+```
+MaxHP = row.MaxHP + (cluster.Con - row.Constitution) * 5
+MaxSP = row.MaxSP + (cluster.Men - row.MentalPower) * 5
+```
+
+Because `c_Storepure` sets `cluster.Con = row.Constitution + freeStatPoints`, the second term is exactly the
+player's **spent Constitution points, worth 5 HP each**. The row's `MaxHP` is read as a *word* from `+0x74`,
+which is column 29 — and column 29 is `MaxHP`, typed `Word` in the header. Offset and schema agree, which is
+what confirms the column identification rather than assuming it.
 
 ### The Dex/Int crossover
 
@@ -98,8 +141,8 @@ MaxGrdStone, NumGrdStone, PriceGrdStone, GrdStoneAC, GrdStoneMR,
 PainRes, RestraintRes, CurseRes, ShockRes, MaxHP, MaxSP, CharTitlePt, SkillPwrPt, JobChangeDmgUp
 ```
 
-**`MaxHP` and `MaxSP` are stored columns.** There is no HP curve to reverse-engineer and nothing to infer
-from Constitution — any formula would be a guess competing with a number the server already has.
+**`MaxHP` and `MaxSP` are stored columns**, so there is no HP *curve* to reverse-engineer — but they are not
+the final answer either: `CharClass::MaxHP` adds 5 per spent Constitution point on top. See above.
 
 `Wizdom` is present in every table and zero in the ones checked; there is no cluster slot for it.
 
@@ -116,12 +159,10 @@ split is real:
 
 ## Open, and known to be open
 
-1. **The eight per-class virtual stat methods** — base WC/AC/TH/TB/MA/MR/MH/MB. `c_Storepure` fills slots
-   5..14 through them, so *each class computes its own* and there is no shared stat-to-attack formula to
-   write down. `CharClass`'s own bodies are all folded together at `0x00449600` (`MaxHP` 0x00449610, `MaxSP`
-   0x00449660) by Identical Code Folding; the per-class overrides have not been located. Until they are,
-   those slots stay **zero** and an unequipped character deals no damage. Tracked by the deliberately red
-   `BaseWeaponAndArmourStatsAreUnreadPerClassVirtuals`.
+1. **Does anything add the cluster's own MaxHP slot?** `CharClass::MaxHP` returns
+   `row.MaxHP + (Con - row.Con) * 5` and never reads `cluster[MaxHP]`, yet gear with a flat +HP bonus has to
+   land somewhere. Either a caller adds the slot afterwards, or +HP gear works differently. The callers have
+   not been traced.
 
 2. **`ItemInfo` has `WCRate`/`MARate`/`ACRate`/`MRRate`, but `c_MakeTotal` never folds Item.Rate into the
    total.** Either the damage formula reads that cluster directly (consistent with how the other unfolded

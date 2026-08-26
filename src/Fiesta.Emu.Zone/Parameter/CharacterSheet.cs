@@ -7,14 +7,14 @@ public static class CharacterSheet
 {
     /// <summary>Turn the simulated player into a character of a class at a level.
     ///
-    /// <para>HP comes from the combined total, which for HP means the class table's stored <c>MaxHP</c>
-    /// column plus whatever the gear and buff layers contribute — there is no HP curve being modelled.</para>
+    /// <para>HP is computed by <see cref="CharacterParameters.MaxHp"/> — the class table's stored column
+    /// plus five per spent Constitution point — not read out of a cluster slot, because `c_Storepure` never
+    /// writes one.</para>
     ///
-    /// <para>⚠️ Attack damage is taken from the total's <see cref="Stat.WCmax"/>, which today means
-    /// <b>gear only</b>: the base weapon-class slots are filled by per-class virtual methods that have not
-    /// been read, so an unequipped character has a WCmax of zero and would deal no damage. That is the
-    /// honest consequence of the gap rather than a bug — see docs/PARAMETERS.md. Pass equipment, or set
-    /// <see cref="SimPlayer.AttackDamage"/> yourself, until those virtuals are ported.</para></summary>
+    /// <para>⚠️ Attack damage is the total's <see cref="Stat.WCmax"/>, which means <b>gear only</b>. That is
+    /// not a gap in the port: <c>CharClass::WC</c> is <c>xor eax, eax; ret 8</c> and no player class
+    /// overrides it, so a player's base weapon value genuinely is zero. An unequipped character really does
+    /// deal no weapon damage — give it a weapon.</para></summary>
     public static ParameterContainer Become(
         this SimPlayer player,
         ClassParamTable table,
@@ -27,7 +27,7 @@ public static class CharacterSheet
 
         player.Parameters = container;
         player.Level = level;
-        player.MaxHp = total[Stat.MaxHP];
+        player.MaxHp = CharacterParameters.MaxHp(table, level, total);
         player.Hp = player.MaxHp;
         player.AttackDamage = total[Stat.WCmax];
         return container;

@@ -82,17 +82,14 @@ A green test over an unverified guess is worse than no test at all: it makes the
 it survives review, and it actively resists correction because changing the code now "breaks a test".
 A red one states the debt in the one place nobody can ignore.
 
-Currently red, deliberately:
-
-| test | what is unknown |
-|---|---|
-| `BaseWeaponAndArmourStatsAreUnreadPerClassVirtuals` | the eight per-class virtual methods filling base WC/AC/TH/TB/MA/MR/MH/MB — see docs/PARAMETERS.md |
+Currently red, deliberately: **none.**
 
 Closed so far:
 
 | was red | how it was closed |
 |---|---|
 | `TargettingSuccessTransition_IsUnverifiedAgainstTheBinary` | read all six returns of `mab_Think`; the guessed handoff to Attack turned out correct, and the test now asserts it *because it was read* |
+| `BaseWeaponAndArmourStatsAreUnreadPerClassVirtuals` | the premise was wrong. The eight virtuals are one ICF-folded `return 0` with no player-class overrides, so base weapon/armour values really are zero. Closed by reading, in the opposite direction from the guess |
 
 **Do not make these pass by asserting current behaviour.** Close them by reading the binary — as that one
 was. The guess being right is not the point; knowing it is right is.

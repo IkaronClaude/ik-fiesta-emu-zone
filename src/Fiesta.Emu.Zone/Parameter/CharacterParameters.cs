@@ -39,21 +39,35 @@ public static class CharacterParameters
     /// compares against <c>0x96</c> and falls back to row 0 when the level exceeds it.</summary>
     public const int MaxTableLevel = 150;
 
+    /// <summary>Base HP granted per point of Constitution above the class table's own value — the
+    /// <c>lea ebx, [eax + eax*4]</c> in `CharClass::MaxHP`. Same figure for SP per point of MentalPower.</summary>
+    public const int HpPerConstitutionPoint = 5;
+    public const int SpPerMentalPowerPoint = 5;
+
+    /// <summary>The value `c_Storepure` writes into MoveSpeed, HPRecover and SPRecover — literally
+    /// <c>mov eax, 0x3E8</c>. It is 1000 because those slots are read as permille elsewhere; here it is
+    /// simply the base each starts from.</summary>
+    public const int BaseUnitySlotValue = 1000;
+
     /// <summary>`Parameter::Container::c_Storepure` — fill the base cluster for a class at a level.
     ///
-    /// <para>Two things are ported exactly and both are easy to get wrong:</para>
+    /// <para>Ported statement for statement. The parts that are easy to get wrong:</para>
     /// <list type="bullet">
     ///   <item>Each primary is <b>table value + free stat points</b>, not the table value alone.</item>
     ///   <item>The five primaries are stored in CLUSTER order (Str, Con, Dex, Int, Men), which is not the
     ///         TABLE's column order (Strength, Constitution, Intelligence, Wizdom, Dexterity, MentalPower).
     ///         Dexterity and Intelligence swap places. The original reads row offsets +4, +8, +0x14, +0xC,
     ///         +0x18 into slots 0..4, which is what pins the crossover.</item>
-    /// </list>
-    ///
-    /// <para>⚠️ NOT filled here: the base WC/AC/TH/TB/MA/MR/MH/MB slots. In the original those come from
-    /// eight VIRTUAL methods on the class object (`CharClass::WC`, `::AC`, …), so each class computes its
-    /// own — there is no shared stat-to-attack formula to write down. Those overrides have not been read,
-    /// so the slots are left at zero rather than filled with a plausible guess. See docs/PARAMETERS.md.</para></summary>
+    ///   <item><b>The weapon and armour slots really are left at zero.</b> `c_Storepure` fills slots 5..14
+    ///         from eight virtual methods — <c>CharClass::WC</c>, <c>::AC</c>, <c>::TH</c>, <c>::TB</c>,
+    ///         <c>::MA</c>, <c>::MR</c>, <c>::MH</c>, <c>::MB</c> — and all eight are the SAME two-instruction
+    ///         body at 0x00449600: <c>xor eax, eax; ret 8</c>. Identical Code Folding merged them because
+    ///         they are identical, and no player class overrides any of them (there is exactly one symbol
+    ///         each across all 32 CharClass subclasses). So a player's base weapon and armour values are
+    ///         genuinely zero and every point of them comes from equipment.</item>
+    ///   <item><b>MaxHP and MaxSP are NOT cluster slots that `c_Storepure` fills.</b> It stops at slot 31.
+    ///         They are computed on demand by <see cref="MaxHp"/> / <see cref="MaxSp"/>.</item>
+    /// </list></summary>
     public static void StorePure(
         ParameterContainer container,
         ClassParamTable table,
@@ -61,9 +75,7 @@ public static class CharacterParameters
         FreeStats? freeStats = null)
     {
         var free = freeStats ?? new FreeStats();
-        var row = table.At(Math.Min(level, MaxTableLevel))
-                  ?? table.At(table.ByLevel.Keys.Min())
-                  ?? throw new InvalidOperationException($"{table.ClassName} has no rows");
+        var row = Row(table, level);
 
         var b = container.Base;
         b[Stat.Str] = row.Str + free.Str;
@@ -72,10 +84,55 @@ public static class CharacterParameters
         b[Stat.Int] = row.Int + free.Int;
         b[Stat.Men] = row.Men + free.Men;
 
-        // MaxHP and MaxSP are stored columns, so there is no curve to model. A formula here would be a
-        // guess competing with a number the server already has.
-        b[Stat.MaxHP] = row.MaxHp;
-        b[Stat.MaxSP] = row.MaxSp;
+        // Slots 5..14 (WCmin..MB) stay zero -- see the remark above; that is the ported behaviour, not a gap.
+
+        // The tail of c_Storepure: three slots start at 1000, then slots 22..31 are explicitly zeroed.
+        b[Stat.MoveSpeed] = BaseUnitySlotValue;
+        b[Stat.HPRecover] = BaseUnitySlotValue;
+        b[Stat.SPRecover] = BaseUnitySlotValue;
+        foreach (var slot in new[]
+                 {
+                     Stat.CastingTime, Stat.Critical, Stat.PhisycalWeaponMastery, Stat.MagicalWeaponMastery,
+                     Stat.ShieldAC, Stat.HitRate, Stat.EvaRate, Stat.MACri, Stat.CriDam, Stat.MagCriDam,
+                 })
+            b[slot] = 0;
+    }
+
+    private static ClassParamRow Row(ClassParamTable table, int level)
+        => table.At(Math.Min(level, MaxTableLevel))
+           ?? table.At(table.ByLevel.Keys.Min())
+           ?? throw new InvalidOperationException($"{table.ClassName} has no rows");
+
+    /// <summary>`CharClass::MaxHP` (0x00449610) — a character's maximum HP.
+    ///
+    /// <para><b>Not a table lookup, and not a curve either.</b> It is the class table's stored <c>MaxHP</c>
+    /// column for the level, plus five per point of Constitution ABOVE what the table says that level has:</para>
+    ///
+    /// <code>MaxHP = row.MaxHP + (cluster.Con - row.Constitution) * 5</code>
+    ///
+    /// <para>Since `c_Storepure` sets <c>cluster.Con = row.Constitution + freeStatPoints</c>, the second term
+    /// is exactly the player's spent Constitution points. Reading the level row alone — which is what an
+    /// earlier version of this port did — silently robs every character of the HP it earned by spending
+    /// points.</para>
+    ///
+    /// <para>The row's MaxHP is read as a <b>word</b> (<c>movzx eax, word ptr [ecx+0x74]</c>), and 0x74 is
+    /// column 29, which is <c>MaxHP</c>, typed <c>Word</c> in the table header. The offset and the schema
+    /// agree, which is the check that the column identification is right.</para></summary>
+    public static int MaxHp(ClassParamTable table, int level, ParameterCluster cluster)
+    {
+        var row = Row(table, level);
+        return row.MaxHp + (cluster[Stat.Con] - row.Con) * HpPerConstitutionPoint;
+    }
+
+    /// <summary>`CharClass::MaxSP` (0x00449660) — the same shape over MentalPower.
+    ///
+    /// <para>⚠️ Exactly one class overrides it: <c>CharClassSentinel::MaxSP</c> (0x0064F610) is
+    /// <c>mov eax, 1; ret 8</c> — a flat 1 SP, whatever the level or stats. Not modelled here, because
+    /// Sentinel is not a player class this simulation creates; noted so it is not rediscovered as a bug.</para></summary>
+    public static int MaxSp(ClassParamTable table, int level, ParameterCluster cluster)
+    {
+        var row = Row(table, level);
+        return row.MaxSp + (cluster[Stat.Men] - row.Men) * SpPerMentalPowerPoint;
     }
 
     /// <summary>Fold an equipped item into the <see cref="StatModifier.Item"/> clusters.

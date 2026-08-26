@@ -97,7 +97,9 @@ public class RealCharacterTests
         sim.LoadScript(RoamAndFight);
         sim.Run(maxTicks: 3000);          // 5 simulated minutes
 
-        sim.Player.MaxHp.ShouldBe(cleric.At(40)!.MaxHp);
+        // The class table's MaxHP for level 40, PLUS five per spent Constitution point. Asserting the bare
+        // column here is what a port that forgot CharClass::MaxHP would produce, so it is worth spelling out.
+        sim.Player.MaxHp.ShouldBe(cleric.At(40)!.MaxHp + 20 * CharacterParameters.HpPerConstitutionPoint);
         sim.Player.AttackDamage.ShouldBe(95);        // the mace's MaxWC, through the Item layer
         sim.Kills.ShouldBeGreaterThan(0);
         sim.Log.ShouldContain(l => l.Contains("hits for"));
