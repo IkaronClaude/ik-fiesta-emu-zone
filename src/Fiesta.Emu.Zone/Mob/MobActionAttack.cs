@@ -77,6 +77,10 @@ public sealed class MobCombatState
     /// <summary>Whether this mob skips the turning state entirely.</summary>
     public bool TurnsInstantly => TurnSpeed == 0;
 
+    /// <summary>When the current turn began, in tenths — `mat_Reserv` stamps the clock into the turning
+    /// state at +0x10 and `mab_Think` measures against it.</summary>
+    public int TurnStartedTenths { get; set; }
+
     /// <summary>Chance in permille that a skill is used when no exchange rule fires.</summary>
     public int SkillChancePermille { get; set; }
 
@@ -140,6 +144,7 @@ public sealed class MobActionAttack : MobActionBase
             }
             else
             {
+                combat.TurnStartedTenths = arg.NowTenths;      // mat_Reserv stamps the clock at +0x10
                 return new MobAttackDecision(Actor_Turning, MobAttackChoice.NormalAttack, SkillExchangeReason.None);
             }
         }
@@ -180,16 +185,22 @@ public sealed class MobActionAttack : MobActionBase
 /// spend time turning before it can act.</para></summary>
 public sealed class MobActionTurning : MobActionBase
 {
-    /// <summary>Direction units turned per SECOND (one unit = 2 degrees, so 150 is 300 deg/s).
+    /// <summary>`0x2BF20` — 180,000. The numerator in the turn-progress division.</summary>
+    public const int TurnScale = 180_000;
+
+    /// <summary>How far a mob has turned since its turn began, in direction units.
     ///
-    /// <para>⚠️ This was originally per-TICK, which made a mob turn five times faster simply because the
-    /// caller chose a finer tick rate — an angular speed that depended on the observer. Turn rate is a
-    /// property of the mob, so it is expressed in world time and scaled by the elapsed tick.</para>
+    /// <para>Straight from `mab_Think`: <c>elapsed * 0x2BF20 / (TurnSpeed * 10)</c>, i.e.
+    /// <c>elapsedTenths * 18000 / TurnSpeed</c>.</para>
     ///
-    /// <para>State TRANSITIONS still cost one tick each, and that is not a bug: the server's think loop
-    /// is per-tick too. It does mean the tick rate is the simulation's think interval, so changing it
-    /// changes how responsively mobs react — exactly as changing the server's would.</para></summary>
-    public int TurnRateUnitsPerSecond { get; set; } = 150;
+    /// <para><b>`TurnSpeed` is a DURATION, not a rate — bigger is SLOWER.</b> Setting the result to a full
+    /// turn (<see cref="Direction.UnitsPerTurn"/> = 180) and solving gives
+    /// <c>elapsedTenths = TurnSpeed / 100</c>, so `TurnSpeed` is milliseconds for a complete 360°: 100 is
+    /// 0.1 s, 300 is 0.3 s, 500 is 0.5 s. The name says speed and the number is a time, which is precisely
+    /// why this was left unported rather than guessed — the distribution alone could not tell the
+    /// direction, and getting it backwards would make the slowest mobs the nimblest.</para></summary>
+    public static int UnitsTurned(int elapsedTenths, int turnSpeed)
+        => turnSpeed <= 0 ? Direction.UnitsPerTurn : elapsedTenths * TurnScale / (turnSpeed * 10);
 
     public override MobActionBase mab_Think(MobActionArgument arg)
     {
@@ -199,22 +210,16 @@ public sealed class MobActionTurning : MobActionBase
 
         var combat = arg.Combat;
         var toTarget = Direction.ddt_DirectSR(target.X - arg.Actor.X, target.Y - arg.Actor.Y);
-        var diff = Direction.ddt_ShineRadianDiff(combat.Facing, toTarget);
+        var required = Direction.ddt_ShineRadianDiff(combat.Facing, toTarget);
 
-        var step = Math.Max(1, (int)(TurnRateUnitsPerSecond * arg.ElapsedMs / 1000));
-        if (diff <= step)
-        {
-            combat.Facing = toTarget;
-            return MobActionAttack.Actor_Attack;
-        }
+        // The original does not turn a little each tick: it stamps the clock when the turn is reserved and
+        // then asks, each think, whether enough time has passed to have covered the whole angle.
+        var turned = UnitsTurned(arg.NowTenths - combat.TurnStartedTenths, combat.TurnSpeed);
+        if (turned < required)
+            return this;
 
-        // Turn as far as this tick allows, the short way round.
-        var forward = ((toTarget - combat.Facing) % Direction.UnitsPerTurn + Direction.UnitsPerTurn)
-                      % Direction.UnitsPerTurn;
-        var delta = forward <= Direction.UnitsPerTurn / 2 ? step : -step;
-        combat.Facing = ((combat.Facing + delta) % Direction.UnitsPerTurn + Direction.UnitsPerTurn)
-                        % Direction.UnitsPerTurn;
-        return this;
+        combat.Facing = toTarget;
+        return MobActionAttack.Actor_Attack;
     }
 }
 

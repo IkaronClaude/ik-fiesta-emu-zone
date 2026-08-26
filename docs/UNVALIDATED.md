@@ -31,13 +31,13 @@ from a table we already parse. Behaviour looks reasonable and is uniformly wrong
 
 | invented | where | the real source |
 |---|---|---|
-| `TurnRateUnitsPerSecond = 150` | `MobActionTurning` | **`MobInfoServer.TurnSpeed`** — now decoded and its ZERO branch ported (60 mobs turn instantly). What a NON-zero value means is still unread: only four values exist (100, 0, 300, 500) and the distribution cannot say whether bigger is faster or slower, so non-zero mobs still use the invented rate |
 | `RespawnSeconds = 25` default | `SimMob` | `MobRegen.RegStandard` is wired, but `RegMin`/`RegMax`/the delta schedule are not, and `MobInfoServer.RegenInterval` / `ResetInterval` are not even decoded |
 | `AttackRange = 10` default | `MobCombatState` | `MobWeapon.Range` — wired *only* when a definition is applied |
 | `FacingToleranceUnits = 5` | `MobCombatState` | unknown; no obviously matching column found, but note rule 3 below before treating that as settled |
 
-Chase speed is now per-mob from `MobInfo.RunSpeed`. Turning is half-done: the instant-turn branch is
-ported, the rate for the other 2,818 mobs is not.
+Chase speed is now per-mob from `MobInfo.RunSpeed`, and turning from `MobInfoServer.TurnSpeed` — including
+the fact that **`TurnSpeed` is a duration, not a rate**: `elapsedTenths * 18000 / TurnSpeed` units turned,
+so a full turn lands at `TurnSpeed / 100` tenths. Bigger is slower. Zero is instant.
 
 `WalkChase` was listed here as a chase-speed source and that was wrong — it is **zero for 2,862 of 2,878
 mobs**, so it is a rare special case rather than the general speed, even though `MobActionChase::mab_Think`

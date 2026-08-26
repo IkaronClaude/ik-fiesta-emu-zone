@@ -244,6 +244,7 @@ public sealed class CombatSimulation
         foreach (var m in _mobs.Where(m => m.Mob.IsAlive))
         {
             m.Arg.ElapsedMs = TickMs;
+            m.Arg.NowTenths = (int)(Now / 100);        // the server's clockwatch resolution
             m.Arg.Nearby = Player.IsAlive ? new IShineObject[] { Player } : Array.Empty<IShineObject>();
 
             // The AI driver, as the server runs it: think returns the next state, we adopt it.

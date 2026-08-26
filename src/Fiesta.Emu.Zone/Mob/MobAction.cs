@@ -44,6 +44,11 @@ public sealed class MobActionArgument
     /// must scale by this, or its real-world speed changes with the caller's chosen tick rate.</summary>
     public uint ElapsedMs { get; set; } = 100;
 
+    /// <summary>The world clock in TENTHS OF A SECOND — the server's `clockwatch` counter at 0x14D41A70,
+    /// which every timed mob routine reads. Kept in tenths rather than milliseconds because the original's
+    /// arithmetic truncates at this resolution.</summary>
+    public int NowTenths { get; set; }
+
     /// <summary>Everything the mob can currently perceive. In the server this comes from the axial-list
     /// scan; the simulator supplies it.</summary>
     public IReadOnlyList<IShineObject> Nearby { get; set; } = Array.Empty<IShineObject>();

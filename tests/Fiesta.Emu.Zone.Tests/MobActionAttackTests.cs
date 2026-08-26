@@ -40,39 +40,64 @@ public class MobActionAttackTests
         d.Reason.ShouldBe(SkillExchangeReason.OutOfRange);
     }
 
-    /// <summary>Facing is checked in the ATTACK state, not during acquisition. A mob looking the wrong way
-    /// spends this tick turning — which is the mechanism behind direction-dependent responsiveness, with
-    /// the detection radius still a circle.</summary>
+    /// <summary>Turning costs TIME, not ticks. `mab_Think` stamps the clock when the turn is reserved and
+    /// then asks whether enough has elapsed to have covered the whole angle — it does not turn a little on
+    /// each think.
+    ///
+    /// <para>An earlier version of this test spun `mab_Think` in a loop without advancing the clock and
+    /// passed, because the port then turned by a fixed step per call. Against the real arithmetic that loop
+    /// never finishes, which is the correct behaviour: no time passes, so no turning happens.</para></summary>
     [Fact]
-    public void AMobFacingTheWrongWayTurnsInsteadOfAttacking()
-    {
-        var (arg, _) = Setup(targetX: 5, targetY: 0, configure: c => c.Facing = 90);   // 180 degrees off
-        MobActionBase.Actor_Attack.Decide(arg).NextState.ShouldBe(MobActionAttack.Actor_Turning);
-    }
-
-    [Fact]
-    public void AMobAlreadyFacingTheTargetAttacksThisTick()
-    {
-        var (arg, _) = Setup(targetX: 5, targetY: 0, configure: c => c.Facing = 0);
-        var d = MobActionBase.Actor_Attack.Decide(arg);
-
-        d.NextState.ShouldBe(MobActionBase.Actor_Attack);
-        d.Choice.ShouldBe(MobAttackChoice.NormalAttack);
-    }
-
-    [Fact]
-    public void TurningTakesTicksAndThenHandsBackToAttack()
+    public void TurningTakesTimeAndThenHandsBackToAttack()
     {
         var (arg, _) = Setup(targetX: 5, targetY: 0, configure: c => c.Facing = 90);
         var turning = (MobActionTurning)MobActionAttack.Actor_Turning;
 
         var state = (MobActionBase)turning;
-        var ticks = 0;
-        while (state == turning && ticks < 50) { state = state.mab_Think(arg); ticks++; }
+        arg.NowTenths = 0;
+        arg.Combat.TurnStartedTenths = 0;
 
-        ticks.ShouldBeGreaterThan(1);                       // it genuinely costs time
+        state = state.mab_Think(arg);
+        state.ShouldBe(turning, "no time has passed, so nothing has turned");
+
+        arg.NowTenths = 1;                       // one tenth of a second later
+        state = state.mab_Think(arg);
+
         state.ShouldBe(MobActionBase.Actor_Attack);
-        arg.Combat.Facing.ShouldBe(0);                      // now looking at the target
+        arg.Combat.Facing.ShouldBe(0);           // now looking at the target
+    }
+
+    /// <summary>⚠️ `TurnSpeed` is a DURATION — bigger is SLOWER. `mab_Think` computes
+    /// <c>elapsedTenths * 18000 / TurnSpeed</c> units turned, so a full 180-unit turn lands at
+    /// <c>elapsedTenths = TurnSpeed / 100</c>: 100 is a tenth of a second, 500 is half a second.
+    ///
+    /// <para>The name says "speed" and the number is a time. That inversion is why this was left unported
+    /// until the arithmetic was actually read — a plausible reading of the column would have made the
+    /// slowest-turning mobs the nimblest.</para></summary>
+    [Fact]
+    public void ABiggerTurnSpeedIsSlower()
+    {
+        static int TenthsToTurn(int turnSpeed)
+        {
+            var (arg, _) = Setup(targetX: 5, targetY: 0, configure: c =>
+            {
+                c.Facing = 90;                    // a full 180 degrees away
+                c.TurnSpeed = turnSpeed;
+            });
+            var state = (MobActionBase)MobActionAttack.Actor_Turning;
+            arg.Combat.TurnStartedTenths = 0;
+            for (var t = 0; t <= 100; t++)
+            {
+                arg.NowTenths = t;
+                if (state.mab_Think(arg) != MobActionAttack.Actor_Turning) return t;
+            }
+            return -1;
+        }
+
+        TenthsToTurn(100).ShouldBeLessThan(TenthsToTurn(500));
+        MobActionTurning.UnitsTurned(elapsedTenths: 1, turnSpeed: 100).ShouldBe(180);   // a full turn
+        MobActionTurning.UnitsTurned(elapsedTenths: 1, turnSpeed: 500).ShouldBe(36);
+        MobActionTurning.UnitsTurned(elapsedTenths: 5, turnSpeed: 500).ShouldBe(180);
     }
 
     [Fact]
