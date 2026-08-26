@@ -227,3 +227,57 @@ generates and therefore when a mob switches target.
 Virtual calls compile as `mov reg, [vtable+off]` followed by `call reg` — there are **7,828** `call reg`
 sites and **zero** `call [reg+disp]`. Searching for callers by vtable slot offset therefore finds nothing,
 which looks like "no callers" rather than "wrong technique".
+
+---
+
+# The mob AI state machine
+
+`MobActionBase::mab_Think(MobActionArgument*)` **returns `MobActionBase*` — the next state**. That is the
+whole driver: each tick, call `think` on the current action and adopt whatever it returns. The base
+implementation returns `&Actor::targetting` unconditionally.
+
+States are static singletons on `MobActionArgument::Actor`:
+
+| address | field | class |
+|---|---|---|
+| `0x0084CFB8` | `base` | `MobActionBase` |
+| `0x0084CFBC` | `targetting` | `MobActionTargetting` |
+| `0x0084CFC0` | `toregion` | `MobAction2Region` |
+| `0x0084CFC4` | `roaming` | `MobActionRoaming` |
+| `0x0084CFC8` | `nobrain` | `MobActionNoBrain` |
+| `0x0084CFCC` | `return2regen` | `DuringReturn2Regen` |
+
+Seventeen classes implement `mab_Think`: the six above plus `MobActionInMove`, `InMove_Cancelable`,
+`InChase`, `Chase`, `Attack`, `SwingDamage`, `WaitSkillEnd`, `Turning`, `BackStep`, `AvoidOverlap`,
+`Wander`. The current action pointer lives at `MobActionArgument+0x320`.
+
+The rest of the interface: `mab_Damaged`, `mab_TargetChange`, `mab_IsWaiting`, `mab_WalkTo`, `mab_RunTo`,
+`mab_RandomDirectWalk`, `mab_SkillRegistAtScript`, `mab_GetTargetHandle`, `mab_GetTargetObject`,
+`mb_SetTargetPoint`.
+
+## Damage cancels movement and forces re-acquisition
+
+```
+MobActionInMove_Cancelable::mab_Damaged(arg):
+    actor->so_mobile_StopHere()               ; ShineMobileObject, vtable +0xA48
+    arg->currentAction = &Actor::targetting
+```
+
+So being hit while in a cancelable move stops the mob dead and sends it back to Targetting.
+
+## `MobActionTargetting::mab_Think`
+
+Calls `mts_TargetObject()` for the selector's choice, `ShinePlayer::sp_IsNormalAttack`,
+`ShineMob::sm_SetTarget(handle)`, and — three times — **`ShineObject::so_CanSeeOtherObject(other)`**.
+
+That last one is a line-of-sight test that does **not** appear in the acquisition path at all. It is the
+most plausible remaining home for the directional behaviour the operator sees: a target inside the circle
+that cannot be *seen* is not engaged. Whether it tests occlusion, facing, or both is unread.
+
+## Reading shortcut: the universal stub
+
+`0x00549070` is *the* empty function body in this binary. `MobActionBase::mab_Damaged`,
+`mb_SetTargetPoint`, `MobTargetSelector::mts_AggroClear`, `mts_Routine` and
+`ShineObject::so_scene_DetectRange` all fold onto it. **Any symbol at `0x00549070` is a no-op**, so a base
+class whose method lands there is a stub, not a fallback — worth checking before porting a method that
+appears to do nothing.
