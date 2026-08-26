@@ -115,14 +115,25 @@ public sealed class MobActionTargetting : MobActionBase
 
         arg.sm_SetTarget(picked);
 
-        // ⚠️ ONLY THE ROAMING BRANCH IS CONFIRMED. The original has one explicit state return --
-        // `mov eax, 0x84CFC4` (&Actor::roaming) at mab_Think+0x225 -- and its other five `ret`s set eax
-        // some other way, so what it returns after a SUCCESSFUL acquisition has not been read.
+        // VERIFIED against the binary. All six returns of MobActionTargetting::mab_Think resolved:
         //
-        // Handing off to the attack state is therefore a SIMULATOR DECISION, not a ported one. It makes
-        // the loop run; that is the only argument for it. There is a deliberately RED test marking this
-        // gap (TargettingSuccessTransition_IsUnverifiedAgainstTheBinary) rather than a green one blessing
-        // the guess. If mob behaviour disagrees with the server on the tick after acquisition, look here.
+        //     +0x152  lea eax,[edi+0x29C]  -> Wander
+        //     +0x1CC  lea eax,[edi+0x2D0]  -> Chase
+        //     +0x23B  mov eax,0x84CFC4     -> &Actor::roaming  (the only static one)
+        //     +0x260  lea eax,[edi+0x29C]  -> Wander
+        //     +0x301  mov eax,[ebp-0x10]   -> a state chosen earlier in the function
+        //     +0x4A7  lea eax,[edi+0x2B8]  -> Attack
+        //
+        // `edi` is the MobActionArgument, which embeds an Actor at +0x274; the Actor constructor places
+        // Wander at +0x28, Attack at +0x44 and Chase at +0x5C, which is how the offsets were named.
+        //
+        // So the acquisition-success handoff to Attack is CORRECT. Two outcomes are still unmodelled:
+        // this can also return Wander or Chase, and which one depends on branches not yet traced.
+        //
+        // ⚠️ STRUCTURAL DIFFERENCE worth knowing: in the original, most action states are PER-ARGUMENT
+        // EMBEDDED INSTANCES (one set per mob), not shared singletons -- only `roaming` and `targetting`
+        // are statics. This port shares one instance of each, which is fine while states hold no per-mob
+        // data, and stops being fine the moment one does.
         return picked is null ? Actor_Roaming : Actor_Attack;
     }
 }

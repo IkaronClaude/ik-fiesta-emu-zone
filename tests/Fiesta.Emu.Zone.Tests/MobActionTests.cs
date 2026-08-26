@@ -38,23 +38,39 @@ public class MobActionTests
         arg.Target.ShouldBe(prey);
     }
 
-    /// <summary>KNOWN RED. What `MobActionTargetting::mab_Think` returns after a SUCCESSFUL acquisition
-    /// has not been read out of the binary — it has one explicit state return, `mov eax, 0x84CFC4`
-    /// (&amp;Actor::roaming) at `+0x225`, and its other five `ret`s set eax another way.
+    /// <summary>VERIFIED against the binary — this was previously a deliberately red test.
     ///
-    /// <para>The simulator currently hands off to the attack state because that makes the loop run. This
-    /// test deliberately does NOT assert that, because a passing test over an unverified guess is worse
-    /// than no test: it makes the guess look established and it resists correction. The test fails until
-    /// somebody reads the function, and that failure is the point.</para>
+    /// <para>All six returns of `MobActionTargetting::mab_Think` (0x004B99E0) have now been resolved.
+    /// Four of them return `edi + &lt;offset&gt;` where `edi` is the `MobActionArgument`, which embeds an
+    /// `Actor` at +0x274; the `Actor` constructor places Wander at +0x28, Attack at +0x44 and Chase at
+    /// +0x5C:</para>
     ///
-    /// <para>To close it: disassemble `0x004B99E0` and determine what eax holds at each `ret`, or drive
-    /// the function under `tools/zone_oracle.py` with a synthetic argument and read the return.</para></summary>
+    /// <code>
+    /// +0x152  lea eax,[edi+0x29C]  -> Wander
+    /// +0x1CC  lea eax,[edi+0x2D0]  -> Chase
+    /// +0x23B  mov eax,0x84CFC4     -> &amp;Actor::roaming
+    /// +0x260  lea eax,[edi+0x29C]  -> Wander
+    /// +0x301  mov eax,[ebp-0x10]   -> a state chosen earlier
+    /// +0x4A7  lea eax,[edi+0x2B8]  -> Attack
+    /// </code>
+    ///
+    /// <para>The handoff to Attack was a guess and turns out to be right — but it is asserted here
+    /// because it was READ, not because the code already did it.</para>
+    ///
+    /// <para>Still unmodelled: this function can also return Wander or Chase, and the branches selecting
+    /// them have not been traced.</para></summary>
     [Fact]
-    public void TargettingSuccessTransition_IsUnverifiedAgainstTheBinary()
-        => Assert.Fail(
-            "Unread: MobActionTargetting::mab_Think's return on the acquisition-success path. "
-            + "The simulator assumes a handoff to MobActionAttack; the binary has not been read. "
-            + "See docs/AGGRO.md. This test is expected to be red until that is resolved.");
+    public void TargettingHandsOffToAttackOnASuccessfulAcquisition()
+    {
+        var mob = new Obj { Handle = 1, X = 0, Y = 0 };
+        var prey = new Obj { Handle = 2, X = 10, Y = 0 };
+        var arg = Arg(mob, 100, prey);
+
+        var next = MobActionBase.Actor_Targetting.mab_Think(arg);
+
+        arg.Target.ShouldBe(prey);
+        next.ShouldBe(MobActionBase.Actor_Attack);
+    }
 
     [Fact]
     public void TargettingFallsBackToRoamingWhenNothingQualifies()

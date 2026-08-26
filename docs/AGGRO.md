@@ -326,6 +326,41 @@ That last one is a line-of-sight test that does **not** appear in the acquisitio
 most plausible remaining home for the directional behaviour the operator sees: a target inside the circle
 that cannot be *seen* is not engaged. Whether it tests occlusion, facing, or both is unread.
 
+## What `MobActionTargetting::mab_Think` returns
+
+All six returns resolved (0x004B99E0). `edi` is the `MobActionArgument`, which embeds an `Actor` at
+`+0x274`; the `Actor` constructor places `MobActionWander` at `+0x28`, `MobActionAttack` at `+0x44` and
+`MobActionChase` at `+0x5C`, which names the offsets:
+
+| ret | instruction | state |
+|---|---|---|
+| `+0x152` | `lea eax,[edi+0x29C]` | Wander |
+| `+0x1CC` | `lea eax,[edi+0x2D0]` | Chase |
+| `+0x23B` | `mov eax,0x84CFC4` | `&Actor::roaming` |
+| `+0x260` | `lea eax,[edi+0x29C]` | Wander |
+| `+0x301` | `mov eax,[ebp-0x10]` | a state chosen earlier in the function |
+| `+0x4A7` | `lea eax,[edi+0x2B8]` | Attack |
+
+**Most action states are per-argument EMBEDDED INSTANCES, not shared singletons.** Only `roaming` and
+`targetting` are `Actor::` statics; the rest live inside each `MobActionArgument`, so every mob has its
+own. That matters the moment a state needs to hold per-mob data — a shared instance would then leak
+between mobs.
+
+The `Actor` layout, from its constructor:
+
+| offset | class |
+|---|---|
+| +0x00 | `MobActionInMove` |
+| +0x08 | `MobActionInMove_Cancelable` |
+| +0x10 | `MobActionInChase` |
+| +0x28 | `MobActionWander` |
+| +0x44 | `MobActionAttack` |
+| +0x5C | `MobActionChase` |
+| +0x64 | `MobActionBackStep` |
+| +0x70 | `MobActionAvoidOverlap` |
+
+Still untraced: which branches select Wander versus Chase versus Attack.
+
 ## Reading shortcut: the universal stub
 
 `0x00549070` is *the* empty function body in this binary. `MobActionBase::mab_Damaged`,

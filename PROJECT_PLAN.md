@@ -82,13 +82,16 @@ A green test over an unverified guess is worse than no test at all: it makes the
 it survives review, and it actively resists correction because changing the code now "breaks a test".
 A red one states the debt in the one place nobody can ignore.
 
-Currently red, deliberately:
+Currently red, deliberately: **none.**
 
-| test | what is unknown |
+Closed so far:
+
+| was red | how it was closed |
 |---|---|
-| `TargettingSuccessTransition_IsUnverifiedAgainstTheBinary` | what `MobActionTargetting::mab_Think` returns after a successful acquisition |
+| `TargettingSuccessTransition_IsUnverifiedAgainstTheBinary` | read all six returns of `mab_Think`; the guessed handoff to Attack turned out correct, and the test now asserts it *because it was read* |
 
-**Do not make these pass by asserting current behaviour.** Close them by reading the binary.
+**Do not make these pass by asserting current behaviour.** Close them by reading the binary — as that one
+was. The guess being right is not the point; knowing it is right is.
 
 ## The angle question is an open debt
 
