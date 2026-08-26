@@ -41,6 +41,8 @@ public sealed class SimMob : ICombatant
         Hp = MaxHp;
         NormalAttack = definition.NormalAttack;
         Mob.Selector.Policy = definition.Policy;
+        Arg.Combat.RunSpeed = definition.Info.RunSpeed;
+        Arg.Combat.TurnSpeed = definition.Server.TurnSpeed;
 
         if (definition.NormalAttack is not { } w) return;
 

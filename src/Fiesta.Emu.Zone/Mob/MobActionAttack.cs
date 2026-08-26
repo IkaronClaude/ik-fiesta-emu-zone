@@ -57,6 +57,26 @@ public sealed class MobCombatState
     /// <summary>The mob's current facing, in direction units.</summary>
     public int Facing { get; set; }
 
+    /// <summary>How fast this mob closes distance, from `MobInfo.RunSpeed` — the value
+    /// `ShineMob::so_RunSpeed` returns. Orc is 127, a Mushroom 105.
+    ///
+    /// <para>Per-MOB, because the action states are shared singletons here: a speed stored on the chase
+    /// state would be one speed for every mob in the world.</para></summary>
+    public int RunSpeed { get; set; } = 50;
+
+    /// <summary>`MobInfoServer.TurnSpeed`. <b>Zero means the mob turns instantly</b> — `mat_Reserv` returns
+    /// the next action rather than entering the turning state.
+    ///
+    /// <para>⚠️ The meaning of a NON-zero value is NOT read. The column has only four values across the
+    /// whole table — 100 (2,755 mobs), 0 (60), 300 (43), 500 (20) — and whether a larger number turns the
+    /// mob faster or slower is undetermined; the distribution alone cannot say. Until `mab_Think`'s turn
+    /// progress is ported, non-zero mobs use <see cref="MobActionTurning.TurnRateUnitsPerSecond"/> as
+    /// before. Only the zero branch is acted on, because only that one was read.</para></summary>
+    public int TurnSpeed { get; set; } = 100;
+
+    /// <summary>Whether this mob skips the turning state entirely.</summary>
+    public bool TurnsInstantly => TurnSpeed == 0;
+
     /// <summary>Chance in permille that a skill is used when no exchange rule fires.</summary>
     public int SkillChancePermille { get; set; }
 
@@ -111,7 +131,18 @@ public sealed class MobActionAttack : MobActionBase
         //    too far off and the mob reserves a turn (mat_Reserv) instead of attacking this tick.
         var toTarget = Direction.ddt_DirectSR(target.X - arg.Actor.X, target.Y - arg.Actor.Y);
         if (Direction.ddt_ShineRadianDiff(combat.Facing, toTarget) > combat.FacingToleranceUnits)
-            return new MobAttackDecision(Actor_Turning, MobAttackChoice.NormalAttack, SkillExchangeReason.None);
+        {
+            // `mat_Reserv` reads TurnSpeed and, when it is ZERO, returns the caller's next action instead of
+            // the turning state -- the mob simply faces its target and carries on in the same tick.
+            if (combat.TurnsInstantly)
+            {
+                combat.Facing = toTarget;
+            }
+            else
+            {
+                return new MobAttackDecision(Actor_Turning, MobAttackChoice.NormalAttack, SkillExchangeReason.None);
+            }
+        }
 
         // 3. Skill exchange, in the binary's order.
         var reason = ChooseSkill(arg, target, combat);
@@ -205,7 +236,9 @@ public sealed class MobActionChase : MobActionBase
         if (squared <= (long)combat.AttackRange * combat.AttackRange)
             return MobActionAttack.Actor_Attack;
 
-        arg.MoveToward(target, Math.Max(1, (int)(SpeedPerSecond * arg.ElapsedMs / 1000)));
+        // Per-mob speed from MobInfo.RunSpeed; SpeedPerSecond is only the fallback for mobs with no data.
+        var speed = combat.RunSpeed > 0 ? combat.RunSpeed : SpeedPerSecond;
+        arg.MoveToward(target, Math.Max(1, (int)(speed * arg.ElapsedMs / 1000)));
         return this;
     }
 }

@@ -11,6 +11,11 @@ invisible in normal use: a made-up constant produces plausible behaviour and nev
 
 Ordered worst-first. "Worst" means *most likely to be silently wrong*, not most work to fix.
 
+> **A tooling bug that manufactured false absences.** The scan used to find field readers only matched
+> `disp8` addressing, and `disp8` is SIGNED — so any struct offset at or above `0x80` is encoded as
+> `disp32` and was invisible to it. `TurnSpeed` at `+0x9C` looked unreferenced for that reason alone. If an
+> older note in this file says "nothing reads X", check whether X sits past `0x7F` before believing it.
+>
 > **Rule 3, carried from OPEN_QUESTIONS.md:** this is a release C++ binary, so `/OPT:REF` strips
 > unreferenced code and data. Anything still in the image is referenced by something. Every "nothing uses
 > this" claim below is therefore **a report on my searching, not a property of the server** — three such
@@ -26,15 +31,17 @@ from a table we already parse. Behaviour looks reasonable and is uniformly wrong
 
 | invented | where | the real source |
 |---|---|---|
-| `TurnRateUnitsPerSecond = 150` | `MobActionTurning` | **`MobInfoServer.TurnSpeed`** |
-| `SpeedPerSecond = 50` | `MobActionChase` | **`MobInfo.WalkSpeed` / `RunSpeed`** (both decoded, both unused), and `MobInfoServer.WalkChase` |
+| `TurnRateUnitsPerSecond = 150` | `MobActionTurning` | **`MobInfoServer.TurnSpeed`** — now decoded and its ZERO branch ported (60 mobs turn instantly). What a NON-zero value means is still unread: only four values exist (100, 0, 300, 500) and the distribution cannot say whether bigger is faster or slower, so non-zero mobs still use the invented rate |
 | `RespawnSeconds = 25` default | `SimMob` | `MobRegen.RegStandard` is wired, but `RegMin`/`RegMax`/the delta schedule are not, and `MobInfoServer.RegenInterval` / `ResetInterval` are not even decoded |
 | `AttackRange = 10` default | `MobCombatState` | `MobWeapon.Range` — wired *only* when a definition is applied |
 | `FacingToleranceUnits = 5` | `MobCombatState` | unknown; no obviously matching column found, but note rule 3 below before treating that as settled |
 
-Every mob currently turns at the same rate and chases at the same speed. `TurnSpeed` in particular matters
-for the open **angle question**: if turn rate varies per mob, a uniform constant would mask exactly the
-effect being argued about.
+Chase speed is now per-mob from `MobInfo.RunSpeed`. Turning is half-done: the instant-turn branch is
+ported, the rate for the other 2,818 mobs is not.
+
+`WalkChase` was listed here as a chase-speed source and that was wrong — it is **zero for 2,862 of 2,878
+mobs**, so it is a rare special case rather than the general speed, even though `MobActionChase::mab_Think`
+is what reads it.
 
 ---
 
@@ -43,7 +50,7 @@ effect being argued about.
 Parsed into a record, then never read. Harmless today, but each one is a behaviour the simulation cannot
 have.
 
-**`MobInfo`** — `WalkSpeed`, `RunSpeed`, `Size`, `Id`
+**`MobInfo`** — `WalkSpeed` (decoded; `RunSpeed` is what chase uses), `Size`, `Id`
 **`MobInfoServer`** — `MonExp`, `DetectCha`, `FollowCha`, `MaxSp`, `Rank`, `Id`
 **`MobWeapon`** — `BlastRate`, `Id`, and `Skill` (used only as a marker for "is this the ordinary swing",
 never to actually cast anything).
@@ -58,12 +65,14 @@ into the mob's `Item.Plus` cluster alongside `MinWc`/`MaxWc`.
 Columns the tables carry that this project does not read. `MobInfoServer` has **49 columns and 16 are
 captured**.
 
-**`MobInfoServer`** — `Visible`, `MobKillInx`, `EXPRange`, `ResetInterval`,
+**`MobInfoServer`** — `WalkChase` and `RegenInterval` are now decoded but unused; `Visible`, `MobKillInx`, `EXPRange`, `ResetInterval`,
 `CutInterval`, `CutNonAT`, `PceHPRcvDly`, `PceHPRcv`, `AtkHPRcvDly`, `AtkHPRcv`, `MobRaceType`,
 `FamilyArea`, `FamilyRescArea`, `FamilyRescCount`, `BloodingResi`, `StunResi`, `MoveSpeedResi`,
 `FearResi`, `ResIndex`, `KQKillPoint`, `Return2Regen`, `IsRoaming`, `RoamingNumber`, `RoamingDistance`,
-`RoamingRestTime`, `BroadAtDead`, **`TurnSpeed`**, **`WalkChase`**, `AllCanLoot`, `DmgByHealMin`,
-`DmgByHealMax`, **`RegenInterval`**
+`RoamingRestTime`, `BroadAtDead`, `AllCanLoot`, `DmgByHealMin`, `DmgByHealMax`
+
+`DmgByHealMin`/`DmgByHealMax` are read by `RuleOfEngagementHealAttack::roe_CalcDamage` — mobs that take
+damage from healing. `RegenInterval` is read by `ShineMob::so_MapMarking`.
 
 **`MobInfo`** — `WeaponType`, `ArmorType`, `GradeType`, `IsPlayerSide`, `AbsoluteSize`
 

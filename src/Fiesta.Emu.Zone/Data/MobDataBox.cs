@@ -79,10 +79,15 @@ public sealed record MobInfoServer(
     int Str, int Dex, int Con, int Int, int Men,
     int MonExp, int DetectCha, int FollowCha,
     int MaxSp, int Rank,
-    EnemyDetect DetectType)
+    EnemyDetect DetectType,
+    int TurnSpeed, int WalkChase, int RegenInterval)
 {
     /// <summary>Whether this mob acquires targets on its own, or only fights back.</summary>
     public bool IsAggressive => DetectType is not (EnemyDetect.Bout or EnemyDetect.NoBrain);
+
+    /// <summary>`TurnSpeed == 0` means the mob turns INSTANTLY — `MobActionTurning::mat_Reserv` returns the
+    /// next action without entering the turning state at all. 60 mobs are like this.</summary>
+    public bool TurnsInstantly => TurnSpeed == 0;
 }
 
 /// <summary>`MobWeapon` — one attack a mob can make.
@@ -183,7 +188,8 @@ public sealed class MobDataBox
                 I(r, "Str"), I(r, "Dex"), I(r, "Con"), I(r, "Int"), I(r, "Men"),
                 I(r, "MonEXP"), I(r, "DetectCha"), I(r, "FollowCha"),
                 I(r, "MaxSP"), I(r, "Rank"),
-                (EnemyDetect)I(r, "EnemyDetectType"));
+                (EnemyDetect)I(r, "EnemyDetectType"),
+                I(r, "TurnSpeed"), I(r, "WalkChase"), I(r, "RegenInterval"));
         }
 
         var weapons = new Dictionary<string, List<MobWeapon>>(StringComparer.OrdinalIgnoreCase);
