@@ -19,11 +19,13 @@ The attack state calls:
 
 So a mob that is not facing its target **turns first**, and turning is its own state that costs ticks.
 
-**This is a much better explanation for the directional feel than a cardioid detection shape.** Acquisition
-is a circle (`AGGRO.md`); what is directional is the *response*: approach a mob from behind and it must
-spend time turning before it can attack, which reads exactly like reduced aggro from the rear even though
-the detection radius is identical in every direction. Worth testing against gameplay before treating it as
-settled — it is currently a hypothesis that fits the code, not a measurement.
+**This is a hypothesis, not an explanation, and it is currently losing to the operator's experience.**
+
+It is tempting to say turning explains the directional feel — approach from behind, the mob spends ticks
+turning, and that reads like reduced rear aggro. But "a mechanism exists that could produce the symptom"
+is not evidence that it *does*, and the operator reports the effect from play while this is inferred from
+a call list. **Do not cite it as the answer.** `AGGRO.md` sets out what would actually settle the angle
+question; until one of those is done, treat the shape as unresolved.
 
 ## Auto-attack versus skill
 

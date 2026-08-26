@@ -25,22 +25,36 @@ public class MobActionTests
         MobActionBase.Actor_Base.mab_Think(arg).ShouldBe(MobActionBase.Actor_Targetting);
     }
 
-    /// <summary>Acquisition sets the target. The state it moves to afterwards is a SIMULATOR DECISION,
-    /// not a ported one — only the roaming branch is confirmed in the binary (`mov eax, 0x84CFC4` at
-    /// `mab_Think+0x225`); what the success path returns has not been read. This test pins the
-    /// simulator's choice so a change to it is deliberate, and does not claim it matches the server.</summary>
+    /// <summary>Acquisition sets the target. That much IS ported.</summary>
     [Fact]
-    public void TargettingAcquiresATarget_ThenHandsOffToAttack_ByOurChoice()
+    public void TargettingAcquiresATarget()
     {
         var mob = new Obj { Handle = 1, X = 0, Y = 0 };
         var prey = new Obj { Handle = 2, X = 10, Y = 0 };
         var arg = Arg(mob, 100, prey);
 
-        var next = MobActionBase.Actor_Targetting.mab_Think(arg);
+        MobActionBase.Actor_Targetting.mab_Think(arg);
 
-        arg.Target.ShouldBe(prey);                              // ported: acquisition works
-        next.ShouldBe(MobActionBase.Actor_Attack);              // unverified: our handoff
+        arg.Target.ShouldBe(prey);
     }
+
+    /// <summary>KNOWN RED. What `MobActionTargetting::mab_Think` returns after a SUCCESSFUL acquisition
+    /// has not been read out of the binary — it has one explicit state return, `mov eax, 0x84CFC4`
+    /// (&amp;Actor::roaming) at `+0x225`, and its other five `ret`s set eax another way.
+    ///
+    /// <para>The simulator currently hands off to the attack state because that makes the loop run. This
+    /// test deliberately does NOT assert that, because a passing test over an unverified guess is worse
+    /// than no test: it makes the guess look established and it resists correction. The test fails until
+    /// somebody reads the function, and that failure is the point.</para>
+    ///
+    /// <para>To close it: disassemble `0x004B99E0` and determine what eax holds at each `ret`, or drive
+    /// the function under `tools/zone_oracle.py` with a synthetic argument and read the return.</para></summary>
+    [Fact]
+    public void TargettingSuccessTransition_IsUnverifiedAgainstTheBinary()
+        => Assert.Fail(
+            "Unread: MobActionTargetting::mab_Think's return on the acquisition-success path. "
+            + "The simulator assumes a handoff to MobActionAttack; the binary has not been read. "
+            + "See docs/AGGRO.md. This test is expected to be red until that is resolved.");
 
     [Fact]
     public void TargettingFallsBackToRoamingWhenNothingQualifies()
@@ -124,6 +138,7 @@ public class MobActionTests
 
         arg.Current = arg.Current.mab_Think(arg);
         arg.Target.ShouldNotBeNull();
-        arg.Current.ShouldBe(MobActionBase.Actor_Attack);
+        // The state after a successful acquisition is deliberately NOT asserted here -- see
+        // TargettingSuccessTransition_IsUnverifiedAgainstTheBinary.
     }
 }

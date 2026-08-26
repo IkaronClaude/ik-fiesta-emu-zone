@@ -73,6 +73,35 @@ These cost real time to learn. They are not general advice; each one produced a 
 
 ---
 
+## Known-red tests are a convention here, not neglect
+
+Where the simulator has to pick a behaviour the binary has not been read for, the gap gets a **failing
+test**, not a passing one.
+
+A green test over an unverified guess is worse than no test at all: it makes the guess look established,
+it survives review, and it actively resists correction because changing the code now "breaks a test".
+A red one states the debt in the one place nobody can ignore.
+
+Currently red, deliberately:
+
+| test | what is unknown |
+|---|---|
+| `TargettingSuccessTransition_IsUnverifiedAgainstTheBinary` | what `MobActionTargetting::mab_Think` returns after a successful acquisition |
+
+**Do not make these pass by asserting current behaviour.** Close them by reading the binary.
+
+## The angle question is an open debt
+
+The operator reports from play that aggro range depends on orientation. Three functions have been read
+and none contains an angle term, and there is a plausible turn-cost mechanism that *could* produce the
+symptom — **neither of those is proof, and neither outranks the observation.**
+
+`docs/AGGRO.md` sets out what would settle it. Until at least the oracle experiment or `so_AllOfRange`'s
+distance computation is done, nothing in this repo may describe the detection shape as settled, and the
+turn-tick story must not be cited as the explanation.
+
+---
+
 ## Status
 
 ### Infrastructure

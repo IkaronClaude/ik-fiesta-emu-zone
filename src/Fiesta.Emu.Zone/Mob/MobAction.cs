@@ -115,9 +115,10 @@ public sealed class MobActionTargetting : MobActionBase
         // `mov eax, 0x84CFC4` (&Actor::roaming) at mab_Think+0x225 -- and its other five `ret`s set eax
         // some other way, so what it returns after a SUCCESSFUL acquisition has not been read.
         //
-        // Handing off to the attack state is therefore a SIMULATOR DECISION, not a ported one. It is what
-        // makes the loop run, and it is the obvious reading, but it is not evidence. If mob behaviour ever
-        // disagrees with the server on the tick after acquisition, look here first.
+        // Handing off to the attack state is therefore a SIMULATOR DECISION, not a ported one. It makes
+        // the loop run; that is the only argument for it. There is a deliberately RED test marking this
+        // gap (TargettingSuccessTransition_IsUnverifiedAgainstTheBinary) rather than a green one blessing
+        // the guess. If mob behaviour disagrees with the server on the tick after acquisition, look here.
         return picked is null ? Actor_Roaming : Actor_Attack;
     }
 }

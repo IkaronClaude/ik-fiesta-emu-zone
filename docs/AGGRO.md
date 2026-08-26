@@ -124,10 +124,13 @@ The operator's observation from play is that aggro range depends on orientation 
 circle. **It is a circle.** Three independent pieces agree: a scalar range from `so_getDetectRange`, no angle term
 in the callback, and a NULL sector argument at the call site — the very parameter that would make it one.
 
-The engine clearly *can* do orientation-dependent shapes, which is likely where the intuition comes from,
-but that path is skills, not aggro. The observed directional behaviour needs another explanation, and the
-mundane one is worth testing first: nearest-valid-wins re-evaluated every think tick, from wherever the mob
-now stands, so a mob already closing on you keeps re-acquiring at shorter range and reads as directional.
+The engine clearly *can* do orientation-dependent shapes; that path is skills, not this one.
+
+**None of that explains the operator's experience, and it must not be treated as though it does.** Three
+functions read as angle-free is evidence about *those three functions*, not proof about the system. The
+operator reports directional aggro from play; that is an observation, and my alternative explanations
+(turn ticks, re-acquisition at closing range) are **untested hypotheses that rank below it** until one of
+them is demonstrated. See "Proving the angle question" below.
 
 Places an orientation term could still hide, in rough order of likelihood:
 
@@ -138,6 +141,29 @@ Places an orientation term could still hide, in rough order of likelihood:
 4. **`mdb_SpeciesDistance(a, b)`** — a per-species distance that may modulate range.
 5. **A different selector** — `MobTargetAggresiveALL` and `MobTargetPlayerCaptivate` have their own
    `mts_SelectTarget`, and player-facing behaviour may not run through `MobTargetAggresive` at all.
+
+## Proving the angle question — REQUIRED, not optional
+
+The operator's experience is that aggro range depends on orientation. Nothing here refutes that; it only
+shows that three specific functions have no angle term. **A proof is owed, and until it exists the
+question is open.** Nothing in this repo may state the shape as settled.
+
+What would actually count as proof, in rough order of strength:
+
+1. **Drive `mts_SelectTarget` / `ali_Work` under the oracle** with synthetic objects placed at equal
+   distance and varying bearing, and show acquisition is bearing-independent. This is the direct
+   experiment and it is the one that settles it.
+2. **Read `so_AllOfRange`'s per-candidate distance computation.** It still has to produce the squared
+   distance `ali_Work` receives; if that value is not plain Euclidean, the shape lives there and every
+   "no angle term" observation above is beside the point. Unread.
+3. **Read `so_CanSeeOtherObject`.** `MobActionTargetting` calls it three times and it is absent from
+   acquisition. If it tests facing rather than occlusion, engagement is directional even though detection
+   is not.
+4. **A live measurement**: fixed distance, systematically varied bearing, time-to-aggro recorded. This is
+   what the observation is made of, so it is what a contrary claim has to beat.
+
+Until at least (1) or (2) is done, "aggro is a circle" is a reading of three functions, not a finding
+about the game.
 
 ## Next
 
