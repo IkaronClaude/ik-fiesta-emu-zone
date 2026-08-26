@@ -11,6 +11,30 @@ public enum MobType
     Npc, Object, Mine, Herb, Wood, NoName, NoTarget, NoTarget2,
 }
 
+/// <summary>`EnemyDetect` — which `MobTargetSelector` subclass a mob uses to pick targets.
+///
+/// <para>This is not a flag about detection <em>range</em>; it selects the whole targeting POLICY, and the
+/// values line up one-for-one with the RTTI hierarchy under `MobTargetSelector`.</para>
+///
+/// <para><b>220 mobs are <see cref="Bout"/> — passive.</b> They acquire nothing on their own and only
+/// retaliate. Slime, MushRoom, Imp and Crab are all in that set, which matches how the early game plays.
+/// A simulation that gives every mob the same selector has those 220 attacking on sight.</para></summary>
+public enum EnemyDetect
+{
+    /// <summary>`ED_BOUT` — `MobTargetBout`. Passive: retaliates, never initiates.</summary>
+    Bout = 0,
+    /// <summary>`ED_AGGRESSIVE` — `MobTargetAggresive`. The common case (1,872 mobs).</summary>
+    Aggressive = 1,
+    /// <summary>`ED_NOBRAIN` — `MobTargetNoBrain`. Shopkeepers and other non-combatants (764).</summary>
+    NoBrain = 2,
+    /// <summary>`ED_AGGRESSIVE2` — `MobTargetAggresive2`.</summary>
+    Aggressive2 = 3,
+    /// <summary>`ED_AGGREESIVEALL` — `MobTargetAggresiveALL` (the server's spelling).</summary>
+    AggressiveAll = 4,
+    /// <summary>`ED_ENEMYALLDETECT`.</summary>
+    EnemyAllDetect = 5,
+}
+
 /// <summary>`NORMALHITTYPE` — whether an attack is resolved as physical or magical.</summary>
 public enum HitType
 {
@@ -54,7 +78,12 @@ public sealed record MobInfoServer(
     int Ac, int Tb, int Mr, int Mb,
     int Str, int Dex, int Con, int Int, int Men,
     int MonExp, int DetectCha, int FollowCha,
-    int MaxSp, int Rank);
+    int MaxSp, int Rank,
+    EnemyDetect DetectType)
+{
+    /// <summary>Whether this mob acquires targets on its own, or only fights back.</summary>
+    public bool IsAggressive => DetectType is not (EnemyDetect.Bout or EnemyDetect.NoBrain);
+}
 
 /// <summary>`MobWeapon` — one attack a mob can make.
 ///
@@ -153,7 +182,8 @@ public sealed class MobDataBox
                 I(r, "AC"), I(r, "TB"), I(r, "MR"), I(r, "MB"),
                 I(r, "Str"), I(r, "Dex"), I(r, "Con"), I(r, "Int"), I(r, "Men"),
                 I(r, "MonEXP"), I(r, "DetectCha"), I(r, "FollowCha"),
-                I(r, "MaxSP"), I(r, "Rank"));
+                I(r, "MaxSP"), I(r, "Rank"),
+                (EnemyDetect)I(r, "EnemyDetectType"));
         }
 
         var weapons = new Dictionary<string, List<MobWeapon>>(StringComparer.OrdinalIgnoreCase);

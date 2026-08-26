@@ -112,19 +112,20 @@ public class ClassParamTableTests
         beyond.Base[Stat.Str].ShouldBe(top.Base[Stat.Str]);
     }
 
-    /// <summary>Gear folds into the Item layer.
+    /// <summary>Gear's flat bonuses go to Item.Plus and its rate columns to ItemPowerRate.Rate — and BOTH
+    /// reach the total.
     ///
-    /// <para>⚠️ NOTE WHAT DOES NOT HAPPEN: the robe's <c>ACRate</c> of 1200 does NOT scale the result. It is
-    /// stored on the Item RATE cluster, and `c_MakeTotal` never folds that cluster into the total — the only
-    /// rate steps it runs are ItemPowerRate, AbnormalState, PassiveSkill and LastTune.</para>
+    /// <para>⚠️ This test previously asserted the opposite, and was wrong in a way worth recording. It read
+    /// <c>armed[Stat.AC].ShouldBe(17)</c> — flat only — on the theory that an item's `ACRate` lands on
+    /// `Item.Rate`, one of the five clusters `c_MakeTotal` skips. The mapping came from the shared "Item"
+    /// prefix rather than from reading the equip path, so the test was encoding the bug rather than catching
+    /// it: item rate bonuses did nothing at all.</para>
     ///
-    /// <para>This test asserted 20 first, on the assumption that an item's rate column must obviously apply.
-    /// The port said 17 and the port was right — the assumption had not been read. The value of writing the
-    /// combining order out as a ported sequence rather than a tidy sum is exactly that it makes this kind of
-    /// assumption fail loudly. Whether the game nonetheless applies ACRate somewhere else is an open
-    /// question, recorded in docs/PARAMETERS.md; it is not answered by pretending the total applies it.</para></summary>
+    /// <para>`ShinePlayer::so_RecalcEquipParam` writes `ItemPowerRate.Rate` for AC, MR, WCmin, WCmax, MAmin
+    /// and MAmax, and `roe_AC` reads that cluster and never Item.Rate. `c_MakeTotal` applies
+    /// ItemPowerRate.Rate as its FIRST rate step, so the bonus lands.</para></summary>
     [SkippableFact]
-    public void EquipmentAddsThroughTheItemPlusLayerAndItsRateColumnsDoNotReachTheTotal()
+    public void ItemRateColumnsScaleTheTotalThroughItemPowerRate()
     {
         var dir = WorldDir();
         Skip.If(dir is null, "server data not present; set SHINE_DATA");
@@ -139,12 +140,15 @@ public class ClassParamTableTests
         ]).MakeTotal();
 
         armed[Stat.WCmax].ShouldBe(bare[Stat.WCmax] + 20);
-        armed[Stat.AC].ShouldBe(17);          // 5 + 12 flat; the 1.2x never runs
 
-        // It IS recorded on the item rate cluster -- it is carried, just not folded into the total.
+        // 5 + 12 flat, then x1.2 from the robe's ACRate -> 20 (17 * 1200 / 1000, truncated).
+        armed[Stat.AC].ShouldBe(20);
+
+        // And it is carried on ItemPowerRate, not on Item's own rate half.
         var container = CharacterParameters.Build(cleric, 20, equipment:
             [new EquipmentPiece("robe", AC: 12, ACRate: 1200)]);
-        container.Rate(StatModifier.Item)[Stat.AC].ShouldBe(1200);
+        container.Rate(StatModifier.ItemPowerRate)[Stat.AC].ShouldBe(1200);
+        container.Rate(StatModifier.Item)[Stat.AC].ShouldBe(ParameterCluster.RateIdentity);
     }
 
     /// <summary>A buff, by contrast, DOES scale gear -- AbnormalState.Rate is one of the four rate steps.</summary>

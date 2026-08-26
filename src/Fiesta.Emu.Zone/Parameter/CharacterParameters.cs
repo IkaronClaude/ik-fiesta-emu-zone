@@ -2,11 +2,10 @@ namespace Fiesta.Emu.Zone.Parameter;
 
 /// <summary>The stat contribution of one equipped item — the `ItemInfo.shn` columns that feed a cluster.
 ///
-/// <para>The column names carry their own half: everything ending in <c>Plus</c> (and the flat values like
-/// <c>MinWC</c>) goes to <see cref="StatModifier.Item"/>'s Plus cluster, while <c>WCRate</c>, <c>MARate</c>,
-/// <c>ACRate</c> and <c>MRRate</c> are permille and go to its Rate cluster. That the data file splits its
-/// columns exactly the way the container splits its clusters is the strongest available confirmation that
-/// the Plus/Rate model is the real one.</para>
+/// <para>The flat values (<c>MinWC</c>, <c>AC</c>, everything ending in <c>Plus</c>) go to
+/// <see cref="StatModifier.Item"/>'s Plus cluster. The permille ones — <c>WCRate</c>, <c>MARate</c>,
+/// <c>ACRate</c>, <c>MRRate</c> — go to <see cref="StatModifier.ItemPowerRate"/>, <b>not</b> to Item's own
+/// Rate half; see <see cref="CharacterParameters.Equip"/> for why that distinction matters.</para>
 ///
 /// <para>Supplied by the caller rather than read here: this project has no SHN reader yet, and inventing
 /// one to avoid an input parameter would be the wrong trade.</para></summary>
@@ -140,11 +139,23 @@ public static class CharacterParameters
         return row.MaxSp + (cluster[Stat.Men] - row.Men) * SpPerMentalPowerPoint;
     }
 
-    /// <summary>Fold an equipped item into the <see cref="StatModifier.Item"/> clusters.
+    /// <summary>Fold an equipped item into the container.
     ///
-    /// <para>Flat columns accumulate into Plus. Rate columns compound into Rate: two items each at 1100
-    /// permille give 1210, not 1200, because the container's rate half is itself scaled rather than summed.
-    /// Identity (1000) contributions leave the slot untouched.</para></summary>
+    /// <para>Flat columns accumulate into <see cref="StatModifier.Item"/>'s Plus cluster.</para>
+    ///
+    /// <para><b>⚠️ Rate columns go to <see cref="StatModifier.ItemPowerRate"/>, NOT to Item's Rate half.</b>
+    /// This port had them on Item.Rate, inferred from the shared "Item" prefix, and that cluster is one of
+    /// the five `c_MakeTotal` never folds in — so item rate bonuses silently did nothing.</para>
+    ///
+    /// <para>`ShinePlayer::so_RecalcEquipParam` settles it: it writes `ItemPowerRate.Rate` for exactly AC,
+    /// MR, WCmin, WCmax, MAmin and MAmax — which is `ACRate`, `MRRate`, `WCRate` (covering both weapon
+    /// bounds) and `MARate` (covering both magic bounds). `roe_AC`, `roe_MinWC` and `roe_MR` read that same
+    /// cluster and never read Item.Rate. The cluster's name means what it says: the rate half of item power.</para>
+    ///
+    /// <para>Rates compound: two items at 1100 permille give 1210, not 1200, because the rate half is scaled
+    /// rather than summed. ⚠️ The original recalculates from the whole bag at once rather than folding items
+    /// in one at a time, so the compounding ORDER here is this port's choice; with permille multiplication it
+    /// is order-independent apart from truncation.</para></summary>
     public static void Equip(ParameterContainer container, EquipmentPiece item)
     {
         var plus = container.Plus(StatModifier.Item);
@@ -165,7 +176,7 @@ public static class CharacterParameters
         plus[Stat.CriDam] += item.CriDamPlus;
         plus[Stat.MagCriDam] += item.MagCriDamPlus;
 
-        var rate = container.Rate(StatModifier.Item);
+        var rate = container.Rate(StatModifier.ItemPowerRate);
         Compound(rate, Stat.WCmin, item.WCRate);
         Compound(rate, Stat.WCmax, item.WCRate);
         Compound(rate, Stat.MAmin, item.MARate);

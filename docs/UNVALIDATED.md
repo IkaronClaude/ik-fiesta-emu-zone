@@ -11,6 +11,12 @@ invisible in normal use: a made-up constant produces plausible behaviour and nev
 
 Ordered worst-first. "Worst" means *most likely to be silently wrong*, not most work to fix.
 
+> **Rule 3, carried from OPEN_QUESTIONS.md:** this is a release C++ binary, so `/OPT:REF` strips
+> unreferenced code and data. Anything still in the image is referenced by something. Every "nothing uses
+> this" claim below is therefore **a report on my searching, not a property of the server** — three such
+> claims have already turned out wrong (`MobWeapon` into a cluster, item rate columns, the cluster `MaxHP`
+> slot). Treat §2 and §4 as leads to chase, not conclusions.
+
 ---
 
 ## 1. Invented constants that SHADOW a real data column
@@ -24,7 +30,8 @@ from a table we already parse. Behaviour looks reasonable and is uniformly wrong
 | `SpeedPerSecond = 50` | `MobActionChase` | **`MobInfo.WalkSpeed` / `RunSpeed`** (both decoded, both unused), and `MobInfoServer.WalkChase` |
 | `RespawnSeconds = 25` default | `SimMob` | `MobRegen.RegStandard` is wired, but `RegMin`/`RegMax`/the delta schedule are not, and `MobInfoServer.RegenInterval` / `ResetInterval` are not even decoded |
 | `AttackRange = 10` default | `MobCombatState` | `MobWeapon.Range` — wired *only* when a definition is applied |
-| `FacingToleranceUnits = 5` | `MobCombatState` | unknown; there is no obviously matching column, so this one may be genuinely invented rather than shadowing |
+| `FacingToleranceUnits = 5` | `MobCombatState` | unknown; no obviously matching column found, but note rule 3 below before treating that as settled |
+| **one targeting policy for every mob** | `MobTargetSelector` | **`MobInfoServer.EnemyDetectType`** — selects the selector SUBCLASS, mapping one-for-one onto the RTTI hierarchy. 220 mobs are passive (`ED_BOUT`) and 764 are `ED_NOBRAIN`; here they all attack on sight |
 
 Every mob currently turns at the same rate and chases at the same speed. `TurnSpeed` in particular matters
 for the open **angle question**: if turn rate varies per mob, a uniform constant would mask exactly the
@@ -38,7 +45,8 @@ Parsed into a record, then never read. Harmless today, but each one is a behavio
 have.
 
 **`MobInfo`** — `WalkSpeed`, `RunSpeed`, `Size`, `Id`
-**`MobInfoServer`** — `MonExp`, `DetectCha`, `FollowCha`, `MaxSp`, `Rank`, `Id`
+**`MobInfoServer`** — `MonExp`, `DetectCha`, `FollowCha`, `MaxSp`, `Rank`, `Id`, and `DetectType` (decoded
+and its meaning read — it selects the targeting policy — but the simulation does not act on it yet)
 **`MobWeapon`** — `BlastRate`, `Id`, and `Skill` (used only as a marker for "is this the ordinary swing",
 never to actually cast anything).
 
@@ -52,7 +60,7 @@ into the mob's `Item.Plus` cluster alongside `MinWc`/`MaxWc`.
 Columns the tables carry that this project does not read. `MobInfoServer` has **49 columns and 16 are
 captured**.
 
-**`MobInfoServer`** — `Visible`, `EnemyDetectType`, `MobKillInx`, `EXPRange`, `ResetInterval`,
+**`MobInfoServer`** — `Visible`, `MobKillInx`, `EXPRange`, `ResetInterval`,
 `CutInterval`, `CutNonAT`, `PceHPRcvDly`, `PceHPRcv`, `AtkHPRcvDly`, `AtkHPRcv`, `MobRaceType`,
 `FamilyArea`, `FamilyRescArea`, `FamilyRescCount`, `BloodingResi`, `StunResi`, `MoveSpeedResi`,
 `FearResi`, `ResIndex`, `KQKillPoint`, `Return2Regen`, `IsRoaming`, `RoamingNumber`, `RoamingDistance`,
