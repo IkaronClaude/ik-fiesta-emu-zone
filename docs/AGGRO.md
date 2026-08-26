@@ -74,28 +74,74 @@ ret
 **A single `uint16` read from the mob's data record at +0x3B.** It is a scalar, set per mob from the mob
 table, with a Lua binding (`cMobDetectRange`) and a scene setter (`so_scene_DetectRange`).
 
+## The scan: a circle, and r-squared IS the nearest-wins seed
+
+`MobTargetAggresive::mts_SelectTarget` runs the scan through
+
+```
+ShineObject::so_AllOfRange(unsigned long range, const SHINE_XY_TYPE* center, int,
+                           FanFormSectorArgument*, AxialListIterator*, unsigned char, unsigned short)
+```
+
+`FanFormSectorArgument` is how this engine carries an orientation-dependent shape: its constructor takes
+two `ShineObject*` and builds `UnitVector`s from their coordinates (`SHINE_XY_TYPE` at object `+0x66`),
+storing a second vector derived from the object's own target when both arguments are the same object.
+
+**The aggro call passes NULL for it** (`mts_SelectTarget+0x3C9`), decoded by reading the pushes
+right-to-left against the signature:
+
+| push | parameter | value |
+|---|---|---|
+| `+0x3F2` | `range` | `AllOfRangeArgument::operator unsigned long()` |
+| `+0x3E7` | `center` | result of the vtable `+0x8F4` call |
+| `+0x3CE` | `int` | `[ebx+0x10]` |
+| `+0x3C9` | `FanFormSectorArgument*` | **0** |
+| `+0x3C8` | `AxialListIterator*` | `ebx` |
+| `+0x3C6` | `unsigned char` | 0 |
+| `+0x3C1` | `unsigned short` | 0xFFFF |
+
+Mob aggro is a **plain circular range query**. The fan/sector path belongs to skills —
+`AxialListScanSkillTarget` / `alsst_SkillBlast` are the cone-AoE users.
+
+### Why the callback needs no radius test
+
+Immediately before the call:
+
+```
++0x3B9  mov  eax, [ebx+0x10]     ; r
++0x3BE  imul ecx, eax            ; r * r
++0x3CB  mov  [ebx+8], ecx        ; best-distance-so-far := r squared
+```
+
+`[ebx+8]` is exactly the slot `ali_Work` compares against (`cmp eax, [edi+8]` / `jge reject`), so the
+distance it receives is **squared**, and the radius and the nearest-wins rule are the *same* comparison:
+outside the circle is farther than the seed and rejected; inside it, nearest survives. The absent range
+check looked like a missing piece and is actually the design.
+
 ## On the cardioid
 
 The operator's observation from play is that aggro range depends on orientation — a cardioid rather than a
-circle. **I have not found that, and what I have read says circle.** The range is one scalar, the
-per-candidate callback has no angle term, and `MobTargetAggresive2` merely delegates.
+circle. **It is a circle.** Three independent pieces agree: a scalar range from `so_getDetectRange`, no angle term
+in the callback, and a NULL sector argument at the call site — the very parameter that would make it one.
 
-That does not settle it. An orientation term could still live in:
+The engine clearly *can* do orientation-dependent shapes, which is likely where the intuition comes from,
+but that path is skills, not aggro. The observed directional behaviour needs another explanation, and the
+mundane one is worth testing first: nearest-valid-wins re-evaluated every think tick, from wherever the mob
+now stands, so a mob already closing on you keeps re-acquiring at shorter range and reads as directional.
 
-1. **The scan itself** — whoever computes the `distance` argument. If that value is not a plain Euclidean
-   distance, the shape lives there. This is the first thing to check.
+Places an orientation term could still hide, in rough order of likelihood:
+
+1. **Inside `so_AllOfRange`** — it still computes the squared distance per candidate, and if that is not
+   plain Euclidean the shape lives there. Not yet read.
 2. **`so_SubLayer_CanSee`** — the name suggests visibility, which is where a facing cone would naturally go.
 3. **The unresolved vtable predicates** at candidate `+0x8CC`, `+0x904`, `+0x484` and scanner `+0x980`.
 4. **`mdb_SpeciesDistance(a, b)`** — a per-species distance that may modulate range.
 5. **A different selector** — `MobTargetAggresiveALL` and `MobTargetPlayerCaptivate` have their own
    `mts_SelectTarget`, and player-facing behaviour may not run through `MobTargetAggresive` at all.
 
-There is also a plausible explanation with no orientation in it: aggro is **nearest-valid-wins inside a
-circle**, and a mob that is already walking toward you re-scans from a closer position each tick, which can
-feel directional from the player's side. Worth ruling in or out before assuming a shape.
-
 ## Next
 
-Drive `ali_Work` under the oracle with synthetic objects and sweep the distance argument to confirm the
-nearest-wins rule directly, then walk up to the caller to find what computes that distance. Reading has
-taken this as far as it usefully goes.
+Acquisition is answered. The other half of aggro is the **hate list** — `mts_AppendAggroPoint`,
+`mts_DecreaseAggroPoint`, `mts_GetTopAggroTarget`, `mts_AggroAdjust`, `MobAggroManager` and `HitMeList` —
+which decides who a mob *stays* on once combat starts. That is what a simulator needs; acquisition only
+picks the first victim.
