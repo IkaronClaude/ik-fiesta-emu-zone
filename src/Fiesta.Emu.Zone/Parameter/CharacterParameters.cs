@@ -126,9 +126,14 @@ public static class CharacterParameters
 
     /// <summary>`CharClass::MaxSP` (0x00449660) — the same shape over MentalPower.
     ///
-    /// <para>⚠️ Exactly one class overrides it: <c>CharClassSentinel::MaxSP</c> (0x0064F610) is
-    /// <c>mov eax, 1; ret 8</c> — a flat 1 SP, whatever the level or stats. Not modelled here, because
-    /// Sentinel is not a player class this simulation creates; noted so it is not rediscovered as a bug.</para></summary>
+    /// <para>⚠️ TWO classes override it — <b>Sentinel and Savior</b> — both to 0x0064F610, which is
+    /// <c>mov eax, 1; ret 8</c>: a flat 1 SP whatever the level or stats.</para>
+    ///
+    /// <para>Worth knowing how that was found, because searching the PDB for <c>?MaxSP@CharClass*</c> reports
+    /// only Sentinel. Identical Code Folding merged Savior's identical body into the same address, and only
+    /// one name survives there — so the symbol search UNDER-COUNTS overrides. Reading vtable slot 9 across
+    /// the family (`tools/vtables.py --family CharClass --overrides`) finds both, because a slot holds an
+    /// address whether or not a symbol was emitted for it.</para></summary>
     public static int MaxSp(ClassParamTable table, int level, ParameterCluster cluster)
     {
         var row = Row(table, level);

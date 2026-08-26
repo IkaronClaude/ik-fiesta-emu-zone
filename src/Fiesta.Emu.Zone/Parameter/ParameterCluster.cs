@@ -24,17 +24,41 @@ public sealed class ParameterCluster
     /// <summary>A cluster seeded with <see cref="PlusIdentity"/> — the server's `parameter_eraser_plus`.</summary>
     public static ParameterCluster Plus() => new(new int[SlotCount]);
 
-    /// <summary>A cluster seeded with <see cref="RateIdentity"/> — the server's `parameter_eraser_rate`.
+    /// <summary>The seven slots whose rate-eraser entry is <b>0, not 1000</b>.
     ///
-    /// <para>⚠️ The two eraser globals live in the executable's uninitialised section (VA 0x0074C000
-    /// upward), so their CONTENTS cannot be read out of the file — they are filled at start-up. The values
-    /// here are taken from the operators instead, which is a stronger source than a memory dump anyway:
-    /// <c>operator*=</c> compares each slot against 1000 and skips it, so 1000 is provably the no-op, and 0
-    /// is provably the no-op for a field-wise add.</para></summary>
+    /// <para>A contiguous run from <see cref="Stat.CriticalTB"/> to <see cref="Stat.ResistGTI"/>. Read out of
+    /// a LIVE zone process — see <see cref="Rate"/>.</para></summary>
+    public static readonly IReadOnlyList<Stat> RateErasedSlots =
+    [
+        Stat.CriticalTB, Stat.RegistNone, Stat.ResistPoison, Stat.ResistDeaseas,
+        Stat.ResistCurse, Stat.ResistMoveSpdDown, Stat.ResistGTI,
+    ];
+
+    /// <summary>A cluster seeded like the server's `parameter_eraser_rate`.
+    ///
+    /// <para><b>Not uniformly 1000.</b> Slots 0..41 and 49..50 hold 1000; slots 42..48 hold <b>0</b>.</para>
+    ///
+    /// <para>⚠️ HOW THIS IS KNOWN, because it could not be read from the file. Both eraser globals live in
+    /// the executable's uninitialised section (VA 0x0074C000 upward) and are filled at start-up, so the
+    /// image contains nothing. An earlier version of this method INFERRED uniform 1000 from
+    /// <c>operator*=</c>, which tests each slot against 1000 and skips it. That inference was right in
+    /// general and wrong in the tail.</para>
+    ///
+    /// <para>The values here were read out of a running zone server's memory (`/proc/&lt;pid&gt;/mem` at
+    /// 0x0DA3FA78; Wine maps the image at its preferred 0x400000, so static addresses apply directly).
+    /// `parameter_eraser_plus` came back as 51 zeros, confirming <see cref="Plus"/>.</para>
+    ///
+    /// <para>It matters: <c>operator*=</c> skips ONLY on exactly 1000, so a 0 in a rate slot multiplies that
+    /// stat by zero. Under the uniform-1000 version those seven resistances survive a rate step untouched;
+    /// under the server's they are wiped. Whether that is the intent or whether something always writes
+    /// those slots first is an open question — but the seeded value is now what the server actually
+    /// has.</para></summary>
     public static ParameterCluster Rate()
     {
         var slots = new int[SlotCount];
         Array.Fill(slots, RateIdentity);
+        foreach (var stat in RateErasedSlots)
+            slots[(int)stat] = 0;
         return new ParameterCluster(slots);
     }
 

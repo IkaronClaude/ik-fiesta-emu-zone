@@ -31,6 +31,44 @@ public class ParameterClusterTests
         a[Stat.MR].ShouldBe(7);
     }
 
+    /// <summary>The rate eraser is NOT uniformly 1000: slots 42..48 are zero.
+    ///
+    /// <para>Read out of a live zone server's memory at 0x0DA3FA78, because both eraser globals sit in the
+    /// executable's uninitialised section and the image file contains nothing for them. An earlier version
+    /// of this port inferred uniform 1000 from `operator*=` skipping on 1000 — correct in general, wrong in
+    /// the tail. This test exists so that inference cannot come back.</para></summary>
+    [Fact]
+    public void TheRateEraserZeroesTheResistanceRun()
+    {
+        var rate = ParameterCluster.Rate();
+
+        foreach (var stat in ParameterCluster.RateErasedSlots)
+            rate[stat].ShouldBe(0, $"{stat} is one of the zeroed slots");
+
+        // Its neighbours on both sides are 1000, which is what makes it a bounded run rather than a tail.
+        rate[Stat.SPAbsorption_Hit].ShouldBe(1000);   // slot 41
+        rate[Stat.MaxLP].ShouldBe(1000);              // slot 49
+        rate[Stat.LPRecover].ShouldBe(1000);          // slot 50
+    }
+
+    /// <summary>The zeroed run is contiguous, slots 42..48. Stated as indices because that is the form the
+    /// memory dump came in, and it is what would break if the <see cref="Stat"/> enum were reordered.</summary>
+    [Fact]
+    public void TheZeroedRunIsSlots42To48()
+    {
+        var indices = ParameterCluster.RateErasedSlots.Select(s => (int)s).ToArray();
+        indices.ShouldBe(new[] { 42, 43, 44, 45, 46, 47, 48 });
+    }
+
+    /// <summary>The plus eraser really is all zeros — 51 of them, confirmed from the same live process.</summary>
+    [Fact]
+    public void ThePlusEraserIsEntirelyZero()
+    {
+        var plus = ParameterCluster.Plus();
+        foreach (var stat in Enum.GetValues<Stat>())
+            plus[stat].ShouldBe(0);
+    }
+
     /// <summary>A rate of exactly 1000 is SKIPPED by the original (`cmp eax, 0x3E8; je`), not applied.</summary>
     [Fact]
     public void ARateOfOneThousandIsTheIdentity()
