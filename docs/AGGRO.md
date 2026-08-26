@@ -281,3 +281,52 @@ that cannot be *seen* is not engaged. Whether it tests occlusion, facing, or bot
 `ShineObject::so_scene_DetectRange` all fold onto it. **Any symbol at `0x00549070` is a no-op**, so a base
 class whose method lands there is a stub, not a fallback — worth checking before porting a method that
 appears to do nothing.
+
+---
+
+# The damage → aggro link (found)
+
+`so_DamagedBy` **does** feed aggro — through a virtual call I could not resolve on the first read.
+`ShineMob::so_mob_AppendAggro(ShineObject*, int)` is **vtable slot +0x700**, and its five callers are:
+
+| caller | |
+|---|---|
+| `ShineMob::so_DamagedBy` | taking a hit |
+| `ShineMobileObject::so_Bash` | melee swing |
+| `ShineMob::so_KilledBy` | the killing blow |
+| `MiscDataTable::mdt_SkillBlast_Summon` | summon skills |
+| `MobTargetAggresive::mts_SelectTarget` | **acquisition also appends aggro** |
+
+That last one is worth noting: simply being *acquired* puts a target on the hate list, so the list is not
+purely damage-driven.
+
+## The amount
+
+From `so_DamagedBy+0x147`:
+
+```
+mov  ecx, ebx              ; damage (the same value handed to el_StoreDamage)
+imul ecx, [ebp+0x10]       ; x the third parameter -- a permille rate. 32-bit, so it WRAPS
+mov  eax, 0x10624DD3
+imul ecx / sar edx,6 / shr+add    ; signed divide by 1000, truncating toward zero
+push eax                   ; the aggro points
+call [vtable+0x700]        ; so_mob_AppendAggro(attacker, points)
+```
+
+**aggro = `damage * ratePermille / 1000`**, integer, truncating toward zero, with a 32-bit multiply that
+wraps. The `0x10624DD3` / `sar 6` sequence is the same divide-by-1000 idiom used by
+`roe_LevelGapDamageRevision` in the damage engine.
+
+Consequences a simulator has to get right:
+
+* **Hate and damage contribution are different numbers**, not just different lists. They coincide only at
+  a rate of exactly 1000.
+* **A rate of 0 generates no hate at all** while still dealing full damage — 0 is a real value here.
+* At large `damage * rate` the product wraps and hate can go **negative**, which the port reproduces
+  rather than saturating.
+
+## Finding virtual callers in this binary
+
+`tools/xref_vcall.py --offset 0x700`. Virtual calls compile as `mov reg,[vtable+off]` then `call reg`, so
+matching the *pair* is what finds callers; a single-opcode search by slot offset returns nothing and reads
+as "no callers".
