@@ -11,6 +11,65 @@ public class ParameterClusterTests
     public void AClusterHasExactlyAsManySlotsAsThereAreStats()
         => Enum.GetValues<Stat>().Length.ShouldBe(ParameterCluster.SlotCount);
 
+    /// <summary>COMPLIANCE: the <see cref="Stat"/> enum against `Parameter::Cluster` as the PDB declares it.
+    ///
+    /// <para>This list is not a restatement of the enum — it is the field list dumped out of the PDB's TPI
+    /// type stream (`tools/pdb_types.py --struct "Parameter::Cluster"`), in declaration order. Until that
+    /// stream was parsed, the enum was inherited from the damage-engine port and had never been checked
+    /// against anything; it is now ground truth, misspellings and all.</para>
+    ///
+    /// <para>If someone reorders or renames a member, this fails — which is the point, because the enum's
+    /// numbering IS the memory layout.</para></summary>
+    [Fact]
+    public void TheStatEnumMatchesTheDeclaredClusterFields()
+    {
+        string[] declared =
+        [
+            "Str", "Con", "Dex", "Int", "Men",
+            "WCmin", "WCmax", "AC", "TH", "TB",
+            "MAmin", "MAmax", "MR", "MH", "MB",
+            "AbsoluteAttack", "AbsoluteDefend", "AbsoluteHit", "AbsoluteBlock",
+            "MoveSpeed", "HPRecover", "SPRecover", "CastingTime", "Critical",
+            "PhisycalWeaponMastery", "MagicalWeaponMastery", "ShieldAC",
+            "HitRate", "EvaRate", "MACri", "CriDam", "MagCriDam", "CriDamRate", "MagCriDamRate",
+            "AttSpeed", "MaxHP", "MaxHP_2", "MaxSP",
+            "HPAbsorption_Hitted", "SPAbsorption_Hitted", "HPAbsorption_Hit", "SPAbsorption_Hit",
+            "CriticalTB", "RegistNone", "ResistPoison", "ResistDeaseas", "ResistCurse",
+            "ResistMoveSpdDown", "ResistGTI", "MaxLP", "LPRecover",
+        ];
+
+        Enum.GetNames<Stat>().ShouldBe(declared);
+        // Every field is a 4-byte int, so slot index times four is the byte offset the server uses.
+        ((int)Stat.MaxHP * 4).ShouldBe(0x8C);
+        ((int)Stat.CriticalTB * 4).ShouldBe(0xA8);
+        ((int)Stat.ResistGTI * 4).ShouldBe(0xC0);
+    }
+
+    /// <summary>COMPLIANCE: `Parameter::Container`'s cluster fields, as the PDB declares them.
+    ///
+    /// <para>One `PureCharParam` cluster, then seven `{Plus, Rate}` pairs, then `Total`. The pair order is
+    /// the <see cref="StatModifier"/> order, and it was previously INHERITED rather than verified — the docs
+    /// carried an open question asking whether the naming might be off by a pair. It is not.</para></summary>
+    [Fact]
+    public void TheStatModifierOrderMatchesTheDeclaredContainerFields()
+    {
+        string[] declared = ["Item", "ItemPowerRate", "Upgrade", "WeaponTitle", "PassiveSkill", "AbnormalState", "LastTune"];
+        Enum.GetNames<StatModifier>().ShouldBe(declared);
+
+        // Declared offsets: PureCharParam +0x000, then pairs every 0x198 (two 0xCC clusters), Total +0xBF4.
+        const int cluster = 0xCC;
+        foreach (var (source, offset) in new[]
+                 {
+                     (StatModifier.Item, 0x0CC), (StatModifier.ItemPowerRate, 0x264),
+                     (StatModifier.Upgrade, 0x3FC), (StatModifier.WeaponTitle, 0x594),
+                     (StatModifier.PassiveSkill, 0x72C), (StatModifier.AbnormalState, 0x8C4),
+                     (StatModifier.LastTune, 0xA5C),
+                 })
+            (cluster + (int)source * cluster * 2).ShouldBe(offset, $"{source} sits at +0x{offset:X}");
+
+        (cluster + Enum.GetValues<StatModifier>().Length * cluster * 2).ShouldBe(0xBF4);   // Total
+    }
+
     /// <summary>`c_clear` copies 0x33 dwords per cluster. 0x33 is 51.</summary>
     [Fact]
     public void TheSlotCountIsTheRepMovsdCount()

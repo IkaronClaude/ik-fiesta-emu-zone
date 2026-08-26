@@ -7,6 +7,25 @@ Everything here was read out of `Zone.exe`. Where something has not been read, i
 A character's stats are not one table. The server keeps a **`Parameter::Cluster`** — 51 consecutive
 `int32` slots — per *source*, and combines them only at the end.
 
+**This layout is now READ from the PDB's TPI type stream, not inferred.** `tools/pdb_types.py --struct
+"Parameter::Container"` prints it directly:
+
+```
++0x0000  PureCharParam   Cluster          +0x0594  WeaponTitle    {Plus, Rate}
++0x00CC  Item            {Plus, Rate}     +0x072C  PassiveSkill   {Plus, Rate}
++0x0264  ItemPowerRate   {Plus, Rate}     +0x08C4  AbnormalState  {Plus, Rate}
++0x03FC  Upgrade         {Plus, Rate}     +0x0A5C  LastTune       {Plus, Rate}
+                                          +0x0BF4  Total          Cluster
+```
+
+Each pair is an anonymous struct of two `Parameter::Cluster`s named literally `Plus` (+0x00) and `Rate`
+(+0xCC). `Parameter::Cluster` is 204 bytes and its 51 `int` fields are exactly the `Stat` enum, in order,
+misspellings included (`PhisycalWeaponMastery`, `ResistDeaseas`).
+
+The rest of this section records how the same layout was worked out BEFORE the type stream was parsed. It is
+kept because the method generalises to the many structures whose types are not this convenient, and because
+it agreed with the declaration in every particular:
+
 `Parameter::Container::c_clear` (0x0043C370) seeds fifteen clusters at a stride of `0xCC` (51 dwords),
 each from one of two eraser templates. **Which eraser it uses is what identifies the cluster:**
 
@@ -24,10 +43,20 @@ each from one of two eraser templates. **Which eraser it uses is what identifies
 
 One base cluster, then seven `(Plus, Rate)` pairs.
 
-> **The eraser CONTENTS cannot be read from the file.** Both globals live in the executable's huge
-> uninitialised section (VA 0x0074C000 upward) and are filled at start-up. The identity values come from the
-> operators instead, which is a better source: `operator*=` compares each slot against 1000 and skips it, so
-> 1000 is provably the no-op, and 0 is provably the no-op for a field-wise add.
+> **The eraser CONTENTS cannot be read from the file** — both globals live in the executable's huge
+> uninitialised section (VA 0x0074C000 upward) and are filled at start-up, so the image holds nothing.
+>
+> They were read out of a **running zone server** instead (`/proc/<pid>/mem`; Wine maps the image at its
+> preferred 0x400000, so static addresses apply directly):
+>
+> - `parameter_eraser_plus` (0x0DA3FB48) — 51 zeros.
+> - `parameter_eraser_rate` (0x0DA3FA78) — **1000 except slots 42..48, which are 0.** That run is
+>   `CriticalTB`, `RegistNone`, `ResistPoison`, `ResistDeaseas`, `ResistCurse`, `ResistMoveSpdDown`,
+>   `ResistGTI`.
+>
+> Before that read, this document inferred *uniform* 1000 from `operator*=` skipping on 1000. Right in
+> general, wrong in the tail — and it matters, because `*=` skips only on exactly 1000, so a 0 in a rate slot
+> multiplies that stat by **zero** rather than leaving it alone.
 
 ## The two operators
 
@@ -71,6 +100,19 @@ cluster, then `c_MakeTotal`.
 
 1. Get the level (a **byte**), clamp against `0x96` = **150**, and index the class's per-level row array at
    `charClass + 0x10858`. Above the cap it falls back to row 0.
+
+   The PDB names that array: **`CharClass::cc_array`, a `PrimaryParameter *[151]`** — 151 entries for levels
+   0..150, which is where the `0x96` clamp comes from. `PrimaryParameter` is the row, and it confirms every
+   offset derived below:
+
+   ```
+   +0x00 level        +0x0C intelligence   +0x18 mentalpower   +0x74 LevelHP  (unsigned short)
+   +0x04 strength     +0x10 wizdom                             +0x76 LevelSP  (unsigned short)
+   +0x08 constitution +0x14 dexterity
+   ```
+
+   `LevelHP`/`LevelSP` are the table's `MaxHP`/`MaxSP` columns, and their `unsigned short` type is why
+   `CharClass::MaxHP` reads them with `movzx eax, word ptr [ecx+0x74]`.
 2. `rep movsd` the plus eraser over the base cluster.
 3. Fill the five primaries as **row value + allocated free stat points** (a virtual call per stat).
 4. Fill slots 5..14 from **eight virtual methods on the class object** — see below; they all return 0.
@@ -91,20 +133,26 @@ They share an address because **Identical Code Folding** merges functions with b
 `return 0`s collapse into one. (Same mechanism as the universal empty-body function at 0x00549070, just with
 a different body.)
 
-And **no player class overrides them.** Across all 32 `CharClass` subclasses the binary contains exactly one
-symbol for each of the eight. So this is not an unread gap: **a player's base weapon and armour values ARE
-zero, and every point of them comes from equipment.**
+And **no player class overrides them** — every one of the 27 player-class vtables holds `0x449600` in slots
+0..7 (`tools/vtables.py --family CharClass --overrides`). So this is not an unread gap: **a player's base
+weapon and armour values ARE zero, and every point of them comes from equipment.**
 
 The complete set of stat virtuals, all twelve:
 
-| method | implementations |
-|---|---|
-| `WC` `AC` `MA` `MR` `TH` `TB` `MH` `MB` | `CharClass` only — all folded at 0x00449600, `return 0` |
-| `MaxHP` | `CharClass` (0x00449610) and `CharClassMob` (0x004496F0) |
-| `MaxSP` | `CharClass` (0x00449660) and `CharClassSentinel` (0x0064F610) |
+| slot | method | overridden by |
+|---|---|---|
+| 0–7 | `WC` `AC` `MA` `MR` `TH` `TB` `MH` `MB` | nobody — all folded at 0x00449600, `return 0` |
+| 8 | `MaxHP` | `CharClassMob` (0x004496F0) |
+| 9 | `MaxSP` | `CharClassSentinel` **and `CharClassSavior`** (both 0x0064F610) |
 
 `CharClassMob::MaxHP` ignores the cluster entirely and reads the mob's own info record at `+0x46`.
-`CharClassSentinel::MaxSP` is `mov eax, 1; ret 8` — a flat 1 SP, whatever the level.
+The Sentinel/Savior `MaxSP` is `mov eax, 1; ret 8` — a flat 1 SP, whatever the level.
+
+> ⚠️ **Do not enumerate overrides by symbol search.** Grepping the PDB for `?MaxSP@CharClass*` reports only
+> Sentinel: ICF folded Savior's byte-identical body to the same address and only one name survives there.
+> A symbol search also answers by *absence*, which cannot distinguish "inherits the base slot" from "no
+> symbol was emitted". Reading the vtable slot finds both classes, because a slot holds an address whether
+> or not anything was named after it.
 
 ### MaxHP and MaxSP are computed, not stored
 
@@ -160,9 +208,22 @@ split is real:
 ## Open, and known to be open
 
 1. **Does anything add the cluster's own MaxHP slot?** `CharClass::MaxHP` returns
-   `row.MaxHP + (Con - row.Con) * 5` and never reads `cluster[MaxHP]`, yet gear with a flat +HP bonus has to
-   land somewhere. Either a caller adds the slot afterwards, or +HP gear works differently. The callers have
-   not been traced.
+   `row.LevelHP + (Con - row.constitution) * 5` and never reads `cluster[MaxHP]`, yet gear with a flat +HP
+   bonus has to land somewhere. Either a caller adds the slot afterwards, or +HP gear works differently. The
+   callers have not been traced. (The cluster also has a second `MaxHP_2` slot whose purpose is unknown.)
+
+2. **The container's second tier is entirely unmodelled.** Past `Total` at +0xBF4 there are ~20 more fields
+   that are not clusters and never pass through `c_MakeTotal`:
+
+   ```
+   DotDamagePlus  SPRate  RangeEvasion  flag  MissPercentFix  DamageReflection
+   ChangeAbilityInfo  HealRate  PassiveBuffKeepTimeUPRate  PassiveHealRate
+   PassiveCriDamageRatePlus  PhysicalImmuneRate  MagicalImmuneRate  RangeOver  DMGMinusRate
+   PassiveHPDownRate{WCMin,WCMax,MAMin,MAMax,AC,MR}  PassiveMovingTBPlus
+   ```
+
+   The `PassiveHPDownRate*` group is typed `Parameter::ChangeByConditionParam` — stats that scale with how
+   low your HP is. None of this is ported.
 
 2. **`ItemInfo` has `WCRate`/`MARate`/`ACRate`/`MRRate`, but `c_MakeTotal` never folds Item.Rate into the
    total.** Either the damage formula reads that cluster directly (consistent with how the other unfolded
