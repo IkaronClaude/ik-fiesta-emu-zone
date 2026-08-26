@@ -44,6 +44,33 @@ public static class MapSpawner
         return spawned;
     }
 
+    /// <summary>Spawn only what a character can actually fight.
+    ///
+    /// <para>Gathering nodes come out of the same `MobRegen` tables as monsters — <b>ten of Uruga's twenty
+    /// spawn types are herbs, wood or mushroom nodes</b> — and a simulation that spawns them as enemies has
+    /// its character walking to a mushroom and swinging at something it can never kill. This is the overload
+    /// to use for combat work; <see cref="SpawnAll(CombatSimulation, MobRegenData, MobDataBox,
+    /// Func{string, MobStats}?, uint, ushort)"/> spawns the map as the server would, nodes and all.</para></summary>
+    public static IReadOnlyList<SimMob> SpawnFightable(
+        this CombatSimulation sim,
+        MobRegenData map,
+        MobDataBox data,
+        uint spawnSeed = 1,
+        ushort firstHandle = 100)
+    {
+        var all = sim.SpawnAll(map, data, spawnSeed: spawnSeed, firstHandle: firstHandle);
+        foreach (var node in all.Where(m => !data.IsFightable(m.Name)).ToList())
+            sim.Remove(node);
+        return all.Where(m => data.IsFightable(m.Name)).ToList();
+    }
+
+    /// <summary>The spawn names in a map that are gathering nodes or scenery rather than enemies.</summary>
+    public static IReadOnlyList<string> NonCombatSpawns(this MobRegenData map, MobDataBox data)
+        => map.Entries.Select(e => e.MobIndex).Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(n => data.InfoFor(n) is not null && !data.IsFightable(n))
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
     /// <summary>Which mobs in a map have no row in the data box — a decode gap, not a shrug.</summary>
     public static IReadOnlyList<string> MobsMissingData(this MobRegenData map, MobDataBox data)
         => map.Entries.Select(e => e.MobIndex).Distinct(StringComparer.OrdinalIgnoreCase)

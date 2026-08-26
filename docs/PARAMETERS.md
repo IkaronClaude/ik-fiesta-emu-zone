@@ -237,16 +237,64 @@ player's version there is no Constitution term. A mob's HP is simply what the ta
 `MobRegen` spawn tables use. A mob may have several weapon rows; the ordinary swing is the one whose
 `Skill` is `-`.
 
-### Swing timings
+### Swing timings — read from `mab_Think`, not guessed
 
-`SwingTime` is the swing cycle and `HitTime` the offset within it at which damage lands. What justifies
-that reading is that **`HitTime` ≤ `SwingTime` in 2,837 of 2,841** normal attacks, so it can only be an
-offset inside the swing. (`AtkSpd` usually equals `SwingTime` as well, but around 70 rows differ, so that
-is a tendency and not an identity.)
+`MobActionAttack::mab_Think` (0x004BBA00) is the only function that reads all four timing columns, and it
+settles what each one is. **All of them are converted to tenths of a second** (`× 10 / 1000`) — the
+resolution the zone's timed logic runs at.
 
-⚠️ **`AtkDly` is not used.** It reads like an interval and was taken for one at first, but it exceeds
-`SwingTime` in 1,387 of 2,841 rows and `HitTime` exceeds it in 623 — which would land a swing's damage
-after the following swing had already begun. Whatever it is, it has not been read, so nothing acts on it.
+```
+atkSpd     = AtkSpd != 0 ? AtkSpd : 1
+normalised = SwingTime * 128 / atkSpd            floored at 1
+swing      = (SwingTime/100) * 128 / normalised
+swing      = swing * AbnormalState.Rate[AttSpeed] / 1000
+hit        = (HitTime/100)  * AbnormalState.Rate[AttSpeed] / 1000
+delay      = (AtkDly/100)   * AbnormalState.Rate[AttSpeed] / 1000
+```
+
+then, with each clamped at zero:
+
+```
+nextAttackAt = now + delay + swing + <one further term, unresolved>
+masd_SetDelay(MobActionSwingDamage, swing - hit)
+mawse_SetNextAction(MobActionWaitSkillEnd, hit)
+```
+
+Three things fall out, and two of them contradict earlier readings in this document:
+
+- **`AtkDly` is an extra delay ADDED ON TOP of the swing**, not the interval. This is why `AtkDly`
+  exceeding `SwingTime` in 1,387 of 2,841 rows was never the contradiction it appeared to be: they add.
+- **`AtkSpd` is the real swing duration.** The two `128` scales cancel algebraically, leaving
+  `swing ≈ AtkSpd / 100`; `SwingTime` is only the reference it is normalised against. That is why the two
+  are equal for most mobs and differ only for ones deliberately quickened or slowed. They are *not*
+  collapsed in the port — each step truncates and the intermediate floor-at-1 is observable, so the
+  two-step form is kept (it matches `AtkSpd/100` in 2,242 of 2,263 rows; the 21 exceptions are the point).
+- **`HitTime` is the damage offset within the swing**, confirmed by the `masd_SetDelay(swing - hit)` /
+  `mawse_SetNextAction(hit)` pair.
+
+`AbnormalState.Rate[AttSpeed]` is container offset `+0xA18`, so a haste or slow scales all three together.
+
+⚠️ One term in `nextAttackAt` is a local this port has not resolved, so `IntervalTenths` is the floor of
+the real interval rather than certainly the whole of it.
+
+## Not everything a map spawns is an enemy
+
+`MobInfo.Type` is a `MobType`, and gathering nodes come out of the same `MobRegen` machinery as monsters:
+
+```
+0 HUMAN  1 MAGICLIFE  2 SPIRIT  3 BEAST  4 ELEMENTAL  5 UNDEAD  6 NPC
+7 OBJECT  8 MINE  9 HERB  10 WOOD  11 NONAME  12 NOTARGET  13 NOTARGET2
+```
+
+**Ten of Uruga's twenty spawn types are not enemies** — `MUSHROOM7/8/9` and `HERB7/8/9` are `MT_HERB`,
+`WOOD7/8/9` are `MT_WOOD`, plus a present box. The level-2 enemy called `MushRoom` is a *different entry*
+and Uruga never spawns it. A simulation that spawns the map naively has its character walking up to a
+mushroom and swinging at something it can never kill.
+
+`MobWeapon.HitType` (`HT_PY` / `HT_MA`) declares whether an attack resolves as physical or magical — read
+the field rather than inferring it from MA exceeding WC. Mobs that really are `HT_MA` do carry MA far
+above WC (GoblinMage: WC 19–30, MA 273–415), but the converse fails: `Pinky` has MA 72–110 alongside WC
+520–792 and is declared `HT_PY`.
 
 ## Open, and known to be open
 

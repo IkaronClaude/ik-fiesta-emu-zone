@@ -24,19 +24,14 @@ public sealed class SimMob : ICombatant
     /// <see cref="AttackDamage"/> is in force.</summary>
     public Data.MobWeapon? NormalAttack { get; private set; }
 
+    /// <summary>The ported attack timings, in the server's tenths of a second.</summary>
+    public MobAttackTiming Timing { get; private set; }
+
     /// <summary>Adopt a real mob definition: stats, level, HP and swing timings all from game data.
     ///
-    /// <para><b>`SwingTime` is the swing cycle and `HitTime` the delay before damage lands</b>, both of which
-    /// were invented constants before this. What justifies the mapping is that `HitTime` is within
-    /// `SwingTime` in 2,837 of 2,841 normal attacks, so it can only be an offset inside the swing.
-    /// (`AtkSpd` usually equals `SwingTime` too, but not always — around 70 rows differ, so that is a
-    /// tendency rather than the identity an earlier note here claimed.)</para>
-    ///
-    /// <para>⚠️ `AtkDly` is deliberately NOT used. It reads like an interval, and an earlier version of this
-    /// method took it for one — but it exceeds `SwingTime` in 1,387 of 2,841 rows, and `HitTime` exceeds it
-    /// in 623, which would land a swing's damage after the following swing had already begun. Whatever it
-    /// is (a pause between attack sequences, an initial delay), it has not been read, so nothing here acts
-    /// on it.</para></summary>
+    /// <para>The timings come from <see cref="MobAttackTimingCalculator"/>, which is the ported timing block
+    /// of `mab_Think` — not a field-by-field mapping. All four columns are used and none means what its
+    /// name suggests; two earlier guesses here were wrong before the function was read.</para>
     public void Define(MobCombatant definition)
     {
         Definition = definition;
@@ -47,8 +42,14 @@ public sealed class SimMob : ICombatant
         NormalAttack = definition.NormalAttack;
 
         if (definition.NormalAttack is not { } w) return;
-        if (w.SwingTime > 0) SwingIntervalMs = (uint)w.SwingTime;
-        if (w.HitTime > 0) SwingLandDelayMs = (uint)w.HitTime;
+
+        Timing = MobAttackTimingCalculator.Compute(
+            w, MobAttackTimingCalculator.AttackSpeedRate(definition.Parameters));
+
+        // The interval is the DELAY PLUS THE SWING, which is why AtkDly exceeding SwingTime was never the
+        // contradiction it looked like: they add rather than compete.
+        SwingIntervalMs = Math.Max(100u, Timing.IntervalMs);
+        SwingLandDelayMs = Timing.HitMs;
         if (w.Range > 0) Arg.Combat.AttackRange = w.Range;
     }
 
@@ -119,6 +120,9 @@ public sealed class CombatSimulation
     public SimBotApi Api { get; }
     public SimPlayer Player { get; } = new();
     public IReadOnlyList<SimMob> Mobs => _mobs;
+
+    /// <summary>Take a mob out of the world entirely — used to drop gathering nodes from a spawned map.</summary>
+    public bool Remove(SimMob mob) => _mobs.Remove(mob);
 
     /// <summary>Simulated milliseconds since the start. Advanced only by <see cref="Tick"/>.</summary>
     public uint Now { get; private set; }

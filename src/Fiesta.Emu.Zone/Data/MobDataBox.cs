@@ -1,5 +1,27 @@
 namespace Fiesta.Emu.Zone.Data;
 
+/// <summary>`MobType` — what kind of entity a "mob" actually is.
+///
+/// <para><b>Not everything in a spawn table is an enemy.</b> Gathering nodes (herbs, wood, mines) and
+/// scenery are spawned by exactly the same `MobRegen` machinery as monsters, so a simulation that treats
+/// every row as a fightable enemy will have its character swinging at mushrooms it can never kill.</para></summary>
+public enum MobType
+{
+    Human = 0, MagicLife, Spirit, Beast, Elemental, Undead,
+    Npc, Object, Mine, Herb, Wood, NoName, NoTarget, NoTarget2,
+}
+
+/// <summary>`NORMALHITTYPE` — whether an attack is resolved as physical or magical.</summary>
+public enum HitType
+{
+    /// <summary>`HT_PY` — physical; measured against the defender's AC.</summary>
+    Physical = 0,
+    /// <summary>`HT_MA` — magical; measured against MR.</summary>
+    Magical = 1,
+    /// <summary>`HT_NONE`.</summary>
+    None = 2,
+}
+
 /// <summary>`MobInfo` — the client-visible half of a mob's definition.
 ///
 /// <para>Field names and the order below are the PDB's `MobInfo` struct. <see cref="MaxHp"/> sits at +0x46,
@@ -9,7 +31,22 @@ public sealed record MobInfo(
     int Id, string InxName, string Name,
     int Level, int MaxHp,
     int WalkSpeed, int RunSpeed,
-    bool IsNpc, int Size);
+    bool IsNpc, int Size,
+    MobType Type)
+{
+    /// <summary>Whether this is something a character can actually fight.
+    ///
+    /// <para>Gathering nodes and scenery are excluded: <see cref="MobType.Herb"/>, <see cref="MobType.Wood"/>,
+    /// <see cref="MobType.Mine"/>, <see cref="MobType.Object"/> and the two no-target kinds, plus anything
+    /// flagged <see cref="IsNpc"/>.</para>
+    ///
+    /// <para>This matters more than it sounds: <b>ten of Uruga's twenty spawn types are gathering nodes</b> —
+    /// `MUSHROOM7/8/9`, `HERB7/8/9`, `WOOD7/8/9` and a present box. The level-2 enemy called `MushRoom` is a
+    /// different entry entirely and does not appear in that map.</para></summary>
+    public bool IsFightable =>
+        !IsNpc && Type is not (MobType.Herb or MobType.Wood or MobType.Mine
+                               or MobType.Object or MobType.NoTarget or MobType.NoTarget2 or MobType.Npc);
+}
 
 /// <summary>`MobInfoServer` — the half the client never sees: defences, primaries, detection, rewards.</summary>
 public sealed record MobInfoServer(
@@ -31,7 +68,18 @@ public sealed record MobWeapon(
     int AtkSpd, int AtkDly, int SwingTime, int HitTime,
     int MinWc, int MaxWc, int Th,
     int MinMa, int MaxMa, int Mh,
-    int Range);
+    int Range, HitType HitType, int BlastRate)
+{
+    /// <summary>Whether this attack is resolved as magic — <c>HitType == HT_MA</c>.
+    ///
+    /// <para>⚠️ Read the FIELD, do not infer it from MA exceeding WC. Mobs whose normal attack really is
+    /// `HT_MA` do tend to have MA far above WC (GoblinMage: WC 19-30, MA 273-415), but the reverse does not
+    /// hold — `Pinky` carries MA 72-110 alongside WC 520-792 and is still declared `HT_PY`.</para></summary>
+    public bool IsMagical => HitType == HitType.Magical;
+
+    /// <summary>Reach. Melee mobs sit around 10-40; 250+ is a ranged attacker.</summary>
+    public bool IsRanged => Range >= 100;
+}
 
 /// <summary>Every mob definition, joined across the three tables the server keeps them in.
 ///
@@ -44,6 +92,11 @@ public sealed class MobDataBox
     public required IReadOnlyDictionary<string, IReadOnlyList<MobWeapon>> Weapons { get; init; }
 
     public MobInfo? InfoFor(string inxName) => Info.GetValueOrDefault(inxName);
+
+    /// <summary>Whether a spawn-table name refers to something fightable, rather than a gathering node.
+    /// An unknown name is treated as NOT fightable — an unrecognised entry is a decode gap, and swinging
+    /// at it would hide that.</summary>
+    public bool IsFightable(string inxName) => InfoFor(inxName)?.IsFightable ?? false;
     public MobInfoServer? ServerFor(string inxName) => Server.GetValueOrDefault(inxName);
 
     public IReadOnlyList<MobWeapon> WeaponsFor(string inxName)
@@ -75,7 +128,8 @@ public sealed class MobDataBox
                 I(r, "ID"), name, S(r, "Name"),
                 I(r, "Level"), I(r, "MaxHP"),
                 I(r, "WalkSpeed"), I(r, "RunSpeed"),
-                I(r, "IsNPC") != 0, I(r, "Size"));
+                I(r, "IsNPC") != 0, I(r, "Size"),
+                (MobType)I(r, "Type"));
         }
 
         var servers = new Dictionary<string, MobInfoServer>(StringComparer.OrdinalIgnoreCase);
@@ -101,7 +155,7 @@ public sealed class MobDataBox
                 I(r, "AtkSpd"), I(r, "AtkDly"), I(r, "SwingTime"), I(r, "HitTime"),
                 I(r, "MinWC"), I(r, "MaxWC"), I(r, "TH"),
                 I(r, "MinMA"), I(r, "MaxMA"), I(r, "MH"),
-                I(r, "Range")));
+                I(r, "Range"), (HitType)I(r, "HitType"), I(r, "BlastRate")));
         }
 
         return new MobDataBox
