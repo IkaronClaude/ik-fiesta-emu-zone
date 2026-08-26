@@ -51,7 +51,7 @@ public class MobDataTests
         server.Mr.ShouldBe(1);
         server.MonExp.ShouldBe(5);
 
-        var weapon = box.NormalAttackOf("MushRoom")!;
+        var weapon = box.AttackAgainstPlayer("MushRoom")!;
         weapon.MinWc.ShouldBe(5);
         weapon.MaxWc.ShouldBe(8);
         weapon.Range.ShouldBe(10);

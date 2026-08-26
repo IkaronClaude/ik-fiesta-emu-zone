@@ -72,7 +72,8 @@ public sealed class MobCombatant : Combat.ICombatant
     public required MobInfo Info { get; init; }
     public required MobInfoServer Server { get; init; }
 
-    /// <summary>The mob's ordinary swing, or null if it only has skill attacks.
+    /// <summary>The attack this mob uses against a PLAYER — weapon index 0, which is the index
+    /// `mab_Think` forces when the target casts to `ShinePlayer`.
     ///
     /// <para>Kept beside the container rather than inside it, because the binary keeps it that way: nothing
     /// folds `MobWeapon` into a stat cluster. Its <c>MinWc</c>/<c>MaxWc</c> are the mob's attack values and
@@ -100,7 +101,7 @@ public sealed class MobCombatant : Combat.ICombatant
         {
             Info = info,
             Server = server,
-            NormalAttack = box.NormalAttackOf(inxName),
+            NormalAttack = box.AttackAgainstPlayer(inxName),
             Parameters = container,
         };
     }

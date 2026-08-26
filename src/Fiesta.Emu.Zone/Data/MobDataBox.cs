@@ -102,12 +102,23 @@ public sealed class MobDataBox
     public IReadOnlyList<MobWeapon> WeaponsFor(string inxName)
         => Weapons.GetValueOrDefault(inxName) ?? [];
 
-    /// <summary>The mob's ordinary attack — the first row whose <c>Skill</c> is not set.
+    /// <summary>The attack a mob uses <b>against a player</b> — weapon <b>index 0</b>.
     ///
-    /// <para>`-` is the file's way of writing "no skill", so an ordinary swing is a row with that marker.
-    /// Returns null when a mob has only skill attacks, which is a real case and not an error.</para></summary>
-    public MobWeapon? NormalAttackOf(string inxName)
-        => WeaponsFor(inxName).FirstOrDefault(w => w.Skill is "-" or "");
+    /// <para>This is the server's rule, not a heuristic. `MobActionAttack::mab_Think` asks the mob for a
+    /// weapon index through a virtual, then does
+    /// <c>ShineDynamicCast&lt;ShinePlayer&gt;(target)</c> and, <b>if the target is a player, forces the index
+    /// to 0</b>. Only non-player targets get the mob's chosen index. The <c>×12</c> that follows is
+    /// <c>sizeof(_MobWeaponIndex)</c>, which is how the stride was confirmed.</para>
+    ///
+    /// <para>An earlier version of this method returned "the first row whose <c>Skill</c> is `-`". That
+    /// gives the same answer for every mob in the data — index 0 is the skill-less row in all 2,834 of them
+    /// — but it was the right answer for the wrong reason, and it would drift silently if that ever stopped
+    /// holding. <c>Index0IsTheSkillessRowForEveryMob</c> pins the coincidence so a change shows up.</para></summary>
+    public MobWeapon? AttackAgainstPlayer(string inxName)
+    {
+        var weapons = WeaponsFor(inxName);
+        return weapons.Count > 0 ? weapons[0] : null;
+    }
 
     /// <summary>Load all three tables from a `9Data/Shine` directory.</summary>
     public static MobDataBox Load(string shineDirectory)

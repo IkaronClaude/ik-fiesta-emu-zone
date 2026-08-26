@@ -118,7 +118,7 @@ public class MobAttackTimingTests
         var mob = sim.AddMob(handle: 10, x: 5, y: 0);
         mob.Define(Fiesta.Emu.Zone.Parameter.MobCombatant.Build(box, "Orc")!);
 
-        var expected = MobAttackTimingCalculator.Compute(box.NormalAttackOf("Orc")!);
+        var expected = MobAttackTimingCalculator.Compute(box.AttackAgainstPlayer("Orc")!);
         mob.Timing.ShouldBe(expected);
         mob.SwingIntervalMs.ShouldBe(expected.IntervalMs);
         mob.SwingLandDelayMs.ShouldBe(expected.HitMs);
@@ -188,13 +188,13 @@ public class GatheringNodeTests
         var box = MobDataBox.Load(Shine()!);
 
         // A real magic attacker: MA far above WC, and declared HT_MA.
-        var mage = box.NormalAttackOf("GoblinMage")!;
+        var mage = box.AttackAgainstPlayer("GoblinMage")!;
         mage.IsMagical.ShouldBeTrue();
         mage.MinMa.ShouldBeGreaterThan(mage.MaxWc);
 
         // Pinky is RANGED but declared PHYSICAL, despite carrying a non-zero MA -- inferring the hit type
         // from MA-versus-WC would have got this one wrong.
-        var pinky = box.NormalAttackOf("Pinky")!;
+        var pinky = box.AttackAgainstPlayer("Pinky")!;
         pinky.IsRanged.ShouldBeTrue();
         pinky.Range.ShouldBe(350);
         pinky.IsMagical.ShouldBeFalse();
