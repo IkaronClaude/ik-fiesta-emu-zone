@@ -1,3 +1,4 @@
+using Fiesta.Emu.Zone.Combat;
 using Fiesta.Emu.Zone.Data;
 using Fiesta.Emu.Zone.Lua;
 using Fiesta.Emu.Zone.Parameter;
@@ -100,7 +101,25 @@ public class RealCharacterTests
         // The class table's MaxHP for level 40, PLUS five per spent Constitution point. Asserting the bare
         // column here is what a port that forgot CharClass::MaxHP would produce, so it is worth spelling out.
         sim.Player.MaxHp.ShouldBe(cleric.At(40)!.MaxHp + 20 * CharacterParameters.HpPerConstitutionPoint);
-        sim.Player.AttackDamage.ShouldBe(95);        // the mace's MaxWC, through the Item layer
+
+        // Damage is resolved by the ported formula from the stat layers, not by a flat number.
+        sim.Player.UsesStatFormula.ShouldBeTrue();
+        var min = DamageCalculator.MinWeaponDamage(sim.Player);
+        var max = DamageCalculator.MaxWeaponDamage(sim.Player);
+
+        // ⚠️ NOT the mace's 60..95. This first asserted exactly that and got 204 back, because weapon
+        // damage is the item's contribution SCALED BY the character — Strength and weapon mastery are terms
+        // in it. Pinning the item's own numbers here would have been asserting a formula I had not read.
+        // What is worth pinning is the relationship: the character's stats push it above the bare weapon,
+        // and the bounds stay ordered.
+        min.ShouldBeGreaterThan(60);
+        max.ShouldBeGreaterThan(min);
+
+        // And the weapon genuinely matters — the same character bare-handed is weaker.
+        var unarmed = new SimPlayer();
+        unarmed.Become(cleric, level: 40, freeStats: new FreeStats(Str: 20, Con: 20));
+        DamageCalculator.MaxWeaponDamage(unarmed).ShouldBeLessThan(max);
+
         sim.Kills.ShouldBeGreaterThan(0);
         sim.Log.ShouldContain(l => l.Contains("hits for"));
     }

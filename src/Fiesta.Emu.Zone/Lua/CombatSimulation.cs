@@ -1,12 +1,25 @@
+using Fiesta.Emu.Zone.Combat;
 using Fiesta.Emu.Zone.Mob;
+using Fiesta.Emu.Zone.Parameter;
 using Fiesta.Emu.Zone.Random;
 using MoonSharp.Interpreter;
 
 namespace Fiesta.Emu.Zone.Lua;
 
 /// <summary>One simulated mob: the server-side object, its AI argument, and its combat bookkeeping.</summary>
-public sealed class SimMob
+public sealed class SimMob : ICombatant
 {
+    /// <summary>The mob's stat layers, so it can be a defender in the real damage formula — its AC and MR
+    /// are what an attacker's power is measured against.
+    ///
+    /// <para>⚠️ Nothing populates this from game data yet: mob stats would come from `MobInfoServer.shn`,
+    /// which is not wired up. An all-zero container means a defenceless mob, which is at least an honest
+    /// placeholder rather than an invented one.</para></summary>
+    public ParameterContainer Parameters { get; } = new();
+
+    /// <summary>The mob's level, for the attacker-vs-defender level gap.</summary>
+    public int Level { get; set; } = 1;
+
     public required ShineMob Mob { get; init; }
     public required MobActionArgument Arg { get; init; }
     public required NormalAttackDamageTick Swings { get; init; }
@@ -116,11 +129,30 @@ public sealed class CombatSimulation
         return sim;
     }
 
+    /// <summary>How much damage one swing does.
+    ///
+    /// <para>Two models, chosen EXPLICITLY by the attacker rather than inferred from whether a stat happens
+    /// to be non-zero. A "use the formula if WCmax &gt; 0" rule would make a genuinely unarmed character
+    /// silently fall back to a flat number, and zero is a real weapon value, not a marker for "unset".</para></summary>
+    private int SwingDamage(ICombatant attacker, ICombatant defender, int flat)
+    {
+        if (attacker is not SimPlayer { UsesStatFormula: true })
+            return flat;
+
+        // The damage roll is drawn from the SERVER'S generator, not System.Random. The calculator will
+        // happily make its own roll, but combat randomness on the real server comes from WELL512, and this
+        // simulation's whole reproducibility story is "same seed, same run" -- a second, unrelated RNG
+        // inside the damage path would quietly break that.
+        var roll = new AttackModifiers { RollPermille = (int)Rng.well512_GetRandom(1001) };
+        return DamageCalculator.ResolveDamage(attacker, defender, roll);
+    }
+
     /// <summary>The player swings at a mob: damage now, aggro now, both through the ported paths.</summary>
     public void PlayerAttack(SimMob target)
     {
-        target.Hp -= Player.AttackDamage;
-        target.Mob.so_DamagedBy(Player, Player.AttackDamage, Player.AggroRatePermille);
+        var damage = SwingDamage(Player, target, Player.AttackDamage);
+        target.Hp -= damage;
+        target.Mob.so_DamagedBy(Player, damage, Player.AggroRatePermille);
 
         // Being hit interrupts a cancelable move, exactly as MobActionInMove_Cancelable::mab_Damaged does.
         target.Arg.Current.mab_Damaged(target.Arg);

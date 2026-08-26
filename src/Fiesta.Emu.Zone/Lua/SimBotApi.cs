@@ -4,7 +4,7 @@ using MoonSharp.Interpreter;
 namespace Fiesta.Emu.Zone.Lua;
 
 /// <summary>The player the Lua driver is controlling, inside the simulation.</summary>
-public sealed class SimPlayer : IShineObject
+public sealed class SimPlayer : IShineObject, Combat.ICombatant
 {
     public ushort Handle { get; init; } = 1;
     public int X { get; set; }
@@ -26,9 +26,18 @@ public sealed class SimPlayer : IShineObject
     public int AttackRange { get; set; } = 12;
     public int MoveSpeed { get; set; } = 6;
 
-    /// <summary>The character's stat layers, once it has been given a class and a level via
-    /// <c>CharacterSheet.Become</c>. Null means the fake defaults above are still in force.</summary>
-    public Parameter.ParameterContainer? Parameters { get; set; }
+    /// <summary>The character's stat layers. Always present — an empty container is a real character with
+    /// no stats, which is different from "not configured", and keeping it non-null means the damage formula
+    /// never has to ask.</summary>
+    public Parameter.ParameterContainer Parameters { get; set; } = new();
+
+    /// <summary>Whether swings are resolved through the real damage formula from <see cref="Parameters"/>,
+    /// or by the flat <see cref="AttackDamage"/>.
+    ///
+    /// <para>Set by <c>CharacterSheet.Become</c>. It is an explicit switch and not a check like
+    /// "WCmax &gt; 0" on purpose: zero weapon damage is a legitimate value for an unarmed character, and
+    /// inferring the mode from it would make that character silently deal flat damage instead.</para></summary>
+    public bool UsesStatFormula { get; set; }
 }
 
 /// <summary>The `bot.*` table the driver scripts expect, backed by the simulation instead of a live

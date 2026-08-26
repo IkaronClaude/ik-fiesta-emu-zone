@@ -11,10 +11,13 @@ public static class CharacterSheet
     /// plus five per spent Constitution point — not read out of a cluster slot, because `c_Storepure` never
     /// writes one.</para>
     ///
-    /// <para>⚠️ Attack damage is the total's <see cref="Stat.WCmax"/>, which means <b>gear only</b>. That is
-    /// not a gap in the port: <c>CharClass::WC</c> is <c>xor eax, eax; ret 8</c> and no player class
-    /// overrides it, so a player's base weapon value genuinely is zero. An unequipped character really does
-    /// deal no weapon damage — give it a weapon.</para></summary>
+    /// <para>Swings now go through the real damage formula rather than a flat number: this sets
+    /// <see cref="SimPlayer.UsesStatFormula"/>, and <c>DamageCalculator</c> reads the stat layers directly.</para>
+    ///
+    /// <para>⚠️ Weapon damage is <b>gear only</b>. That is not a gap in the port: <c>CharClass::WC</c> is
+    /// <c>xor eax, eax; ret 8</c> and no player class overrides it, so a player's base weapon value
+    /// genuinely is zero. An unequipped character really does deal no weapon damage — give it a
+    /// weapon.</para></summary>
     public static ParameterContainer Become(
         this SimPlayer player,
         ClassParamTable table,
@@ -29,7 +32,7 @@ public static class CharacterSheet
         player.Level = level;
         player.MaxHp = CharacterParameters.MaxHp(table, level, total);
         player.Hp = player.MaxHp;
-        player.AttackDamage = total[Stat.WCmax];
+        player.UsesStatFormula = true;
         return container;
     }
 

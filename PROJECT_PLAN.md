@@ -122,10 +122,18 @@ turn-tick story must not be cited as the explanation.
 
 | subsystem | ported | branch-covered |
 |---|---|---|
-| damage (`RulesOfEngagement`) | in ik-fiesta-bots, to migrate here | fuzz-exact; branch coverage not yet measured |
-| mob targeting / aggro (`MobTargetSelector` family) | not started | — |
-| mob tactics (`MobTacticElement::MobAction*`) | not started | — |
+| damage (`RulesOfEngagement`) | **migrated here** (`src/Fiesta.Emu.Zone/Combat/`) | fuzz-exact in the bots repo; branch coverage not yet measured |
+| character parameters (`Parameter::Container`) | done — layout verified against the PDB type stream | yes, incl. compliance tests against the declared fields |
+| class/level base stats (`c_Storepure`, `CharClass::MaxHP`) | done | yes |
+| mob targeting / aggro (`MobTargetSelector` family) | done | yes |
+| mob tactics (`MobTacticElement::MobAction*`) | partial — Targetting/Attack/Chase/Turning | yes for what is ported |
+| mob stats (`MobInfoServer.shn`) | **not started** — mob containers are all-zero placeholders | — |
 | everything else | not started | — |
+
+The damage engine now reads its inputs from `Parameter::Container` rather than a duplicate `CombatStats`,
+so a character's swing is driven by its class table, level, spent points and worn gear. The bots repo still
+carries the original copy; migrating it there is follow-up work, and it has a filed P1 for the rate-eraser
+bug this move exposed.
 
 ---
 
