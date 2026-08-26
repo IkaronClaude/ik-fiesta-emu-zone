@@ -4,4 +4,10 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The bot driver is Lua and runs under MoonSharp in ik-fiesta-bots; the simulator hosts the same
+         interpreter so the SAME script can be run against simulated mobs instead of a live server. -->
+    <PackageReference Include="MoonSharp" Version="2.0.0" />
+  </ItemGroup>
 </Project>
