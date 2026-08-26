@@ -78,8 +78,17 @@ public sealed class CombatSimulation
     /// <summary>Simulated milliseconds since the start. Advanced only by <see cref="Tick"/>.</summary>
     public uint Now { get; private set; }
 
-    /// <summary>Milliseconds per tick.</summary>
-    public uint TickMs { get; init; } = 100;
+    /// <summary>Milliseconds of simulated time each <see cref="Tick"/> advances.
+    ///
+    /// <para>Settable at any point, so a run can be coarse while nothing is happening and fine-grained
+    /// through a fight. Nothing in the simulation reads a real clock — this value is the ONLY source of
+    /// time — so halving it doubles the resolution of every timing decision (swing intervals, respawn
+    /// timers, delayed damage) without changing any of their durations in simulated milliseconds.</para>
+    ///
+    /// <para>⚠️ It is not free of consequences: durations are stored in milliseconds and compared against
+    /// <see cref="Now"/>, so a tick coarser than an interval makes that interval effectively round up to
+    /// the tick. A 2000 ms swing at TickMs 3000 fires every 3000 ms.</para></summary>
+    public uint TickMs { get; set; } = 100;
 
     public List<string> Log { get; } = new();
 
@@ -156,6 +165,7 @@ public sealed class CombatSimulation
 
         foreach (var m in _mobs.Where(m => m.Mob.IsAlive))
         {
+            m.Arg.ElapsedMs = TickMs;
             m.Arg.Nearby = Player.IsAlive ? new IShineObject[] { Player } : Array.Empty<IShineObject>();
 
             // The AI driver, as the server runs it: think returns the next state, we adopt it.
@@ -189,17 +199,52 @@ public sealed class CombatSimulation
     /// <summary>Load a driver script. It should define a global `on_tick()`.</summary>
     public void LoadScript(string lua) => Script.DoString(lua);
 
+    /// <summary>Advance the world one tick and then give the driver its turn — one full simulated step.
+    ///
+    /// <para>Separate from <see cref="Tick"/> so a caller can drive the world without a script, and from
+    /// <see cref="Run"/> so a caller can step manually and inspect between steps. Everything the
+    /// simulation does is reachable this way; <see cref="Run"/> is only a loop over this.</para></summary>
+    public void Step()
+    {
+        Tick();
+        var onTick = Script.Globals.Get("on_tick");
+        if (onTick.Type == DataType.Function && Player.IsAlive)
+            Script.Call(onTick);
+    }
+
+    /// <summary>Has the run reached a natural end — the player is dead, or nothing is left that will
+    /// ever act again?
+    ///
+    /// <para>⚠️ A mob that is dead but has a respawn pending is NOT gone. An earlier version tested only
+    /// `IsAlive` and so declared a one-mob world finished the moment that mob died, ending the run before
+    /// its respawn could happen — which made every respawn timing measurement return the first tick.</para></summary>
+    public bool IsFinished
+        => !Player.IsAlive || _mobs.All(m => !m.Mob.IsAlive && m.RespawnAt is null);
+
     /// <summary>Run until the script stops, everything dies, or the tick budget runs out.
     /// Returns the number of ticks actually run.</summary>
     public int Run(int maxTicks)
     {
-        var onTick = Script.Globals.Get("on_tick");
         for (var i = 0; i < maxTicks; i++)
         {
-            Tick();
-            if (onTick.Type == DataType.Function && Player.IsAlive)
-                Script.Call(onTick);
-            if (!Player.IsAlive || _mobs.All(m => !m.Mob.IsAlive))
+            Step();
+            if (IsFinished)
+                return i + 1;
+        }
+        return maxTicks;
+    }
+
+    /// <summary>Step until a condition holds, or the tick budget runs out. Returns the ticks used.
+    ///
+    /// <para>Preferable to running a fixed number of ticks and then asserting on the final state: it says
+    /// what the run is waiting FOR, and it stops there instead of letting the world keep evolving past
+    /// the moment of interest.</para></summary>
+    public int RunUntil(Func<CombatSimulation, bool> condition, int maxTicks)
+    {
+        for (var i = 0; i < maxTicks; i++)
+        {
+            Step();
+            if (condition(this) || IsFinished)
                 return i + 1;
         }
         return maxTicks;

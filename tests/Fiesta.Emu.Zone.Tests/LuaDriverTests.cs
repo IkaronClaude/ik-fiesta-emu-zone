@@ -62,11 +62,13 @@ public class LuaDriverTests
         var mob = sim.AddMob(handle: 10, x: 60, y: 0, configure: m => m.Hp = m.MaxHp = 200);
         sim.LoadScript(KillNearest);
 
-        var ticks = sim.Run(maxTicks: 400);
+        // Stop AT the kill rather than running a fixed budget and inspecting the aftermath -- the mob has
+        // a respawn pending, so the world would happily carry on and bring it back.
+        var ticks = sim.RunUntil(s => s.Kills > 0, maxTicks: 400);
 
+        ticks.ShouldBeLessThan(400);
         mob.Mob.IsAlive.ShouldBeFalse();
         sim.Player.IsAlive.ShouldBeTrue();
-        ticks.ShouldBeLessThan(400);
         sim.Player.X.ShouldBeGreaterThan(0);          // it actually walked
     }
 

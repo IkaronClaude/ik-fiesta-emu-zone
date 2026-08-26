@@ -40,6 +40,10 @@ public sealed class MobActionArgument
         self.Y += (int)Math.Round(dy / dist * speed);
     }
 
+    /// <summary>How many simulated milliseconds the current tick covers. Anything expressed as a RATE
+    /// must scale by this, or its real-world speed changes with the caller's chosen tick rate.</summary>
+    public uint ElapsedMs { get; set; } = 100;
+
     /// <summary>Everything the mob can currently perceive. In the server this comes from the axial-list
     /// scan; the simulator supplies it.</summary>
     public IReadOnlyList<IShineObject> Nearby { get; set; } = Array.Empty<IShineObject>();

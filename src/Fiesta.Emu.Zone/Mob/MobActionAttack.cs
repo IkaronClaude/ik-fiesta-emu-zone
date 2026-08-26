@@ -149,8 +149,16 @@ public sealed class MobActionAttack : MobActionBase
 /// spend time turning before it can act.</para></summary>
 public sealed class MobActionTurning : MobActionBase
 {
-    /// <summary>Direction units turned per tick.</summary>
-    public int TurnRateUnitsPerTick { get; set; } = 15;
+    /// <summary>Direction units turned per SECOND (one unit = 2 degrees, so 150 is 300 deg/s).
+    ///
+    /// <para>⚠️ This was originally per-TICK, which made a mob turn five times faster simply because the
+    /// caller chose a finer tick rate — an angular speed that depended on the observer. Turn rate is a
+    /// property of the mob, so it is expressed in world time and scaled by the elapsed tick.</para>
+    ///
+    /// <para>State TRANSITIONS still cost one tick each, and that is not a bug: the server's think loop
+    /// is per-tick too. It does mean the tick rate is the simulation's think interval, so changing it
+    /// changes how responsively mobs react — exactly as changing the server's would.</para></summary>
+    public int TurnRateUnitsPerSecond { get; set; } = 150;
 
     public override MobActionBase mab_Think(MobActionArgument arg)
     {
@@ -162,7 +170,8 @@ public sealed class MobActionTurning : MobActionBase
         var toTarget = Direction.ddt_DirectSR(target.X - arg.Actor.X, target.Y - arg.Actor.Y);
         var diff = Direction.ddt_ShineRadianDiff(combat.Facing, toTarget);
 
-        if (diff <= TurnRateUnitsPerTick)
+        var step = Math.Max(1, (int)(TurnRateUnitsPerSecond * arg.ElapsedMs / 1000));
+        if (diff <= step)
         {
             combat.Facing = toTarget;
             return MobActionAttack.Actor_Attack;
@@ -171,8 +180,8 @@ public sealed class MobActionTurning : MobActionBase
         // Turn as far as this tick allows, the short way round.
         var forward = ((toTarget - combat.Facing) % Direction.UnitsPerTurn + Direction.UnitsPerTurn)
                       % Direction.UnitsPerTurn;
-        var step = forward <= Direction.UnitsPerTurn / 2 ? TurnRateUnitsPerTick : -TurnRateUnitsPerTick;
-        combat.Facing = ((combat.Facing + step) % Direction.UnitsPerTurn + Direction.UnitsPerTurn)
+        var delta = forward <= Direction.UnitsPerTurn / 2 ? step : -step;
+        combat.Facing = ((combat.Facing + delta) % Direction.UnitsPerTurn + Direction.UnitsPerTurn)
                         % Direction.UnitsPerTurn;
         return this;
     }
@@ -181,8 +190,9 @@ public sealed class MobActionTurning : MobActionBase
 /// <summary>`MobTacticElement::MobActionChase` — close the distance, then attack.</summary>
 public sealed class MobActionChase : MobActionBase
 {
-    /// <summary>Distance units moved per tick.</summary>
-    public int SpeedPerTick { get; set; } = 5;
+    /// <summary>Distance units moved per SECOND. Per-second for the same reason as the turn rate: a
+    /// mob's speed is its own property, not a function of how finely the caller ticks.</summary>
+    public int SpeedPerSecond { get; set; } = 50;
 
     public override MobActionBase mab_Think(MobActionArgument arg)
     {
@@ -195,7 +205,7 @@ public sealed class MobActionChase : MobActionBase
         if (squared <= (long)combat.AttackRange * combat.AttackRange)
             return MobActionAttack.Actor_Attack;
 
-        arg.MoveToward(target, SpeedPerTick);
+        arg.MoveToward(target, Math.Max(1, (int)(SpeedPerSecond * arg.ElapsedMs / 1000)));
         return this;
     }
 }
