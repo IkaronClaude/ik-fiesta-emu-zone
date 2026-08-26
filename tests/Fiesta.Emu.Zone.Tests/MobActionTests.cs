@@ -25,8 +25,12 @@ public class MobActionTests
         MobActionBase.Actor_Base.mab_Think(arg).ShouldBe(MobActionBase.Actor_Targetting);
     }
 
+    /// <summary>Acquisition sets the target. The state it moves to afterwards is a SIMULATOR DECISION,
+    /// not a ported one — only the roaming branch is confirmed in the binary (`mov eax, 0x84CFC4` at
+    /// `mab_Think+0x225`); what the success path returns has not been read. This test pins the
+    /// simulator's choice so a change to it is deliberate, and does not claim it matches the server.</summary>
     [Fact]
-    public void TargettingAcquiresAndStaysPut()
+    public void TargettingAcquiresATarget_ThenHandsOffToAttack_ByOurChoice()
     {
         var mob = new Obj { Handle = 1, X = 0, Y = 0 };
         var prey = new Obj { Handle = 2, X = 10, Y = 0 };
@@ -34,8 +38,8 @@ public class MobActionTests
 
         var next = MobActionBase.Actor_Targetting.mab_Think(arg);
 
-        arg.Target.ShouldBe(prey);
-        next.ShouldBe(MobActionBase.Actor_Targetting);
+        arg.Target.ShouldBe(prey);                              // ported: acquisition works
+        next.ShouldBe(MobActionBase.Actor_Attack);              // unverified: our handoff
     }
 
     [Fact]
@@ -120,5 +124,6 @@ public class MobActionTests
 
         arg.Current = arg.Current.mab_Think(arg);
         arg.Target.ShouldNotBeNull();
+        arg.Current.ShouldBe(MobActionBase.Actor_Attack);
     }
 }

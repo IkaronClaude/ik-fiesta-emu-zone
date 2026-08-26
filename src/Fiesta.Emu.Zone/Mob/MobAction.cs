@@ -1,3 +1,5 @@
+using Fiesta.Emu.Zone.Random;
+
 namespace Fiesta.Emu.Zone.Mob;
 
 /// <summary>The per-mob state carried between ticks — the server's `MobActionArgument`.
@@ -17,6 +19,26 @@ public sealed class MobActionArgument
 
     /// <summary>Whether the mob is mid-movement. `so_mobile_StopHere` clears it.</summary>
     public bool Moving { get; set; }
+
+    /// <summary>Combat inputs the attack state reads — HP, reach, facing, skill chances.</summary>
+    public MobCombatState Combat { get; init; } = new();
+
+    /// <summary>The server's RNG. Injected so a run is reproducible: mob skill selection draws from it,
+    /// and a simulation that cannot reproduce the server's coin-flips is not simulating the server.</summary>
+    public cWell512Random Rng { get; init; } =
+        new(Enumerable.Range(1, 16).Select(i => (uint)i).ToArray());
+
+    /// <summary>Step the mob toward a target. Movement is not ported from the binary yet — this is a
+    /// placeholder straight-line step so the chase state can be exercised, and it is marked as one.</summary>
+    public void MoveToward(IShineObject target, int speed)
+    {
+        if (Actor is not ShineMob self) return;
+        long dx = target.X - self.X, dy = target.Y - self.Y;
+        var dist = Math.Sqrt(dx * dx + dy * dy);
+        if (dist <= speed) { self.X = target.X; self.Y = target.Y; return; }
+        self.X += (int)Math.Round(dx / dist * speed);
+        self.Y += (int)Math.Round(dy / dist * speed);
+    }
 
     /// <summary>Everything the mob can currently perceive. In the server this comes from the axial-list
     /// scan; the simulator supplies it.</summary>
@@ -63,6 +85,11 @@ public abstract class MobActionBase
     /// <summary>`Actor::roaming` @ 0x0084CFC4.</summary>
     public static readonly MobActionBase Actor_Roaming = new MobActionRoaming();
 
+    /// <summary>`MobActionAttack`. Not one of the six `Actor::` statics in the original — the attack
+    /// state is reached from Targetting rather than held as a named singleton — but a single shared
+    /// instance serves the same purpose here, since a state carries no per-mob data.</summary>
+    public static readonly MobActionAttack Actor_Attack = new();
+
     private sealed class MobActionBaseDefault : MobActionBase;
 }
 
@@ -83,7 +110,15 @@ public sealed class MobActionTargetting : MobActionBase
             picked = null;
 
         arg.sm_SetTarget(picked);
-        return picked is null ? Actor_Roaming : this;
+
+        // ⚠️ ONLY THE ROAMING BRANCH IS CONFIRMED. The original has one explicit state return --
+        // `mov eax, 0x84CFC4` (&Actor::roaming) at mab_Think+0x225 -- and its other five `ret`s set eax
+        // some other way, so what it returns after a SUCCESSFUL acquisition has not been read.
+        //
+        // Handing off to the attack state is therefore a SIMULATOR DECISION, not a ported one. It is what
+        // makes the loop run, and it is the obvious reading, but it is not evidence. If mob behaviour ever
+        // disagrees with the server on the tick after acquisition, look here first.
+        return picked is null ? Actor_Roaming : Actor_Attack;
     }
 }
 
