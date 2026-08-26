@@ -1,5 +1,18 @@
 # Mob aggro and target selection
 
+> ## The detection circle is NOT centred on the mob
+>
+> `ShineMob::so_mob_SightCenter` (0x004ABCD0) displaces it **forward along the mob's facing** by
+> `detectRange * 205 / 512` — about 40%. Reach is therefore roughly **1.40 r ahead, 0.60 r behind**.
+>
+> That is the whole of the direction-dependence the operator reported. There is no angular test: the shape
+> stays a circle and the scan passes NULL for `so_AllOfRange`'s `FanFormSectorArgument`. The circle simply
+> is not concentric with the mob.
+>
+> Reached via vtable slot **0x8F4**, whose return is the `loc` argument to `so_AllOfRange`. Everything below
+> that describes detection as centred on the mob is superseded by this.
+
+
 Read from `Zone.exe`. Everything below is a **reading of the disassembly**; nothing here has been executed
 under the oracle yet, so treat it as a well-supported hypothesis rather than a measurement. The distinction
 matters — on the damage engine, readings that felt certain were wrong more than once.

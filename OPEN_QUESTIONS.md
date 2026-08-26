@@ -25,44 +25,7 @@ rather than certainly the whole of it.
 
 ---
 
-## 2. The angle question
-
-**Status:** open, but materially narrowed — and one of my supporting claims was wrong.
-
-The operator reports from play that aggro range depends on orientation.
-
-**What was wrong:** this document previously said "three functions have been read and none contains an
-angle term." `so_AllOfRange` — the range scan the whole targeting path runs through — takes a
-**`FanFormSectorArgument`**:
-
-```
-FanFormSectorArgument { int ffsa_shineradian; VectorClass::UnitVector ffsa_chardirect; }
-```
-
-A half-angle and a facing vector. The engine has first-class support for angular sector queries, and
-`so_AllOfRangeNomal` calls `sr_cos1024` to evaluate them. An angle term absolutely exists.
-
-**What is now positively established:** the aggro call sites pass **NULL** for it.
-`MobTargetAggresive::mts_SelectTarget` pushes seven arguments and the fourth — the fan — is literally `0`;
-so does the per-tick `ShineMobileObject::so_Routine` scan. Those are *readings*, not failures to find
-something.
-
-So acquisition is a circle, while the fan mechanism is real and used elsewhere (skills, AoE, blasts).
-
-**Still unexplained**, and worth checking before this closes:
-
-- the other `mts_SelectTarget` overrides (`AggresiveALL`, `PlayerCaptivate`, the base `MobTargetSelector`)
-  — only `MobTargetAggresive` has been decoded argument-by-argument;
-- `so_CanSeeOtherObject`, never read;
-- `MobInfoServer.TurnSpeed`, which this project replaces with a uniform invented constant. If turn rate
-  varies per mob, a uniform constant would mask exactly the effect under argument (docs/UNVALIDATED.md §1).
-
-Nothing here may describe the detection shape as settled, and the turn-tick story must not be cited as the
-explanation.
-
----
-
-## 3. Mob skill attacks are not modelled
+## 2. Mob skill attacks are not modelled
 
 **Status:** open.
 
@@ -74,7 +37,7 @@ WELL512 roll against `sm_GetUseWeaponRate`. None of that is ported — the excha
 
 ---
 
-## 4. Per-mob targeting policy is not modelled
+## 3. Per-mob targeting policy is not modelled
 
 **Status:** open, newly identified.
 
@@ -87,7 +50,7 @@ every mob the same selector.
 
 ---
 
-## 5. `AggroInitialize`, and hate points per hit
+## 4. `AggroInitialize`, and hate points per hit
 
 **Status:** open, with a lead.
 
@@ -98,6 +61,41 @@ hate is still unidentified.
 ---
 
 # Resolved
+
+## The angle question — CLOSED 2026-08-26. The operator was right.
+
+**A mob's detection circle is not centred on the mob.** `ShineMob::so_mob_SightCenter` (0x004ABCD0) seeds
+the output with the mob's own position and then calls
+`ddt_GetFoward(facing, detectRange * 205 / 512, out)`, pushing the centre **forward along the mob's facing
+by about 40% of its detect range**. The base `ShineObject` version is three instructions and returns the
+position unchanged, so this is mob-specific.
+
+It is reached through vtable slot **0x8F4**, which is exactly the virtual `MobTargetAggresive::mts_SelectTarget`
+calls at +0x3DB — and its return value is the `loc` argument handed to `so_AllOfRange`. So the scan really
+is a circle, centred somewhere the mob is not.
+
+With range r, the reach is about **1.40 r ahead and 0.60 r behind** — a front-to-back ratio near 2.3. That
+is large enough to be obvious in play, which is exactly how it was reported.
+
+**This project argued the wrong way for weeks.** The reasoning was "the scan is a circle, no angular term
+appears, therefore orientation cannot matter". Every step was true except the conclusion: the shape is a
+circle and there is no angular term, and detection is still direction-dependent because the circle moves.
+The `FanFormSectorArgument` that `so_AllOfRange` accepts — which I had also missed — turned out to be a red
+herring for aggro: the call sites pass NULL.
+
+What actually found it was reading `mts_SelectTarget`'s arguments **one at a time** instead of scanning for
+a keyword. The `loc` argument was never the mob's position; nobody had looked.
+
+Two consequences fell out while porting it, both previously invisible:
+
+- The simulation kept a second copy of facing on the selector that nothing updated, so directional
+  detection silently degraded to a concentric circle. One mob has one facing.
+- `mts_GetTopAggroTarget` was never called, so **a mob struck from behind never fought back** — its
+  attacker sits outside the forward circle and acquisition found nothing. `mab_Think` calls both.
+
+⚠️ `Direction.Forward` computes cos/sin where the server reads a table built by `ddt_Initialize`; the two
+agree to within table rounding. Recorded in docs/UNVALIDATED.md §6.
+
 
 ## Where `MobWeapon` enters the damage formula — CLOSED 2026-08-26
 

@@ -56,13 +56,48 @@ public sealed class MobTargetSelector
     /// a rejected near candidate does not displace an accepted far one.</para></summary>
     public Func<IShineObject, IShineObject, bool> CanTarget { get; set; } = (_, _) => true;
 
+    /// <summary>How far ahead of itself a mob's detection circle sits, as a fraction of its detect range —
+    /// <c>imul eax, eax, 0xCD</c> then <c>sar eax, 9</c>, i.e. <b>× 205 / 512</b> ≈ 0.4004.</summary>
+    public const int SightOffsetNumerator = 205;
+    public const int SightOffsetShift = 9;
+
+    /// <summary>The mob's facing, in direction units (2° each, 180 to a full turn).</summary>
+    public int Facing { get; set; }
+
+    /// <summary>`ShineMob::so_mob_SightCenter` (0x004ABCD0) — where a mob's detection circle is CENTRED.
+    ///
+    /// <para><b>Not on the mob.</b> The base <c>ShineObject</c> version is three instructions and returns the
+    /// object's own position; the <c>ShineMob</c> override seeds the output with that position and then calls
+    /// <c>ddt_GetFoward(facing, range * 205 / 512, out)</c>, pushing it forward along the mob's facing by
+    /// about 40% of the detect range.</para>
+    ///
+    /// <para><b>This is what makes aggro direction-dependent</b>, and it is not an angular test at all — the
+    /// shape stays a circle, the circle is just not concentric with the mob. Approaching head-on you cross
+    /// the boundary at roughly <c>1.40 × range</c>; from directly behind you have to reach <c>0.60 ×
+    /// range</c>. A ratio of about 2.3 between front and back.</para>
+    ///
+    /// <para>This project argued for weeks that detection was "a circle" and treated the operator's report of
+    /// orientation-dependent aggro as unexplained. The circle reading was right; what was missed is that its
+    /// centre moves. Reading `mts_SelectTarget`'s arguments one at a time is what found it: the `loc` it
+    /// hands `so_AllOfRange` is not the mob's position but the return of virtual slot 0x8F4.</para></summary>
+    public (int X, int Y) SightCenter(IShineObject scanner)
+    {
+        var distance = DetectRange * SightOffsetNumerator >> SightOffsetShift;
+        var (dx, dy) = Direction.Forward(Facing, distance);
+        return (scanner.X + dx, scanner.Y + dy);
+    }
+
     /// <summary>`MobTargetAggresive::mts_SelectTarget` — pick the nearest valid candidate inside the
-    /// detect range, or null if none qualifies.</summary>
+    /// detect range, or null if none qualifies.
+    ///
+    /// <para>Distances are measured from <see cref="SightCenter"/>, not from the mob — see there for why
+    /// that is the whole of the direction-dependence.</para></summary>
     public IShineObject? mts_SelectTarget(IShineObject scanner, IEnumerable<IShineObject> nearby)
     {
         // best := r * r, exactly as mts_SelectTarget+0x3B9 does before calling so_AllOfRange.
         var best = (long)DetectRange * DetectRange;
         IShineObject? chosen = null;
+        var (cx, cy) = SightCenter(scanner);
 
         foreach (var candidate in nearby)
         {
@@ -71,7 +106,7 @@ public sealed class MobTargetSelector
             if (!CanTarget(scanner, candidate))
                 continue;
 
-            var squared = SquaredDistance(scanner, candidate);
+            var squared = SquaredDistanceFrom(cx, cy, candidate);
 
             // ali_Work+0x19F: `cmp eax,[edi+8]` / `jge reject` -- strictly nearer wins, and a candidate
             // exactly at the range boundary loses to the r-squared seed.
@@ -83,6 +118,14 @@ public sealed class MobTargetSelector
         }
 
         return chosen;
+    }
+
+    /// <summary>Squared distance from an arbitrary centre — the scan measures from the sight centre.</summary>
+    public static long SquaredDistanceFrom(int cx, int cy, IShineObject o)
+    {
+        long dx = (long)cx - o.X;
+        long dy = (long)cy - o.Y;
+        return dx * dx + dy * dy;
     }
 
     /// <summary>The distance the scan hands to `ali_Work`. Squared, never rooted — the server compares

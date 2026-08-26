@@ -130,8 +130,11 @@ Honest stand-ins where the real mechanism is known but not ported.
   `IntervalTenths` is the floor of the real interval.
 - **Action states as shared singletons** — the original embeds a per-mob instance of most action states
   inside each `MobActionArgument`. Fine while states hold no per-mob data; wrong the moment one does.
-- **`Item.Rate` and friends** — five clusters `c_MakeTotal` skips. Confirmed skipped; where the damage
-  formula reads them instead is untraced.
+- **`Direction.Forward`** — the port of `ddt_GetFoward` computes cos/sin where the server reads a table
+  built at start-up by `ddt_Initialize`. The direction quantum is 2°, so the two agree closely, but the
+  table's own rounding will differ by a unit here and there. Same situation as the circular spawn sampler.
+- **`Item.Rate` and friends** — clusters `c_MakeTotal` skips. `Item.Rate` is written with `CriDamRate` by
+  `so_RecalcEquipParam`; where the formula reads it is untraced.
 
 ---
 

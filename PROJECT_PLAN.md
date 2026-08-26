@@ -94,15 +94,15 @@ Closed so far:
 **Do not make these pass by asserting current behaviour.** Close them by reading the binary — as that one
 was. The guess being right is not the point; knowing it is right is.
 
-## The angle question is an open debt
+## The angle question — settled 2026-08-26
 
-The operator reports from play that aggro range depends on orientation. Three functions have been read
-and none contains an angle term, and there is a plausible turn-cost mechanism that *could* produce the
-symptom — **neither of those is proof, and neither outranks the observation.**
+The operator's report was right and this plan's reasoning was wrong. A mob's detection circle is displaced
+**forward along its facing by 40% of its detect range** (`ShineMob::so_mob_SightCenter`), giving roughly
+1.40r ahead and 0.60r behind. The shape is a circle and contains no angular term — both things this plan
+insisted on — and detection is direction-dependent anyway, because the circle is not centred on the mob.
 
-`docs/AGGRO.md` sets out what would settle it. Until at least the oracle experiment or `so_AllOfRange`'s
-distance computation is done, nothing in this repo may describe the detection shape as settled, and the
-turn-tick story must not be cited as the explanation.
+The lesson is recorded in OPEN_QUESTIONS.md: the argument "no angle term appears, therefore orientation
+cannot matter" was an argument from absence wearing a proof's clothing.
 
 ---
 

@@ -37,4 +37,22 @@ public static class Direction
         var diff = Math.Abs(((to - from) % UnitsPerTurn + UnitsPerTurn) % UnitsPerTurn);
         return Math.Min(diff, UnitsPerTurn - diff);
     }
+
+    /// <summary>`DirectDistanceTable::ddt_GetFoward` (0x004A2DB0) — displace a point forward.
+    ///
+    /// <para>Returns the offset to add to a position to move <paramref name="distance"/> units along
+    /// <paramref name="direction"/>. The original normalises the direction modulo <c>0xB4</c> — 180 —
+    /// before indexing, which independently confirms <see cref="UnitsPerTurn"/>.</para>
+    ///
+    /// <para>⚠️ <b>APPROXIMATED.</b> The server reads its cosine and sine from a table built at start-up by
+    /// `ddt_Initialize`; this computes them. The direction quantum is 2°, so the two agree closely, but they
+    /// will differ by a unit here and there from the table's own rounding. Reading that table's construction
+    /// would close the gap — it is the same precomputed-table situation as the circular spawn sampler.</para></summary>
+    public static (int X, int Y) Forward(int direction, int distance)
+    {
+        var unit = ((direction % UnitsPerTurn) + UnitsPerTurn) % UnitsPerTurn;
+        var radians = unit * DegreesPerUnit * Math.PI / 180.0;
+        return ((int)Math.Round(Math.Cos(radians) * distance),
+                (int)Math.Round(Math.Sin(radians) * distance));
+    }
 }

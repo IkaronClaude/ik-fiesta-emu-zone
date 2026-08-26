@@ -22,12 +22,19 @@ public class MobTargetSelectorTests
 {
     private static MobTargetSelector Selector(int range) => new() { DetectRange = range };
 
+    /// <summary>⚠️ Distances are measured from the SIGHT CENTRE, which sits 40% of the detect range ahead of
+    /// the mob — see <see cref="MobTargetSelector.SightCenter"/>. With range 100 and facing 0 that is
+    /// (40, 0), so every coordinate below is chosen relative to THAT, not to the mob at the origin.
+    ///
+    /// <para>These three tests previously placed candidates relative to the mob and passed, because the port
+    /// then measured from the mob. The rule they check — nearest wins, boundary rejected, gates first — has
+    /// not changed; only where the circle is centred.</para></summary>
     [Fact]
     public void PicksTheNearestValidCandidate()
     {
         var mob = new Obj { Handle = 1, X = 0, Y = 0 };
-        var far = new Obj { Handle = 2, X = 60, Y = 0 };
-        var near = new Obj { Handle = 3, X = 20, Y = 0 };
+        var far = new Obj { Handle = 2, X = 80, Y = 0 };     // 40 from the centre
+        var near = new Obj { Handle = 3, X = 45, Y = 0 };    //  5 from the centre
 
         Selector(100).mts_SelectTarget(mob, [far, near]).ShouldBe(near);
     }
@@ -36,7 +43,7 @@ public class MobTargetSelectorTests
     public void IgnoresCandidatesBeyondTheDetectRange()
     {
         var mob = new Obj { Handle = 1, X = 0, Y = 0 };
-        var outside = new Obj { Handle = 2, X = 101, Y = 0 };
+        var outside = new Obj { Handle = 2, X = -61, Y = 0 };   // 101 behind the centre
 
         Selector(100).mts_SelectTarget(mob, [outside]).ShouldBeNull();
     }
@@ -48,12 +55,67 @@ public class MobTargetSelectorTests
     public void RejectsACandidateAtExactlyTheRangeBoundary()
     {
         var mob = new Obj { Handle = 1, X = 0, Y = 0 };
-        var onBoundary = new Obj { Handle = 2, X = 100, Y = 0 };
-        var justInside = new Obj { Handle = 3, X = 99, Y = 0 };
+        var onBoundary = new Obj { Handle = 2, X = 140, Y = 0 };   // exactly 100 from the centre
+        var justInside = new Obj { Handle = 3, X = 139, Y = 0 };   // 99
 
         var s = Selector(100);
         s.mts_SelectTarget(mob, [onBoundary]).ShouldBeNull();
         s.mts_SelectTarget(mob, [justInside]).ShouldBe(justInside);
+    }
+
+    /// <summary>THE ANSWER TO THE ANGLE QUESTION. A mob sees much further in front of itself than behind,
+    /// and the mechanism is not an angular test — the detection region stays a circle, it is simply not
+    /// centred on the mob.
+    ///
+    /// <para>`ShineMob::so_mob_SightCenter` displaces the centre forward by <c>range * 205 / 512</c>, so with
+    /// range 100 the reach is about 140 ahead and 60 behind.</para>
+    ///
+    /// <para>The operator reported orientation-dependent aggro from play; this project repeatedly answered
+    /// "the scan is a circle" and left it unexplained. The circle reading was right and the conclusion drawn
+    /// from it was wrong.</para></summary>
+    [Fact]
+    public void AMobSeesFurtherInFrontThanBehind()
+    {
+        var mob = new Obj { Handle = 1, X = 0, Y = 0 };
+        var s = Selector(100);              // facing 0 = along +x
+
+        var ahead = new Obj { Handle = 2, X = 139, Y = 0 };
+        var behind = new Obj { Handle = 3, X = -59, Y = 0 };
+        s.mts_SelectTarget(mob, [ahead]).ShouldBe(ahead, "139 ahead is inside the forward reach");
+        s.mts_SelectTarget(mob, [behind]).ShouldBe(behind, "59 behind is inside the rear reach");
+
+        var tooFarAhead = new Obj { Handle = 4, X = 141, Y = 0 };
+        var tooFarBehind = new Obj { Handle = 5, X = -61, Y = 0 };
+        s.mts_SelectTarget(mob, [tooFarAhead]).ShouldBeNull();
+        s.mts_SelectTarget(mob, [tooFarBehind]).ShouldBeNull();
+    }
+
+    /// <summary>Turning the mob turns its detection region with it — the same spot is seen or not seen
+    /// depending only on facing.</summary>
+    [Fact]
+    public void TurningAroundChangesWhatTheMobCanSee()
+    {
+        var mob = new Obj { Handle = 1, X = 0, Y = 0 };
+        var target = new Obj { Handle = 2, X = 120, Y = 0 };
+
+        var s = Selector(100);
+        s.Facing = 0;                                     // looking at it
+        s.mts_SelectTarget(mob, [target]).ShouldBe(target);
+
+        s.Facing = 90;                                    // 90 units = 180 degrees: facing away
+        s.mts_SelectTarget(mob, [target]).ShouldBeNull();
+    }
+
+    /// <summary>The offset is 205/512 of the range, not a fixed distance — a longer-sighted mob is displaced
+    /// proportionally further forward.</summary>
+    [Fact]
+    public void TheSightOffsetScalesWithTheDetectRange()
+    {
+        var mob = new Obj { Handle = 1, X = 0, Y = 0 };
+
+        Selector(100).SightCenter(mob).X.ShouldBe(40);     // 100 * 205 / 512 = 40
+        Selector(500).SightCenter(mob).X.ShouldBe(200);    // 500 * 205 / 512 = 200
+        Selector(0).SightCenter(mob).ShouldBe((0, 0));     // no range, no offset
     }
 
     [Fact]

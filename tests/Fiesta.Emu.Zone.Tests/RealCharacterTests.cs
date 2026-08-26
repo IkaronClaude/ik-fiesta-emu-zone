@@ -77,9 +77,14 @@ public class RealCharacterTests
 
         var cleric = ClassParamTable.Load(Path.Combine(shine!, "World", "ParamClericServer.txt"));
         var map = MobRegenData.Load(urg);
+        var box = MobDataBox.Load(shine!);
 
         var sim = new CombatSimulation(seed: 42);
-        sim.SpawnAll(map, spawnSeed: 7);
+
+        // REAL mobs, and only the ones that can be fought. This test used the placeholder overload until the
+        // sight-centre work exposed it: with fake 300-HP mobs the character was one-shotting everything, and
+        // its kill log was full of HERB8 and MUSHROOM9 -- it was farming gathering nodes.
+        sim.SpawnFightable(map, box, spawnSeed: 7);
 
         // Everything about this character is data: the class table for stats, gear for weapon damage.
         // The only invented numbers are reach and foot speed, which are bot behaviour, not game facts.
@@ -95,12 +100,19 @@ public class RealCharacterTests
         sim.Player.X = x;
         sim.Player.Y = y;
 
+        // The class table's MaxHP for level 40, PLUS five per spent Constitution point. Asserted BEFORE the
+        // survivability override below, which would otherwise erase the thing being checked.
+        sim.Player.MaxHp.ShouldBe(cleric.At(40)!.MaxHp + 20 * CharacterParameters.HpPerConstitutionPoint);
+
+        // A level-40 character in a level-60 map dies, and this test is about whether it fights rather than
+        // whether it wins. The HP pool is a harness concession and is deliberately the ONLY invented number
+        // left in the scenario.
+        sim.Player.Hp = sim.Player.MaxHp = 2_000_000;
         sim.LoadScript(RoamAndFight);
         sim.Run(maxTicks: 3000);          // 5 simulated minutes
 
-        // The class table's MaxHP for level 40, PLUS five per spent Constitution point. Asserting the bare
-        // column here is what a port that forgot CharClass::MaxHP would produce, so it is worth spelling out.
-        sim.Player.MaxHp.ShouldBe(cleric.At(40)!.MaxHp + 20 * CharacterParameters.HpPerConstitutionPoint);
+        // Nothing it fought was a gathering node.
+        sim.Log.ShouldNotContain(l => l.Contains("HERB") || l.Contains("MUSHROOM"));
 
         // Damage is resolved by the ported formula from the stat layers, not by a flat number.
         sim.Player.UsesStatFormula.ShouldBeTrue();
@@ -121,6 +133,6 @@ public class RealCharacterTests
         DamageCalculator.MaxWeaponDamage(unarmed).ShouldBeLessThan(max);
 
         sim.Kills.ShouldBeGreaterThan(0);
-        sim.Log.ShouldContain(l => l.Contains("hits for"));
+        sim.Log.ShouldContain(l => l.Contains("hits for"), "real mobs fight back");
     }
 }

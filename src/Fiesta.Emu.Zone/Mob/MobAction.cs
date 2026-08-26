@@ -101,12 +101,28 @@ public abstract class MobActionBase
 ///
 /// <para>The original calls `mts_TargetObject`, `sp_IsNormalAttack`, `sm_SetTarget` and
 /// `so_CanSeeOtherObject` (three times), and returns `&amp;Actor::roaming` on one branch. This port covers
-/// the acquire / cannot-see / nothing-found paths; the `sp_IsNormalAttack` branch is not yet read.</para></summary>
+/// the acquire / cannot-see / nothing-found paths; the `sp_IsNormalAttack` branch is not yet read.</para>
+///
+/// <para>⚠️ <b>STRUCTURAL SIMPLIFICATION.</b> The server splits into three functions that this port merges:
+/// `mts_SelectTarget` returns <b>void</b> and SETS the selector's target, `mts_TargetObject` retrieves it,
+/// and `mts_GetTopAggroTarget` picks from the hate list — each overridden per selector subclass. Here
+/// `mts_SelectTarget` returns its pick directly. The behaviour matches for the single-selector case this
+/// simulation models; it will not survive per-subclass policies (OPEN_QUESTIONS #4).</para></summary>
 public sealed class MobActionTargetting : MobActionBase
 {
     public override MobActionBase mab_Think(MobActionArgument arg)
     {
-        var picked = arg.Selector.mts_SelectTarget(arg.Actor, arg.Nearby);
+        // The mob's facing drives WHERE it can see -- so_mob_SightCenter displaces the detection circle
+        // forward along it. One mob has one facing; keeping a second copy on the selector would let the two
+        // drift and quietly turn directional detection back into a concentric circle.
+        arg.Selector.Facing = arg.Combat.Facing;
+
+        // ⚠️ ANYTHING THAT HAS HURT THIS MOB OUTRANKS THE SIGHT SCAN. `mab_Think` calls BOTH
+        // `mts_GetTopAggroTarget` and the scan, and without the hate list a mob struck from behind never
+        // fights back: the attacker is outside the forward circle, so acquisition finds nothing and the mob
+        // stands there being hit. That was invisible until the sight centre moved off the mob.
+        var picked = arg.Selector.mts_GetTopAggroTarget()
+                     ?? arg.Selector.mts_SelectTarget(arg.Actor, arg.Nearby);
 
         // Line of sight is checked HERE and not during acquisition, so a target inside the detect circle
         // that cannot be seen is acquired and then discarded.
@@ -142,7 +158,13 @@ public sealed class MobActionTargetting : MobActionBase
 public sealed class MobActionRoaming : MobActionBase
 {
     public override MobActionBase mab_Think(MobActionArgument arg)
-        => arg.Selector.mts_SelectTarget(arg.Actor, arg.Nearby) is null ? this : Actor_Targetting;
+    {
+        arg.Selector.Facing = arg.Combat.Facing;
+        return arg.Selector.mts_GetTopAggroTarget() is null
+               && arg.Selector.mts_SelectTarget(arg.Actor, arg.Nearby) is null
+            ? this
+            : Actor_Targetting;
+    }
 }
 
 /// <summary>`MobTacticElement::MobActionInMove_Cancelable` — a movement that being hit interrupts.
