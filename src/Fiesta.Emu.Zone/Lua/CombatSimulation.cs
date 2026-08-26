@@ -21,6 +21,26 @@ public sealed class SimMob
 
     /// <summary>How long after a swing its damage lands — the reason `NormalAttackDamageTick` exists.</summary>
     public uint SwingLandDelayMs { get; set; } = 400;
+
+    /// <summary>The mob's name in `MobRegen`, e.g. "Orc". Carried so a trace names what died.</summary>
+    public string Name { get; set; } = "";
+
+    /// <summary>The spawn group it belongs to, e.g. "Urg07".</summary>
+    public string SpawnGroup { get; set; } = "";
+
+    /// <summary>Where it spawned, so a respawn puts it back in the same area.</summary>
+    public int SpawnX { get; set; }
+    public int SpawnY { get; set; }
+
+    /// <summary>`RegStandard` from the table — the respawn delay in seconds.
+    ///
+    /// <para>⚠️ The table also carries RegMin/RegMax and a delta schedule that is not understood yet, so
+    /// this uses the flat standard value. Respawn timing is therefore approximate, and deliberately so
+    /// rather than acting on a guess about the schedule.</para></summary>
+    public int RespawnSeconds { get; set; } = 25;
+
+    /// <summary>When this corpse comes back, or null if it is alive.</summary>
+    public uint? RespawnAt { get; set; }
 }
 
 /// <summary>A deterministic mob-combat simulation the bot's Lua driver can be run against.
@@ -81,6 +101,8 @@ public sealed class CombatSimulation
             },
         };
         configure?.Invoke(sim);
+        sim.SpawnX = x;
+        sim.SpawnY = y;
         _mobs.Add(sim);
         return sim;
     }
@@ -97,7 +119,10 @@ public sealed class CombatSimulation
         if (target.Hp <= 0)
         {
             target.Mob.IsAlive = false;
-            Log.Add($"[{Now,6}] mob {target.Mob.Handle} died");
+            target.RespawnAt = Now + (uint)(target.RespawnSeconds * 1000);
+            target.Arg.Target = null;
+            Kills++;
+            Log.Add($"[{Now,6}] {Describe(target)} died (respawn at {target.RespawnAt})");
         }
     }
 
@@ -106,9 +131,28 @@ public sealed class CombatSimulation
     ///
     /// <para>The order matters. Damage due this tick lands BEFORE new swings are queued, so a hit thrown
     /// last tick resolves against this tick's state rather than being overtaken.</para></summary>
+    /// <summary>How many mobs the player has killed this run.</summary>
+    public int Kills { get; private set; }
+
+    private static string Describe(SimMob m)
+        => string.IsNullOrEmpty(m.Name) ? $"mob {m.Mob.Handle}" : $"{m.Name}#{m.Mob.Handle}";
+
     public void Tick()
     {
         Now += TickMs;
+
+        // Respawn anything whose timer has come up, back in its own spawn area.
+        foreach (var dead in _mobs.Where(m => !m.Mob.IsAlive && m.RespawnAt is not null && Now >= m.RespawnAt))
+        {
+            dead.Hp = dead.MaxHp;
+            dead.Mob.IsAlive = true;
+            dead.Mob.X = dead.SpawnX;
+            dead.Mob.Y = dead.SpawnY;
+            dead.Mob.Selector.mts_AggroClear();
+            dead.Arg.Current = MobActionBase.Actor_Targetting;
+            dead.RespawnAt = null;
+            Log.Add($"[{Now,6}] {Describe(dead)} respawned");
+        }
 
         foreach (var m in _mobs.Where(m => m.Mob.IsAlive))
         {
