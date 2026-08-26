@@ -153,17 +153,43 @@ What would actually count as proof, in rough order of strength:
 1. **Drive `mts_SelectTarget` / `ali_Work` under the oracle** with synthetic objects placed at equal
    distance and varying bearing, and show acquisition is bearing-independent. This is the direct
    experiment and it is the one that settles it.
-2. **Read `so_AllOfRange`'s per-candidate distance computation.** It still has to produce the squared
-   distance `ali_Work` receives; if that value is not plain Euclidean, the shape lives there and every
-   "no angle term" observation above is beside the point. Unread.
+2. ~~**Read `so_AllOfRange`'s per-candidate distance computation.**~~ **Done — see below.** The angular
+   machinery IS in the range scan, and it is gated on the sector argument that aggro passes as NULL.
 3. **Read `so_CanSeeOtherObject`.** `MobActionTargetting` calls it three times and it is absent from
    acquisition. If it tests facing rather than occlusion, engagement is directional even though detection
    is not.
 4. **A live measurement**: fixed distance, systematically varied bearing, time-to-aggro recorded. This is
    what the observation is made of, so it is what a contrary claim has to beat.
 
-Until at least (1) or (2) is done, "aggro is a circle" is a reading of three functions, not a finding
-about the game.
+### What (2) found
+
+`so_AllOfRange` computes nothing itself — it forwards all seven arguments through a member-function
+pointer. The work is in `so_AllOfRangeNomal` (`0x0054C900`, 0xA60 bytes), and it **does** contain angular
+machinery:
+
+```
++0x31   mov esi, [ebp+0x14]      ; esi := arg4, the FanFormSectorArgument*
+...
++0x149  test esi, esi
++0x14B  je   +0x165              ; NULL -> skip the cosine entirely
++0x14D  eax = [esi]              ; the sector's angle field
++0x14F  cdq / sub eax,edx / sar eax,1     ; half-angle, signed
++0x15A  call ShineRadian::sr_cos1024      ; cos(half-angle)
++0x15F  store the cosine
++0x172  imul eax, edi            ; arg3 squared -- the radius
+...
++0x373  imul eax, eax            ; plain squared Euclidean distance
++0x3D2  call UnitVector::UnitVector(SHINE_XY_TYPE*, SHINE_XY_TYPE*)
+```
+
+So there is a genuine cosine-of-half-angle sector test in the scan, it is reached only when the sector
+argument is non-null, `esi` is loaded from that argument at function entry, and the aggro call site passes
+zero for it. **That is a traced chain, not an inference from the call site alone**, and it is the
+strongest evidence so far that aggro acquisition is angle-free.
+
+**It is still not proof that aggro is directionally uniform in play.** It shows one mechanism is
+switched off. It says nothing about `so_CanSeeOtherObject`, which `MobActionTargetting` calls three times
+and which remains unread, and nothing about behaviour outside acquisition. Items (1), (3) and (4) stand.
 
 ## Next
 
