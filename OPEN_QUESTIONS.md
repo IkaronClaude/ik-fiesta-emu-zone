@@ -9,38 +9,7 @@ resolved — the data does not automatically win.
 
 ---
 
-## 1. Pinky: declared physical, played as ranged magic — OPERATOR TO CHECK
-
-**Status:** open, disagreement unresolved. Operator to verify in game.
-
-The operator states Pinkies are ranged **magic** attackers. `Z:/ServerSource` says ranged **physical**.
-
-What the data says, from `MobWeapon.shn`:
-
-| | Skill | HitType | WC | MA | Range |
-|---|---|---|---|---|---|
-| `Pinky` | `-` (only row) | **`HT_PY`** | 520–792 | 72–110 | 350 |
-| `GoblinMage` (a real magic mob) | `-` | `HT_MA` | 19–30 | 273–415 | 300 |
-
-Pinky has exactly **one** weapon row, its WC exceeds its MA, and its declared hit type is physical. Uruga
-spawns the plain `Pinky` (23 of them); none of the 21 `Pinky`/`Lips` variants appear there.
-
-**Possible reconciliations, none verified:**
-
-1. The live server's `MobWeapon.shn` differs from the `Z:/ServerSource` tree. *Settled by reading the file
-   out of a zone pod and diffing.*
-2. The magic comes from a **skill** attack chosen by `MobAttackSequence`, not from the normal-attack row —
-   `NormalAttackOf()` only ever returns the `Skill == "-"` row, so a mob whose actual behaviour is
-   skill-driven would look physical here. *Settled by finishing the `AttackElement4Mob` read.*
-3. The attack looks magical (ranged projectile, non-zero MA) while resolving as physical.
-
-**Do not encode either answer until this is resolved.** The port currently follows the declared `HitType`
-because that is what was read, and `MobWeapon.IsMagical` carries a comment saying why it is not inferred
-from MA-versus-WC.
-
----
-
-## 2. Where `MobWeapon` enters the damage formula
+## 1. Where `MobWeapon` enters the damage formula
 
 **Status:** open. Partially traced.
 
@@ -59,7 +28,7 @@ through the full formula.
 
 ---
 
-## 3. The unresolved term in `nextAttackAt`
+## 2. The unresolved term in `nextAttackAt`
 
 **Status:** open, minor.
 
@@ -69,7 +38,7 @@ rather than certainly the whole of it.
 
 ---
 
-## 4. Does anything add the cluster's own `MaxHP` slot?
+## 3. Does anything add the cluster's own `MaxHP` slot?
 
 **Status:** open.
 
@@ -79,7 +48,7 @@ differently. The cluster also has a second `MaxHP_2` slot of unknown purpose.
 
 ---
 
-## 5. `Item.Rate` never reaches the total
+## 4. `Item.Rate` never reaches the total
 
 **Status:** half answered.
 
@@ -89,7 +58,7 @@ pairs in exactly that order. So `Item.Rate` really is a cluster `c_MakeTotal` sk
 
 ---
 
-## 6. The angle question
+## 5. The angle question
 
 **Status:** open debt, documented at length in `docs/AGGRO.md` and `PROJECT_PLAN.md`.
 
@@ -98,7 +67,7 @@ Neither that absence nor the plausible turn-cost mechanism is proof, and neither
 
 ---
 
-## 7. Mob skill attacks are not modelled
+## 6. Mob skill attacks are not modelled
 
 **Status:** open.
 
@@ -106,3 +75,23 @@ Neither that absence nor the plausible turn-cost mechanism is proof, and neither
 The simulation only uses the `Skill == "-"` row. `AttackElement4Mob` carries a 500-entry skill sequence plus
 `OutOfRange` / `HPLow` / `TargetState` change-lists, none of it ported — the exchange-rule *order* in
 `MobActionAttack` is ported but its predicates are placeholders.
+
+---
+
+# Resolved
+
+## Pinky: physical, not magic — CLOSED 2026-08-26
+
+Was open as a disagreement: the operator recalled Pinkies as ranged **magic** attackers, while the table
+declared `HT_PY` with a single weapon row, WC 520–792 above MA 72–110, and range 350.
+
+**The operator checked in game and confirmed physical.** The data was right.
+
+Kept because the *shape* of the near-miss is worth remembering: Pinky is a ranged attacker carrying a
+non-zero magic attack value, which is a very easy thing to remember as a magic attacker. Had this been
+resolved by inference instead of a check, the tempting move would have been to "fix" the port to match the
+recollection — and `MobWeapon.IsMagical` would now be lying about 2,878 mobs to accommodate one.
+
+The rule that kept it honest stays: **an entry contradicting play experience stays open until actually
+resolved.** Not deferring to the operator, and not deferring to the file — just not encoding either until
+someone looks.
