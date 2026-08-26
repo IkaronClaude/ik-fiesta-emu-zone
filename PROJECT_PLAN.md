@@ -82,7 +82,11 @@ A green test over an unverified guess is worse than no test at all: it makes the
 it survives review, and it actively resists correction because changing the code now "breaks a test".
 A red one states the debt in the one place nobody can ignore.
 
-Currently red, deliberately: **none.**
+Currently red, deliberately:
+
+| test | what is unknown |
+|---|---|
+| `BaseWeaponAndArmourStatsAreUnreadPerClassVirtuals` | the eight per-class virtual methods filling base WC/AC/TH/TB/MA/MR/MH/MB — see docs/PARAMETERS.md |
 
 Closed so far:
 

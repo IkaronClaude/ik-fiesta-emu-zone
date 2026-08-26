@@ -25,6 +25,10 @@ public sealed class SimPlayer : IShineObject
 
     public int AttackRange { get; set; } = 12;
     public int MoveSpeed { get; set; } = 6;
+
+    /// <summary>The character's stat layers, once it has been given a class and a level via
+    /// <c>CharacterSheet.Become</c>. Null means the fake defaults above are still in force.</summary>
+    public Parameter.ParameterContainer? Parameters { get; set; }
 }
 
 /// <summary>The `bot.*` table the driver scripts expect, backed by the simulation instead of a live
