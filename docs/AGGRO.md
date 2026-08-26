@@ -145,3 +145,85 @@ Acquisition is answered. The other half of aggro is the **hate list** — `mts_A
 `mts_DecreaseAggroPoint`, `mts_GetTopAggroTarget`, `mts_AggroAdjust`, `MobAggroManager` and `HitMeList` —
 which decides who a mob *stays* on once combat starts. That is what a simulator needs; acquisition only
 picks the first victim.
+
+---
+
+# The hate list
+
+Acquisition (above) only picks a first victim. What a mob *stays* on is the hate list.
+
+## Two lists that are easy to confuse
+
+| structure | purpose |
+|---|---|
+| `MobAggroManager : List<MobTargetStruct>` | **the hate list** — who the mob wants to attack |
+| `HitMeList::EnemyList : List<Enemy>` | **damage contribution** — who gets exp and loot rights |
+
+They are separate systems with separate lifetimes. `el_StoreDamage`, `el_StoreLastDamage`,
+`el_ExpDistribute`, `el_FindLooter` and `el_EnemyExpDistCheck` are all reward attribution, not aggro.
+Mixing them up would give a simulator the wrong target-switching behaviour.
+
+## The operations
+
+Held on the selector at `this+0x14`. Elements are **12 bytes** (`lea ecx,[eax+eax*2]` then `[edx+ecx*4+4]`),
+in an intrusive list indexed by `uint16` — the `l_PushA` / `l_PopZ` / `l_AllocA` / `l_MakeList` family
+shared with every other `List<T>` in the engine.
+
+| method | where the real body is |
+|---|---|
+| `mts_AppendAggroPoint(ShineObject*, int)` | `MobTargetBout` — the base is a **no-op** |
+| `mts_DecreaseAggroPoint(ShineObject*, int)` | `MobTargetBout` — base also a no-op |
+| `mts_GetTopAggroTarget(ShineObject*)` | `MobTargetBout`, overridden by `MobTargetAggresive` and `…ALL` |
+| `mts_AggroAdjust(ShineObject*, int)` | `MobTargetSelector` and `MobTargetBout` |
+| `mts_AggroClear()`, `mts_StoreAggroList(vector<ushort>&)`, `mts_TargetChange(MobTargetStruct*)` | |
+
+`MobTargetSelector::mts_AppendAggroPoint` and `mts_DecreaseAggroPoint` **share a single body** — identical
+code folding, so the base implementation does nothing and all real behaviour is `MobTargetBout`'s. Worth
+knowing before porting: the base class is not a fallback, it is a stub.
+
+⚠️ The first ~0xB0 bytes of `mts_AppendAggroPoint` are **not aggro logic**. They copy a name into a rotating
+256-byte debug buffer (`NameString`, index at `0x865FB0` masked by `0x865FB4`). Easy to mistake for
+bookkeeping that matters.
+
+## `ShineMob::so_DamagedBy(ShineObject* attacker, int, int, unsigned char)`
+
+The damage entry point, at `0x00431750`. What it does, in order:
+
+1. `MobChatManager::mcm_DamageChat` — mob barks.
+2. A Lua hook — `LuaArgumentMobDamaged` then `fm_LuaScriptFuncExec`. **Mob behaviour is scriptable**, which
+   a simulator has to account for or it will diverge on any mob with a script.
+3. `EnemyList::el_StoreDamage(attacker, amount)` — reward attribution.
+4. `MobAutomaticActionList::maal_MobDamaged` — boss-field automatic actions.
+5. **First-attacker latch**: `[mob+0x24AE]` is a `uint16` initialised to `0xFFFF`; if it is still `0xFFFF`
+   the attacker's handle is stored there. It is never overwritten while set.
+6. **Social aggro** — `sm_Scream4Rescue(attacker, …)`, with a parameter read from the mob's own data record:
+
+```
+mov eax, [vtable+0x70C]   ; so_mob_DataBox()
+push 0 ; push 0x3E7
+call eax
+mov ecx, [eax+4]          ; the mob data record
+mov edx, [ecx+0x5F]       ; <- the rescue parameter lives at record +0x5F
+push edx ; push attacker
+call sm_Scream4Rescue
+```
+
+So a damaged mob calls nearby allies, governed by a per-mob field at record `+0x5F` — the same record that
+carries the detect range at `+0x3B`.
+
+## Still open
+
+**I have not yet found the call that turns damage into aggro points.** `so_DamagedBy` does not call
+`mts_AppendAggroPoint` directly. The likely route is the tactic layer: `MobActionBase::mab_Damaged` receives
+a damaged event, and `MobActionInMove_Cancelable` overrides it. Note `MobActionBase::mab_Damaged` is folded
+with `so_scene_DetectRange` and `mts_ViewAggroList`, so the base is another empty stub and only the override
+does anything.
+
+Finding that link is the next step, and it is the one a simulator most needs: it decides how much hate a hit
+generates and therefore when a mob switches target.
+
+## A note on searching this binary
+
+Virtual calls compile as `mov reg, [vtable+off]` followed by `call reg` — there are **7,828** `call reg`
+sites and **zero** `call [reg+disp]`. Searching for callers by vtable slot offset therefore finds nothing,
+which looks like "no callers" rather than "wrong technique".
