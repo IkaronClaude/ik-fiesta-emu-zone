@@ -1,0 +1,107 @@
+using Fiesta.Emu.Zone.Data;
+
+namespace Fiesta.Emu.Zone.Parameter;
+
+/// <summary>Building a mob's stats, mirroring what the zone does.</summary>
+public static class MobParameters
+{
+    /// <summary>`Parameter::Container::c_StoreMob` (0x0043C550) — fill a mob's base cluster from its
+    /// `MobInfoServer` row.
+    ///
+    /// <para>Structurally the twin of <see cref="CharacterParameters.StorePure"/>: seed from the plus
+    /// eraser, write the five primaries, write the defences, then the same tail of 1000 into MoveSpeed,
+    /// HPRecover and SPRecover followed by zeroing slots 22..31.</para>
+    ///
+    /// <para><b>The Con/Dex crossover is here too.</b> `MobInfoServer` declares Str, Dex, Con, Int, Men in
+    /// that order (+0x50, +0x52, +0x54, +0x56, +0x58) but the cluster's order is Str, Con, Dex, Int, Men, so
+    /// the original reads +0x54 into slot 1 and +0x52 into slot 2. Copying the file's order straight across
+    /// would silently swap every mob's Constitution and Dexterity.</para>
+    ///
+    /// <para>⚠️ <b>WCmin, WCmax, TH, MAmin, MAmax and MH are left at ZERO</b>, exactly as the original leaves
+    /// them. A mob's attack values are not stat-cluster entries — they live in `MobWeapon`. Nothing in the
+    /// binary folds them into a cluster, so nothing here does either; see
+    /// <see cref="MobCombatant.NormalAttack"/>.</para></summary>
+    public static void StoreMob(ParameterContainer container, MobInfoServer info)
+    {
+        var b = container.Base;
+
+        b[Stat.Str] = info.Str;
+        b[Stat.Con] = info.Con;
+        b[Stat.Dex] = info.Dex;
+        b[Stat.Int] = info.Int;
+        b[Stat.Men] = info.Men;
+
+        // Defences. The gaps are deliberate: the original writes zero into WCmin/WCmax (+0x14/+0x18),
+        // TH (+0x20), MAmin/MAmax (+0x28/+0x2C) and MH (+0x34) rather than skipping them.
+        b[Stat.WCmin] = 0;
+        b[Stat.WCmax] = 0;
+        b[Stat.AC] = info.Ac;
+        b[Stat.TH] = 0;
+        b[Stat.TB] = info.Tb;
+        b[Stat.MAmin] = 0;
+        b[Stat.MAmax] = 0;
+        b[Stat.MR] = info.Mr;
+        b[Stat.MH] = 0;
+        b[Stat.MB] = info.Mb;
+
+        b[Stat.MoveSpeed] = CharacterParameters.BaseUnitySlotValue;
+        b[Stat.HPRecover] = CharacterParameters.BaseUnitySlotValue;
+        b[Stat.SPRecover] = CharacterParameters.BaseUnitySlotValue;
+        foreach (var slot in new[]
+                 {
+                     Stat.CastingTime, Stat.Critical, Stat.PhisycalWeaponMastery, Stat.MagicalWeaponMastery,
+                     Stat.ShieldAC, Stat.HitRate, Stat.EvaRate, Stat.MACri, Stat.CriDam, Stat.MagCriDam,
+                 })
+            b[slot] = 0;
+    }
+
+    /// <summary>`CharClassMob::MaxHP` (0x004496F0) — a mob's maximum HP.
+    ///
+    /// <para>Two instructions of substance: it calls a virtual to get the mob's info record and reads
+    /// <c>[+0x46]</c>, which the PDB names `MobInfo::MaxHP`. <b>It never touches the stat cluster</b> — unlike
+    /// the player's version, there is no Constitution term. A mob's HP is simply what the table says.</para></summary>
+    public static int MaxHp(MobInfo info) => info.MaxHp;
+}
+
+/// <summary>A mob as the damage formula sees it: a level and a stat container, built from game data.
+///
+/// <para>This is the link the simulation was missing. Mobs previously carried an all-zero container, so any
+/// attack against them was resolved against a defenceless target.</para></summary>
+public sealed class MobCombatant : Combat.ICombatant
+{
+    public required MobInfo Info { get; init; }
+    public required MobInfoServer Server { get; init; }
+
+    /// <summary>The mob's ordinary swing, or null if it only has skill attacks.
+    ///
+    /// <para>Kept beside the container rather than inside it, because the binary keeps it that way: nothing
+    /// folds `MobWeapon` into a stat cluster. Its <c>MinWc</c>/<c>MaxWc</c> are the mob's attack values and
+    /// its <c>SwingTime</c>/<c>HitTime</c> are the swing and damage-landing timings.</para></summary>
+    public Data.MobWeapon? NormalAttack { get; init; }
+
+    public required ParameterContainer Parameters { get; init; }
+
+    /// <summary>From `MobInfo`, not from the cluster — mobs have no level column in their stat block.</summary>
+    public int Level => Info.Level;
+
+    public int MaxHp => MobParameters.MaxHp(Info);
+
+    /// <summary>Build a mob's combat identity from the joined tables.</summary>
+    public static MobCombatant? Build(MobDataBox box, string inxName)
+    {
+        var info = box.InfoFor(inxName);
+        var server = box.ServerFor(inxName);
+        if (info is null || server is null) return null;
+
+        var container = new ParameterContainer();
+        MobParameters.StoreMob(container, server);
+
+        return new MobCombatant
+        {
+            Info = info,
+            Server = server,
+            NormalAttack = box.NormalAttackOf(inxName),
+            Parameters = container,
+        };
+    }
+}

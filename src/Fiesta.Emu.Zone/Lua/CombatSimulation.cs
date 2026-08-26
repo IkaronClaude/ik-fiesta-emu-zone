@@ -10,15 +10,47 @@ namespace Fiesta.Emu.Zone.Lua;
 public sealed class SimMob : ICombatant
 {
     /// <summary>The mob's stat layers, so it can be a defender in the real damage formula — its AC and MR
-    /// are what an attacker's power is measured against.
-    ///
-    /// <para>⚠️ Nothing populates this from game data yet: mob stats would come from `MobInfoServer.shn`,
-    /// which is not wired up. An all-zero container means a defenceless mob, which is at least an honest
-    /// placeholder rather than an invented one.</para></summary>
-    public ParameterContainer Parameters { get; } = new();
+    /// are what an attacker's power is measured against. Filled by <see cref="Define"/> from
+    /// `MobInfoServer.shn` via the ported `c_StoreMob`.</summary>
+    public ParameterContainer Parameters { get; private set; } = new();
 
-    /// <summary>The mob's level, for the attacker-vs-defender level gap.</summary>
+    /// <summary>The mob's level, for the attacker-vs-defender level gap. From `MobInfo.Level`.</summary>
     public int Level { get; set; } = 1;
+
+    /// <summary>The joined game-data definition, once one has been applied.</summary>
+    public MobCombatant? Definition { get; private set; }
+
+    /// <summary>The mob's ordinary swing, from `MobWeapon.shn`. Null means no data was applied and
+    /// <see cref="AttackDamage"/> is in force.</summary>
+    public Data.MobWeapon? NormalAttack { get; private set; }
+
+    /// <summary>Adopt a real mob definition: stats, level, HP and swing timings all from game data.
+    ///
+    /// <para><b>`SwingTime` is the swing cycle and `HitTime` the delay before damage lands</b>, both of which
+    /// were invented constants before this. What justifies the mapping is that `HitTime` is within
+    /// `SwingTime` in 2,837 of 2,841 normal attacks, so it can only be an offset inside the swing.
+    /// (`AtkSpd` usually equals `SwingTime` too, but not always — around 70 rows differ, so that is a
+    /// tendency rather than the identity an earlier note here claimed.)</para>
+    ///
+    /// <para>⚠️ `AtkDly` is deliberately NOT used. It reads like an interval, and an earlier version of this
+    /// method took it for one — but it exceeds `SwingTime` in 1,387 of 2,841 rows, and `HitTime` exceeds it
+    /// in 623, which would land a swing's damage after the following swing had already begun. Whatever it
+    /// is (a pause between attack sequences, an initial delay), it has not been read, so nothing here acts
+    /// on it.</para></summary>
+    public void Define(MobCombatant definition)
+    {
+        Definition = definition;
+        Parameters = definition.Parameters;
+        Level = definition.Level;
+        MaxHp = definition.MaxHp;
+        Hp = MaxHp;
+        NormalAttack = definition.NormalAttack;
+
+        if (definition.NormalAttack is not { } w) return;
+        if (w.SwingTime > 0) SwingIntervalMs = (uint)w.SwingTime;
+        if (w.HitTime > 0) SwingLandDelayMs = (uint)w.HitTime;
+        if (w.Range > 0) Arg.Combat.AttackRange = w.Range;
+    }
 
     public required ShineMob Mob { get; init; }
     public required MobActionArgument Arg { get; init; }
@@ -136,6 +168,16 @@ public sealed class CombatSimulation
     /// silently fall back to a flat number, and zero is a real weapon value, not a marker for "unset".</para></summary>
     private int SwingDamage(ICombatant attacker, ICombatant defender, int flat)
     {
+        // A mob with real weapon data rolls between its MinWC and MaxWC.
+        //
+        // ⚠️ This does NOT go through DamageCalculator, and that is deliberate rather than lazy: `c_StoreMob`
+        // leaves a mob's WCmin/WCmax slots at ZERO, and nothing in the binary folds `MobWeapon` into a stat
+        // cluster. Where those values enter the formula has not been traced, so routing them through the
+        // player's path would be inventing a layer assignment. The roll is the mob's actual attack input;
+        // the defender's AC is therefore NOT yet applied to it. Recorded in docs/PARAMETERS.md.
+        if (attacker is SimMob { NormalAttack: { } w } && w.MaxWc > 0)
+            return w.MinWc + (int)Rng.well512_GetRandom((uint)Math.Max(1, w.MaxWc - w.MinWc + 1));
+
         if (attacker is not SimPlayer { UsesStatFormula: true })
             return flat;
 
@@ -220,7 +262,8 @@ public sealed class CombatSimulation
                 var decision = attack.Decide(m.Arg);
                 if (decision.NextState == m.Arg.Current && m.Arg.Target is SimPlayer target && target.IsAlive)
                 {
-                    m.Swings.nadt_PushBack(m.AttackDamage, Now + m.SwingLandDelayMs, target);
+                    m.Swings.nadt_PushBack(SwingDamage(m, target, m.AttackDamage),
+                                           Now + m.SwingLandDelayMs, target);
                     m.NextSwingAt = Now + m.SwingIntervalMs;
                     Log.Add($"[{Now,6}] mob {m.Mob.Handle} swings ({decision.Choice}, {decision.Reason})");
                 }

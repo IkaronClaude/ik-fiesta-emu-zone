@@ -205,6 +205,49 @@ split is real:
 |---|---|
 | `MinWC` `MaxWC` `AC` `MinMA` `MaxMA` `MR` `TH` `TB` `ShieldAC` `CriRate` `CrlTB` `HitRatePlus` `EvaRatePlus` `MACriPlus` `CriDamPlus` `MagCriDamPlus` | `WCRate` `MARate` `ACRate` `MRRate` |
 
+## Mobs — `c_StoreMob` (0x0043C550)
+
+A mob's base cluster comes from `MobInfoServer`, and the function is the structural twin of `c_Storepure`:
+seed from the plus eraser, write primaries and defences, then the *same* tail — 1000 into MoveSpeed,
+HPRecover and SPRecover, slots 22..31 zeroed.
+
+| cluster slot | 0 Str | 1 Con | 2 Dex | 3 Int | 4 Men | 7 AC | 9 TB | 12 MR | 14 MB |
+|---|---|---|---|---|---|---|---|---|---|
+| `MobInfoServer` | +0x50 | **+0x54** | **+0x52** | +0x56 | +0x58 | +0x25 | +0x27 | +0x29 | +0x2B |
+
+**The Con/Dex crossover is here too.** `MobInfoServer` declares Str, Dex, Con, Int, Men in that order, but
+the cluster's order is Str, Con, Dex, Int, Men — so the original reads +0x54 into slot 1 and +0x52 into
+slot 2. Copying the file's order across would silently swap every mob's Constitution and Dexterity.
+
+**`WCmin`, `WCmax`, `TH`, `MAmin`, `MAmax` and `MH` are written as ZERO**, not skipped. A mob's attack values
+are not stat-cluster entries — they live in `MobWeapon`.
+
+`CharClassMob::MaxHP` (0x004496F0) returns `MobInfo[+0x46]` and never touches the cluster: unlike the
+player's version there is no Constitution term. A mob's HP is simply what the table says.
+
+### The three tables
+
+| file | rows | what it carries |
+|---|---|---|
+| `MobInfo.shn` | 2,878 | `ID`, `InxName`, `Name`, `Level`, `MaxHP` (+0x46), walk/run speed, size, types |
+| `MobInfoServer.shn` | 2,878 | `AC` `TB` `MR` `MB`, the five primaries, `MonEXP`, detection, resistances, `MaxSP` |
+| `MobWeapon.shn` | 5,815 | one row per ATTACK: `MinWC`/`MaxWC`/`TH`, `MinMA`/`MaxMA`/`MH`, `Range`, timings |
+
+`MobInfo` and `MobInfoServer` join on `ID`; `MobWeapon` joins on `InxName`, which is also the key the
+`MobRegen` spawn tables use. A mob may have several weapon rows; the ordinary swing is the one whose
+`Skill` is `-`.
+
+### Swing timings
+
+`SwingTime` is the swing cycle and `HitTime` the offset within it at which damage lands. What justifies
+that reading is that **`HitTime` ≤ `SwingTime` in 2,837 of 2,841** normal attacks, so it can only be an
+offset inside the swing. (`AtkSpd` usually equals `SwingTime` as well, but around 70 rows differ, so that
+is a tendency and not an identity.)
+
+⚠️ **`AtkDly` is not used.** It reads like an interval and was taken for one at first, but it exceeds
+`SwingTime` in 1,387 of 2,841 rows and `HitTime` exceeds it in 623 — which would land a swing's damage
+after the following swing had already begun. Whatever it is, it has not been read, so nothing acts on it.
+
 ## Open, and known to be open
 
 1. **Does anything add the cluster's own MaxHP slot?** `CharClass::MaxHP` returns
@@ -226,9 +269,17 @@ split is real:
    low your HP is. None of this is ported.
 
 2. **`ItemInfo` has `WCRate`/`MARate`/`ACRate`/`MRRate`, but `c_MakeTotal` never folds Item.Rate into the
-   total.** Either the damage formula reads that cluster directly (consistent with how the other unfolded
-   layers behave) or the StatModifier-to-cluster-index *naming* inherited from the damage-engine port is off
-   by a pair. The plus/rate alternation is proven; which *name* belongs to which pair is not independently
-   verified here. Resolving it means finding the equip path that writes the cluster.
+   total.** The "or the naming is off by a pair" half of this is **answered: it is not.** The PDB declares
+   the container's pairs in exactly `StatModifier` order, so `Item.Rate` really is a cluster that never
+   reaches the total. What remains is the behavioural half — the damage formula must read it directly, and
+   that path has not been traced.
 
-3. **`AtkPerAP` / `DmgPerAP`** and the stone columns (`PwrStoneWC`, `GrdStoneAC`, ...) are unused so far.
+3. **Where `MobWeapon` enters the damage formula.** `c_StoreMob` leaves a mob's WC/MA/TH/MH slots at zero
+   and nothing folds `MobWeapon` into a cluster, so a mob's attack values are read from somewhere else at
+   attack time. Until that path is traced the simulation rolls mob damage between `MinWC` and `MaxWC`
+   directly — the mob's real attack input, but it means **the defender's AC is not applied to mob damage**.
+   Player damage does go through the full formula.
+
+4. **`AtkDly`** — not an interval (see the mob section); actual meaning unread.
+
+5. **`AtkPerAP` / `DmgPerAP`** and the stone columns (`PwrStoneWC`, `GrdStoneAC`, ...) are unused so far.

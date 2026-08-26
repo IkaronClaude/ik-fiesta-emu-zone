@@ -1,5 +1,6 @@
 using Fiesta.Emu.Zone.Data;
 using Fiesta.Emu.Zone.Mob;
+using Fiesta.Emu.Zone.Parameter;
 
 namespace Fiesta.Emu.Zone.Lua;
 
@@ -21,6 +22,35 @@ public static class MapSpawner
     /// <para>Iteration is over the actual row counts, never over the server's fixed
     /// <see cref="MobRegenData.MaxSpawnGroups"/> capacity, so changing that limit needs no change
     /// here.</para></summary>
+    /// <summary>Spawn a map and give every mob its REAL stats, from the game's own tables.
+    ///
+    /// <para>The overload taking a <see cref="MobDataBox"/> is the one to prefer: each spawned mob gets its
+    /// level, HP, defences, primaries, weapon damage and swing timings from `MobInfo`/`MobInfoServer`/
+    /// `MobWeapon`. A mob the tables do not know falls back to <paramref name="statsFor"/>, and that gap is
+    /// reported rather than silently filled — see <see cref="SpawnAll(CombatSimulation, MobRegenData,
+    /// MobDataBox, Func{string, MobStats}?, uint, ushort)"/>.</para></summary>
+    public static IReadOnlyList<SimMob> SpawnAll(
+        this CombatSimulation sim,
+        MobRegenData map,
+        MobDataBox data,
+        Func<string, MobStats>? statsFor = null,
+        uint spawnSeed = 1,
+        ushort firstHandle = 100)
+    {
+        var spawned = sim.SpawnAll(map, statsFor, spawnSeed, firstHandle);
+        foreach (var mob in spawned)
+            if (MobCombatant.Build(data, mob.Name) is { } definition)
+                mob.Define(definition);
+        return spawned;
+    }
+
+    /// <summary>Which mobs in a map have no row in the data box — a decode gap, not a shrug.</summary>
+    public static IReadOnlyList<string> MobsMissingData(this MobRegenData map, MobDataBox data)
+        => map.Entries.Select(e => e.MobIndex).Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(n => data.InfoFor(n) is null || data.ServerFor(n) is null)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
     public static IReadOnlyList<SimMob> SpawnAll(
         this CombatSimulation sim,
         MobRegenData map,
