@@ -39,11 +39,11 @@ have.
 
 **`MobInfo`** — `WalkSpeed`, `RunSpeed`, `Size`, `Id`
 **`MobInfoServer`** — `MonExp`, `DetectCha`, `FollowCha`, `MaxSp`, `Rank`, `Id`
-**`MobWeapon`** — `Th`, `MinMa`, `MaxMa`, `Mh`, `BlastRate`, `Id`, and `Skill` (used only as a marker for
-"is this the ordinary swing", never to actually cast anything)
+**`MobWeapon`** — `BlastRate`, `Id`, and `Skill` (used only as a marker for "is this the ordinary swing",
+never to actually cast anything).
 
-`MinMa`/`MaxMa` are the notable pair: a mob's magic attack values are parsed and then ignored, so an
-`HT_MA` mob currently hits with its physical numbers.
+`Th`, `MinMa`, `MaxMa` and `Mh` were on this list and are now **connected**: `sm_PrepareWeapon` stages them
+into the mob's `Item.Plus` cluster alongside `MinWc`/`MaxWc`.
 
 ---
 
@@ -61,8 +61,12 @@ captured**.
 
 **`MobInfo`** — `WeaponType`, `ArmorType`, `GradeType`, `IsPlayerSide`, `AbsoluteSize`
 
-**`MobWeapon`** — `AtkType`, `MopAttackTarget` (read in `mab_Think` as a 5-way switch — the switch is
-*seen* but not ported), `StaName`, `StaStrength`, `StaRate`, `AggroInitialize`
+**`MobWeapon`** — `AtkType`; `MopAttackTarget` (read in `mab_Think` as a 5-way switch — the switch is
+*seen* but not ported); and `StaName`, `StaStrength`, `StaRate`, `AggroInitialize`, whose MEANING is now
+known even though the columns are still not parsed: `ShineMob::smo_SwingDamage` passes the weapon's
+abstate, `StaStrength`, `StaRate` and `AggroInitialize` into the shared swing, so they are the weapon's
+status-effect strength and chance plus its aggro contribution. `AggroInitialize` is a live lead on the
+open "hate points per hit" question in §5.
 
 **`Param<Class>Server`** — `Wizdom` (no cluster slot exists for it), `AtkPerAP`, `DmgPerAP`, all twelve
 stone columns, `PainRes`, `RestraintRes`, `CurseRes`, `ShockRes`, `CharTitlePt`, `SkillPwrPt`,
@@ -97,7 +101,6 @@ These are *my* inferences. Each produces correct-looking behaviour and none was 
 |---|---|---|
 | `IsRanged => Range >= 100` | `MobWeapon` | **Invented threshold.** Melee sit at 10–40 and ranged at 250+, so the gap is wide, but the server's own cutoff (if it has one) is unread |
 | Which `MobType`s are fightable | `MobInfo.IsFightable` | Inferred from the enum names. `MT_NONAME` is *not* excluded, on no evidence either way |
-| Mob damage = roll(`MinWc`..`MaxWc`) | `CombatSimulation.SwingDamage` | Uses the mob's real attack input, but **bypasses the damage formula entirely, so the defender's AC is not applied**. See OPEN_QUESTIONS #2 |
 | `AtkSpd == SwingTime` is a tendency | timing port | Measured (2,242/2,263), not read. The port does not rely on it |
 | Aggro tie-breaking | `MobTargetSelector` | Explicitly a guess — the server walks an intrusive list |
 | Hate points per hit | aggro | The call that converts damage to aggro is not identified |

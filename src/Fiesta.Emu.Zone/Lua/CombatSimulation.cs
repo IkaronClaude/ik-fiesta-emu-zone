@@ -172,17 +172,14 @@ public sealed class CombatSimulation
     /// silently fall back to a flat number, and zero is a real weapon value, not a marker for "unset".</para></summary>
     private int SwingDamage(ICombatant attacker, ICombatant defender, int flat)
     {
-        // A mob with real weapon data rolls between its MinWC and MaxWC.
+        // A mob with a real definition goes through the SAME formula as the player.
         //
-        // ⚠️ This does NOT go through DamageCalculator, and that is deliberate rather than lazy: `c_StoreMob`
-        // leaves a mob's WCmin/WCmax slots at ZERO, and nothing in the binary folds `MobWeapon` into a stat
-        // cluster. Where those values enter the formula has not been traced, so routing them through the
-        // player's path would be inventing a layer assignment. The roll is the mob's actual attack input;
-        // the defender's AC is therefore NOT yet applied to it. Recorded in docs/PARAMETERS.md.
-        if (attacker is SimMob { NormalAttack: { } w } && w.MaxWc > 0)
-            return w.MinWc + (int)Rng.well512_GetRandom((uint)Math.Max(1, w.MaxWc - w.MinWc + 1));
-
-        if (attacker is not SimPlayer { UsesStatFormula: true })
+        // That is not a convenience: `sm_PrepareWeapon` writes a mob's chosen weapon into its Item.Plus
+        // cluster — a mob's weapon is its gear — so by the time anything reads its stats the weapon is
+        // simply present, and `roe_MinWC` has no mob branch at all. An earlier version of this method rolled
+        // mob damage directly between MinWC and MaxWC because that path had not been traced yet, which meant
+        // the DEFENDER'S AC WAS NEVER APPLIED to mob damage.
+        if (attacker is not (SimMob { Definition: not null } or SimPlayer { UsesStatFormula: true }))
             return flat;
 
         // The damage roll is drawn from the SERVER'S generator, not System.Random. The calculator will

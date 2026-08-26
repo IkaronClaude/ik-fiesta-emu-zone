@@ -17,10 +17,8 @@ public static class MobParameters
     /// the original reads +0x54 into slot 1 and +0x52 into slot 2. Copying the file's order straight across
     /// would silently swap every mob's Constitution and Dexterity.</para>
     ///
-    /// <para>⚠️ <b>WCmin, WCmax, TH, MAmin, MAmax and MH are left at ZERO</b>, exactly as the original leaves
-    /// them. A mob's attack values are not stat-cluster entries — they live in `MobWeapon`. Nothing in the
-    /// binary folds them into a cluster, so nothing here does either; see
-    /// <see cref="MobCombatant.NormalAttack"/>.</para></summary>
+    /// <para><b>WCmin, WCmax, TH, MAmin, MAmax and MH are written as ZERO here</b>, exactly as the original
+    /// does. They are filled in later, when a weapon is selected — see <see cref="PrepareWeapon"/>.</para></summary>
     public static void StoreMob(ParameterContainer container, MobInfoServer info)
     {
         var b = container.Base;
@@ -53,6 +51,44 @@ public static class MobParameters
                      Stat.ShieldAC, Stat.HitRate, Stat.EvaRate, Stat.MACri, Stat.CriDam, Stat.MagCriDam,
                  })
             b[slot] = 0;
+    }
+
+    /// <summary>`ShineMob::sm_PrepareWeapon` (0x004A9D50) — stage a chosen weapon's values into the mob's
+    /// stat container.
+    ///
+    /// <para><b>A mob's weapon is its GEAR.</b> The original writes the six values to
+    /// <c>mob + 0x10A0 … 0x10C0</c>, and `ShineMobileObject::smo_Param` — the embedded
+    /// <see cref="ParameterContainer"/> — sits at <c>+0x0FC0</c>. The difference is <c>0xCC</c>, which is the
+    /// <see cref="StatModifier.Item"/> Plus cluster, and every one of the six lands exactly on its
+    /// `WCmin`/`WCmax`/`TH`/`MAmin`/`MAmax`/`MH` slot.</para>
+    ///
+    /// <para>That single fact explains the whole shape of mob combat, and it is worth stating plainly
+    /// because this project got it wrong first:</para>
+    /// <list type="bullet">
+    ///   <item><see cref="StoreMob"/> zeroes those slots at spawn because a mob has not picked a weapon yet.</item>
+    ///   <item>Selecting a weapon (`so_mob_SelectWeapon` → `so_mob_SkillParameterSet_WeaponIndex` →
+    ///         `sm_PrepareWeapon`) writes it into the Item layer.</item>
+    ///   <item>`c_MakeTotal` folds Item.Plus into the total as its second operation, so the weapon is simply
+    ///         there by the time anything reads the stats.</item>
+    ///   <item>Which is why `roe_MinWC` has <b>no mob branch</b> — it reads the container and finds the
+    ///         weapon already in it, exactly as it finds a player's sword.</item>
+    /// </list>
+    ///
+    /// <para>The consequence for this simulation is that mob damage no longer needs a special path: a mob is
+    /// an <see cref="Combat.ICombatant"/> whose gear happens to come from `MobWeapon`, and the defender's AC
+    /// applies to it like anything else.</para>
+    ///
+    /// <para>⚠️ The original takes its arguments as <c>(MaxWC, MinWC, TH, MaxMA, MinMA, MH)</c> — the WC and
+    /// MA pairs are passed max-first. Getting that backwards swaps every mob's damage bounds.</para></summary>
+    public static void PrepareWeapon(ParameterContainer container, Data.MobWeapon weapon)
+    {
+        var item = container.Plus(StatModifier.Item);
+        item[Stat.WCmin] = weapon.MinWc;
+        item[Stat.WCmax] = weapon.MaxWc;
+        item[Stat.TH] = weapon.Th;
+        item[Stat.MAmin] = weapon.MinMa;
+        item[Stat.MAmax] = weapon.MaxMa;
+        item[Stat.MH] = weapon.Mh;
     }
 
     /// <summary>`CharClassMob::MaxHP` (0x004496F0) — a mob's maximum HP.
@@ -97,11 +133,17 @@ public sealed class MobCombatant : Combat.ICombatant
         var container = new ParameterContainer();
         MobParameters.StoreMob(container, server);
 
+        // Staging the weapon into the Item layer is what the server does on weapon selection, and it is what
+        // makes a mob a full combatant rather than one with an empty attack.
+        var weapon = box.AttackAgainstPlayer(inxName);
+        if (weapon is not null)
+            MobParameters.PrepareWeapon(container, weapon);
+
         return new MobCombatant
         {
             Info = info,
             Server = server,
-            NormalAttack = box.AttackAgainstPlayer(inxName),
+            NormalAttack = weapon,
             Parameters = container,
         };
     }

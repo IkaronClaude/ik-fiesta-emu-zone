@@ -9,26 +9,7 @@ resolved — the data does not automatically win.
 
 ---
 
-## 1. Where `MobWeapon` enters the damage formula
-
-**Status:** open. Partially traced.
-
-`roe_MinWC` reads *only* the attacker's `Parameter::Container` — one virtual call, no weapon pointer, no
-type branch. But `c_StoreMob` leaves a mob's `WCmin`/`WCmax`/`TH`/`MAmin`/`MAmax`/`MH` slots at **zero**,
-and nothing found so far folds `MobWeapon` into a cluster.
-
-So either something writes those slots between spawn and attack, or mob damage takes a different path
-entirely. `so_mob_RegenComplete` does `c_clear` → `c_StoreMob` → `c_MakeTotal` with no weapon step.
-
-**Consequence today:** the simulation rolls mob damage directly between `MinWC` and `MaxWC`. That uses the
-mob's real attack input, but **the defender's AC is not applied to mob damage**. Player damage does go
-through the full formula.
-
-**Next step:** `MobAttackSequence::mas_Find` → `AttackElement4Mob`, reached from `so_mob_RegenComplete`.
-
----
-
-## 2. The unresolved term in `nextAttackAt`
+## 1. The unresolved term in `nextAttackAt`
 
 **Status:** open, minor.
 
@@ -38,7 +19,7 @@ rather than certainly the whole of it.
 
 ---
 
-## 3. Does anything add the cluster's own `MaxHP` slot?
+## 2. Does anything add the cluster's own `MaxHP` slot?
 
 **Status:** open.
 
@@ -48,7 +29,7 @@ differently. The cluster also has a second `MaxHP_2` slot of unknown purpose.
 
 ---
 
-## 4. `Item.Rate` never reaches the total
+## 3. `Item.Rate` never reaches the total
 
 **Status:** half answered.
 
@@ -58,7 +39,7 @@ pairs in exactly that order. So `Item.Rate` really is a cluster `c_MakeTotal` sk
 
 ---
 
-## 5. The angle question
+## 4. The angle question
 
 **Status:** open debt, documented at length in `docs/AGGRO.md` and `PROJECT_PLAN.md`.
 
@@ -67,7 +48,7 @@ Neither that absence nor the plausible turn-cost mechanism is proof, and neither
 
 ---
 
-## 6. Mob skill attacks are not modelled
+## 5. Mob skill attacks are not modelled
 
 **Status:** open.
 
@@ -79,6 +60,32 @@ The simulation only uses the `Skill == "-"` row. `AttackElement4Mob` carries a 5
 ---
 
 # Resolved
+
+## Where `MobWeapon` enters the damage formula - CLOSED 2026-08-26
+
+**A mob's weapon is its GEAR.** `ShineMob::sm_PrepareWeapon` (0x004A9D50) writes the selected weapon's
+`MinWC`/`MaxWC`/`TH`/`MinMA`/`MaxMA`/`MH` to `mob + 0x10A0 ... 0x10C0`. The embedded container
+(`ShineMobileObject::smo_Param`) is at `+0x0FC0`, and the difference is `0xCC` - the **`Item.Plus`**
+cluster. All six land exactly on its weapon slots.
+
+So the whole sequence is ordinary:
+
+1. `c_StoreMob` zeroes those slots at spawn - the mob has not chosen a weapon yet.
+2. `so_mob_SelectWeapon` -> `so_mob_SkillParameterSet_WeaponIndex` -> `sm_PrepareWeapon` fills them on
+   selection. Weapon choice runs through `ae4m_NextSkill` plus a WELL512 roll against `sm_GetUseWeaponRate`.
+3. `c_MakeTotal` folds `Item.Plus` in as its second operation.
+4. `roe_MinWC` reads the container and finds the weapon already there - **which is why it has no mob
+   branch**, the thing that made this look mysterious.
+
+The earlier note in this project claiming "nothing folds `MobWeapon` into a cluster" was simply wrong.
+
+Ported, and mob damage now goes through `DamageCalculator` like everything else - so **the defender's AC
+applies to mob damage**, which it previously did not.
+
+Resolved on the way: `ShineMob::smo_SwingDamage` passes the weapon's abstate, `StaStrength`, `StaRate` and
+`AggroInitialize` into the shared swing, explaining four fields the audit listed as decoded-but-unconnected.
+`AggroInitialize` is also a lead on the open "hate points per hit" question.
+
 
 ## Pinky: physical, not magic — CLOSED 2026-08-26
 
