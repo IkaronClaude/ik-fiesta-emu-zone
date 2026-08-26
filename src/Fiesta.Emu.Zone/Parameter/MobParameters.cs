@@ -121,6 +121,19 @@ public sealed class MobCombatant : Combat.ICombatant
     /// <summary>From `MobInfo`, not from the cluster — mobs have no level column in their stat block.</summary>
     public int Level => Info.Level;
 
+    /// <summary>The targeting policy this mob's `EnemyDetectType` selects.
+    ///
+    /// <para>⚠️ The three rarer values — `ED_AGGRESSIVE2`, `ED_AGGREESIVEALL` and `ED_ENEMYALLDETECT`, 22
+    /// mobs between them — have their own `mts_SelectTarget` overrides that have NOT been read. They are
+    /// mapped to <see cref="Mob.TargetingPolicy.Aggressive"/> because they all derive from it, which is a
+    /// reasonable floor and not a claim about what they add.</para></summary>
+    public Mob.TargetingPolicy Policy => Server.DetectType switch
+    {
+        Data.EnemyDetect.NoBrain => Mob.TargetingPolicy.NoBrain,
+        Data.EnemyDetect.Bout => Mob.TargetingPolicy.Bout,
+        _ => Mob.TargetingPolicy.Aggressive,
+    };
+
     public int MaxHp => MobParameters.MaxHp(Info);
 
     /// <summary>Build a mob's combat identity from the joined tables.</summary>

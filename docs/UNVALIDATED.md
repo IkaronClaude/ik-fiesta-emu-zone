@@ -31,7 +31,6 @@ from a table we already parse. Behaviour looks reasonable and is uniformly wrong
 | `RespawnSeconds = 25` default | `SimMob` | `MobRegen.RegStandard` is wired, but `RegMin`/`RegMax`/the delta schedule are not, and `MobInfoServer.RegenInterval` / `ResetInterval` are not even decoded |
 | `AttackRange = 10` default | `MobCombatState` | `MobWeapon.Range` — wired *only* when a definition is applied |
 | `FacingToleranceUnits = 5` | `MobCombatState` | unknown; no obviously matching column found, but note rule 3 below before treating that as settled |
-| **one targeting policy for every mob** | `MobTargetSelector` | **`MobInfoServer.EnemyDetectType`** — selects the selector SUBCLASS, mapping one-for-one onto the RTTI hierarchy. 220 mobs are passive (`ED_BOUT`) and 764 are `ED_NOBRAIN`; here they all attack on sight |
 
 Every mob currently turns at the same rate and chases at the same speed. `TurnSpeed` in particular matters
 for the open **angle question**: if turn rate varies per mob, a uniform constant would mask exactly the
@@ -45,8 +44,7 @@ Parsed into a record, then never read. Harmless today, but each one is a behavio
 have.
 
 **`MobInfo`** — `WalkSpeed`, `RunSpeed`, `Size`, `Id`
-**`MobInfoServer`** — `MonExp`, `DetectCha`, `FollowCha`, `MaxSp`, `Rank`, `Id`, and `DetectType` (decoded
-and its meaning read — it selects the targeting policy — but the simulation does not act on it yet)
+**`MobInfoServer`** — `MonExp`, `DetectCha`, `FollowCha`, `MaxSp`, `Rank`, `Id`
 **`MobWeapon`** — `BlastRate`, `Id`, and `Skill` (used only as a marker for "is this the ordinary swing",
 never to actually cast anything).
 

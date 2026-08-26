@@ -177,7 +177,11 @@ public class MobDataTests
         orc.NormalAttack.ShouldNotBeNull();
     }
 
-    /// <summary>Mobs hit for their own weapon's damage, and different mobs hit differently.</summary>
+    /// <summary>Mobs hit for their own weapon's damage, and different mobs hit differently.
+    ///
+    /// <para>⚠️ Both mobs here are AGGRESSIVE. This test used `MushRoom` until per-mob targeting policy was
+    /// wired up, and then failed — correctly: `MushRoom` is `ED_BOUT`, passive, and does not attack an
+    /// unprovoked player. The failure was the feature working.</para></summary>
     [SkippableFact]
     public void MobsHitForTheirOwnWeaponDamage()
     {
@@ -195,11 +199,70 @@ public class MobDataTests
             return sim.Player.MaxHp - sim.Player.Hp;
         }
 
-        var fromMushroom = TotalDamageTaken(box, "MushRoom");
+        box.ServerFor("Pinky")!.IsAggressive.ShouldBeTrue();
+        box.ServerFor("Orc")!.IsAggressive.ShouldBeTrue();
+
+        var fromPinky = TotalDamageTaken(box, "Pinky");
         var fromOrc = TotalDamageTaken(box, "Orc");
 
-        fromMushroom.ShouldBeGreaterThan(0, "a mob with a weapon should land hits");
-        fromOrc.ShouldBeGreaterThan(fromMushroom, "an Orc hits far harder than a Mushroom");
+        fromPinky.ShouldBeGreaterThan(0, "an aggressive mob attacks on sight");
+        fromOrc.ShouldNotBe(fromPinky, "different mobs hit for different amounts");
+    }
+
+    /// <summary>A PASSIVE mob ignores a player standing next to it, and fights back the moment it is hit.
+    ///
+    /// <para>`MobTargetBout::mts_SelectTarget` walks the hate list and never calls `so_AllOfRange` — it has
+    /// no sight scan at all. That is 220 mobs, including everything a new character meets first, and until
+    /// the policy was wired every one of them attacked on sight.</para></summary>
+    [SkippableFact]
+    public void APassiveMobOnlyFightsBackOnceProvoked()
+    {
+        Skip.If(Shine() is null, "server data not present; set SHINE_DATA");
+        var box = Box();
+        box.ServerFor("MushRoom")!.DetectType.ShouldBe(EnemyDetect.Bout);
+
+        static CombatSimulation Setup(MobDataBox box, out SimMob mob)
+        {
+            var sim = new CombatSimulation(seed: 5);
+            var m = sim.AddMob(handle: 10, x: 6, y: 0, configure: x => x.RespawnSeconds = 99_999);
+            m.Define(MobCombatant.Build(box, "MushRoom")!);
+            m.Mob.so_getDetectRange = 500;          // enormous sight; it still must not care
+            sim.Player.Hp = sim.Player.MaxHp = 100_000;
+            sim.Player.AttackDamage = 1;            // a Mushroom has 38 HP; the default 40 one-shots it,
+                                                    // and a corpse cannot demonstrate retaliation
+            mob = m;
+            return sim;
+        }
+
+        var ignored = Setup(box, out _);
+        ignored.Run(maxTicks: 600);
+        ignored.Player.Hp.ShouldBe(ignored.Player.MaxHp, "a passive mob does not attack on sight");
+
+        var provoked = Setup(box, out var target);
+        provoked.PlayerAttack(target);              // one hit is enough to earn its attention
+        provoked.Run(maxTicks: 600);
+        provoked.Player.Hp.ShouldBeLessThan(provoked.Player.MaxHp, "but it fights back once struck");
+    }
+
+    /// <summary>A shopkeeper never targets anything at all — `MobTargetNoBrain::mts_SelectTarget` is a call
+    /// to `mts_InitThink` and nothing else.</summary>
+    [SkippableFact]
+    public void AShopkeeperNeverAttacksEvenWhenHit()
+    {
+        Skip.If(Shine() is null, "server data not present; set SHINE_DATA");
+        var box = Box();
+        box.ServerFor("RouSmithJames")!.DetectType.ShouldBe(EnemyDetect.NoBrain);
+
+        var sim = new CombatSimulation(seed: 5);
+        var smith = sim.AddMob(handle: 10, x: 6, y: 0, configure: m => m.RespawnSeconds = 99_999);
+        smith.Define(MobCombatant.Build(box, "RouSmithJames")!);
+        smith.Mob.so_getDetectRange = 500;
+        sim.Player.Hp = sim.Player.MaxHp = 100_000;
+
+        sim.PlayerAttack(smith);
+        sim.Run(maxTicks: 600);
+
+        sim.Player.Hp.ShouldBe(sim.Player.MaxHp, "NoBrain never acquires a target, even its attacker");
     }
 
     /// <summary>A mob's stats reach the damage formula: attacking an Orc is harder than a Mushroom because

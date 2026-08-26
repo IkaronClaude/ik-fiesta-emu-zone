@@ -117,12 +117,9 @@ public sealed class MobActionTargetting : MobActionBase
         // drift and quietly turn directional detection back into a concentric circle.
         arg.Selector.Facing = arg.Combat.Facing;
 
-        // ⚠️ ANYTHING THAT HAS HURT THIS MOB OUTRANKS THE SIGHT SCAN. `mab_Think` calls BOTH
-        // `mts_GetTopAggroTarget` and the scan, and without the hate list a mob struck from behind never
-        // fights back: the attacker is outside the forward circle, so acquisition finds nothing and the mob
-        // stands there being hit. That was invisible until the sight centre moved off the mob.
-        var picked = arg.Selector.mts_GetTopAggroTarget()
-                     ?? arg.Selector.mts_SelectTarget(arg.Actor, arg.Nearby);
+        // The hate list outranks the sight scan, and for a passive mob it is the ONLY source -- both of
+        // which now live inside mts_SelectTarget, where the server keeps them (in the subclass).
+        var picked = arg.Selector.mts_SelectTarget(arg.Actor, arg.Nearby);
 
         // Line of sight is checked HERE and not during acquisition, so a target inside the detect circle
         // that cannot be seen is acquired and then discarded.
@@ -160,10 +157,7 @@ public sealed class MobActionRoaming : MobActionBase
     public override MobActionBase mab_Think(MobActionArgument arg)
     {
         arg.Selector.Facing = arg.Combat.Facing;
-        return arg.Selector.mts_GetTopAggroTarget() is null
-               && arg.Selector.mts_SelectTarget(arg.Actor, arg.Nearby) is null
-            ? this
-            : Actor_Targetting;
+        return arg.Selector.mts_SelectTarget(arg.Actor, arg.Nearby) is null ? this : Actor_Targetting;
     }
 }
 

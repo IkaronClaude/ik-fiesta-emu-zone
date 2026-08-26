@@ -40,6 +40,7 @@ public sealed class SimMob : ICombatant
         MaxHp = definition.MaxHp;
         Hp = MaxHp;
         NormalAttack = definition.NormalAttack;
+        Mob.Selector.Policy = definition.Policy;
 
         if (definition.NormalAttack is not { } w) return;
 

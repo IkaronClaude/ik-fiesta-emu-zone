@@ -37,6 +37,19 @@ public sealed class MobTargetStruct
 ///
 /// <para><b>Acquisition is a circle, not a sector.</b> `so_AllOfRange` takes a `FanFormSectorArgument*`
 /// and the aggro call site passes NULL. Sectors exist in this engine but belong to skills.</para></summary>
+/// <summary>Which `MobTargetSelector` subclass a mob behaves as. Chosen per mob by
+/// `MobInfoServer.EnemyDetectType`; see <see cref="Data.EnemyDetect"/>.</summary>
+public enum TargetingPolicy
+{
+    /// <summary>`MobTargetNoBrain` — never acquires anything. 764 mobs, mostly shopkeepers.</summary>
+    NoBrain,
+    /// <summary>`MobTargetBout` — retaliate only, no sight scan at all. 220 mobs, including the starter
+    /// set (Slime, MushRoom, Imp, Crab).</summary>
+    Bout,
+    /// <summary>`MobTargetAggresive` — hate list first, then the forward sight scan. 1,872 mobs.</summary>
+    Aggressive,
+}
+
 public sealed class MobTargetSelector
 {
     private readonly List<MobTargetStruct> _aggro = new();
@@ -63,6 +76,15 @@ public sealed class MobTargetSelector
 
     /// <summary>The mob's facing, in direction units (2° each, 180 to a full turn).</summary>
     public int Facing { get; set; }
+
+    /// <summary>Which targeting policy this mob uses — the `MobTargetSelector` SUBCLASS the server would
+    /// give it, chosen by `MobInfoServer.EnemyDetectType`.
+    ///
+    /// <para>Modelled as an enum rather than a class hierarchy because the three behaviours are small and
+    /// the dispatch is the only thing that differs. The hierarchy is
+    /// <c>MobTargetSelector → MobTargetBout → { MobTargetNoBrain, MobTargetAggresive }</c>, which is why
+    /// Aggressive is Bout PLUS a scan rather than an alternative to it.</para></summary>
+    public TargetingPolicy Policy { get; set; } = TargetingPolicy.Aggressive;
 
     /// <summary>`ShineMob::so_mob_SightCenter` (0x004ABCD0) — where a mob's detection circle is CENTRED.
     ///
@@ -94,6 +116,20 @@ public sealed class MobTargetSelector
     /// that is the whole of the direction-dependence.</para></summary>
     public IShineObject? mts_SelectTarget(IShineObject scanner, IEnumerable<IShineObject> nearby)
     {
+        // POLICY FIRST -- the server puts this in the subclass, so the branch here stands in for the vtable.
+        //
+        //   MobTargetNoBrain::mts_SelectTarget  is `mts_InitThink()` and nothing else: it never picks a
+        //     target, which is why shopkeepers ignore you.
+        //   MobTargetBout::mts_SelectTarget     walks the MobTargetStruct hate list with an `mdb_CanIKill`
+        //     check and NEVER CALLS so_AllOfRange -- it has no sight scan, so it only ever retaliates.
+        //   MobTargetAggresive::mts_SelectTarget adds the scan on top, since it derives from Bout.
+        if (Policy == TargetingPolicy.NoBrain)
+            return null;
+
+        var hated = mts_GetTopAggroTarget();
+        if (hated is not null || Policy == TargetingPolicy.Bout)
+            return hated;
+
         // best := r * r, exactly as mts_SelectTarget+0x3B9 does before calling so_AllOfRange.
         var best = (long)DetectRange * DetectRange;
         IShineObject? chosen = null;
