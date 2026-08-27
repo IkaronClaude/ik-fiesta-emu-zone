@@ -60,6 +60,42 @@ public sealed class LevelingBotHarness
     /// the driver narrating its own decisions.</summary>
     public List<string> Output { get; } = [];
 
+    /// <summary>A kill quest the driver can see and make progress on.
+    ///
+    /// <para>Enough of a quest for a grind loop to be real: a name, a target mob, a required count, and
+    /// progress that comes from the simulation's own kill tally rather than a counter the harness bumps.
+    /// It is NOT a port of the quest system — `QuestData.shn`, objectives, rewards and hand-in are all
+    /// absent — it is the smallest thing that makes "grind until done" a genuine loop.</para></summary>
+    public sealed record KillQuest(int Id, string Name, string MobName, int MobId, int Need);
+
+    /// <summary>Stub values where ZERO is not neutral but BLOCKING.
+    ///
+    /// <para>The default stub hands back 0, which is a safe nothing for most numbers and actively wrong for
+    /// a few: 0 free bag slots reads as a full bag, and the driver locks itself into an inventory-sort phase
+    /// and never fights again. It is the same trap as a sentinel — a value that means "no information" being
+    /// read as a real measurement.</para>
+    ///
+    /// <para>Callers can add to this; the defaults exist so a driver is not wedged by the harness's own
+    /// silence.</para></summary>
+    public Dictionary<string, double> StubDefaults { get; } = new(StringComparer.Ordinal)
+    {
+        ["bagFreeSlots"] = 40,
+        ["maxHpStones"] = 100,
+        ["maxSpStones"] = 100,
+        ["hpStones"] = 50,
+        ["spStones"] = 50,
+        ["money"] = 1_000_000,
+        ["invenCount"] = 0,
+        ["hpStonePrice"] = 10,
+        ["spStonePrice"] = 10,
+    };
+
+    /// <summary>Quests the driver is told it has.</summary>
+    public List<KillQuest> Quests { get; } = [];
+
+    /// <summary>How far along a kill quest is, from the simulation's own per-mob kill tally.</summary>
+    public int ProgressOf(KillQuest q) => Math.Min(q.Need, _sim.KillsByName.GetValueOrDefault(q.MobName));
+
     /// <summary>Attach the harness to a simulation and load a driver script into it.</summary>
     public static LevelingBotHarness Attach(CombatSimulation sim, string luaSource)
     {
@@ -213,7 +249,7 @@ public sealed class LevelingBotHarness
     {
         "inventory", "inventoryCounts", "equipment", "drops", "shopItems", "storageItems",
         "activeQuests", "availableQuests", "eligibleQuests", "questStatics", "learnedSkills",
-        "skillCooldowns", "selfAbstates", "aggressors", "aggressorSpawns", "gates", "instanceDoors",
+        "skillCooldowns", "selfAbstates", "aggressorSpawns", "gates", "instanceDoors",
         "scenarioAreas", "scenarioAckedAreas", "npcSeedList", "knownShopsOfKind", "npcLocation",
         "npcCoord", "mobLocation", "entityPos", "itemInfo", "skillInfo", "coveragePath",
     };
@@ -222,6 +258,12 @@ public sealed class LevelingBotHarness
     {
         if (KnownTables.Contains(name) || _tableShaped.Contains(name))
             return DynValue.NewTable(new Table(script));
+
+        if (StubDefaults.TryGetValue(name, out var chosen))
+            return DynValue.NewNumber(chosen);
+
+        if (StubDefaults.TryGetValue(name, out var preset))
+            return DynValue.NewNumber(preset);
 
         if (_numberShaped.Contains(name))
             return DynValue.NewNumber(0);
@@ -264,8 +306,78 @@ public sealed class LevelingBotHarness
         ["selfHandle"] = _ => DynValue.NewNumber(_sim.Player.Handle),
         ["inCombat"] = _ => DynValue.NewBoolean(_api.inCombat()),
         ["aggressorHandles"] = _ => DynValue.NewTable(_api.aggressorHandles()),
+        // A COUNT, not a list -- `bot.aggressors() > 0`. It ends in "s" and the plural heuristic called it a
+        // table, which is the same trap `bagFreeSlots` fell into.
+        ["aggressors"] = _ => DynValue.NewNumber(_sim.Mobs.Count(m => m.Arg.Target is SimPlayer)),
         ["nearbyMobs"] = _ => DynValue.NewTable(_api.nearbyMobs()),
         ["killsByMe"] = _ => DynValue.NewNumber(_sim.Kills),
+        ["activeQuests"] = _ =>
+        {
+            var t = new Table(_sim.Script);
+            foreach (var q in Quests)
+            {
+                var row = new Table(_sim.Script);
+                row["id"] = q.Id;
+                row["prog"] = ProgressOf(q);
+                row["need"] = q.Need;
+                row["done"] = ProgressOf(q) >= q.Need;
+                t.Append(DynValue.NewTable(row));
+            }
+            return DynValue.NewTable(t);
+        },
+        ["questName"] = a =>
+        {
+            var id = (int)a[0].Number;
+            var q = Quests.FirstOrDefault(x => x.Id == id);
+            return DynValue.NewString(q?.Name ?? "?");
+        },
+        ["questProgress"] = a =>
+        {
+            var q = Quests.FirstOrDefault(x => x.Id == (int)a[0].Number);
+            return DynValue.NewNumber(q is null ? 0 : ProgressOf(q));
+        },
+        ["questDone"] = a =>
+        {
+            var q = Quests.FirstOrDefault(x => x.Id == (int)a[0].Number);
+            return DynValue.NewBoolean(q is not null && ProgressOf(q) >= q.Need);
+        },
+        ["questActive"] = a => DynValue.NewBoolean(Quests.Any(x => x.Id == (int)a[0].Number)),
+
+        // The driver's real quest path: a STATIC definition (objectives with a mob and a count) plus a
+        // PULSE carrying live progress. It reads them together -- `questStatics` for the shape, `questPulse`
+        // for how far along each objective is -- so a quest that exists only in `activeQuests` is invisible
+        // to the part of the driver that decides what to go and kill.
+        ["questStatics"] = a =>
+        {
+            var t = new Table(_sim.Script);
+            foreach (var q in Quests) t[q.Id] = DynValue.NewTable(StaticOf(q));
+            return DynValue.NewTable(t);
+        },
+        ["quest"] = a =>
+        {
+            var q = Quests.FirstOrDefault(x => x.Id == (int)a[0].Number);
+            return q is null ? DynValue.Nil : DynValue.NewTable(StaticOf(q));
+        },
+        ["questPulse"] = _ =>
+        {
+            var quests = new Table(_sim.Script);
+            foreach (var q in Quests)
+            {
+                var objProg = new Table(_sim.Script);
+                objProg[1] = ProgressOf(q);
+                var entry = new Table(_sim.Script);
+                entry["objProg"] = DynValue.NewTable(objProg);
+                quests[q.Id] = DynValue.NewTable(entry);
+            }
+            var pulse = new Table(_sim.Script);
+            pulse["quests"] = DynValue.NewTable(quests);
+            return DynValue.NewTable(pulse);
+        },
+        ["questObjProgress"] = a =>
+        {
+            var q = Quests.FirstOrDefault(x => x.Id == (int)a[0].Number);
+            return DynValue.NewNumber(q is null ? 0 : ProgressOf(q));
+        },
         ["walkTo"] = a =>
         {
             _api.walkTo((int)a[0].Number, (int)a[1].Number);
@@ -278,6 +390,36 @@ public sealed class LevelingBotHarness
         ["mobLevel"] = a => MobField(a, m => DynValue.NewNumber(m.Level)),
         ["mobAttackRange"] = a => MobField(a, m => DynValue.NewNumber(m.Arg.Combat.AttackRange)),
     };
+
+    /// <summary>The static half of a quest: one kill objective, in the shape the driver reads.
+    ///
+    /// <para><c>type == 1</c> is a kill objective — `objTotal` sums `count` only for that type — and `mob`
+    /// is the numeric `MobInfo.ID`, which is how the driver decides what to hunt.</para></summary>
+    private Table StaticOf(KillQuest q)
+    {
+        var objective = new Table(_sim.Script);
+        objective["type"] = 1;
+        objective["mob"] = q.MobId;
+        objective["count"] = q.Need;
+        objective["prog"] = ProgressOf(q);
+        objective["done"] = ProgressOf(q) >= q.Need;
+
+        var objectives = new Table(_sim.Script);
+        objectives.Append(DynValue.NewTable(objective));
+
+        var mob = new Table(_sim.Script);
+        mob["id"] = q.MobId;
+        mob["name"] = q.MobName;
+        var mobs = new Table(_sim.Script);
+        mobs.Append(DynValue.NewTable(mob));
+
+        var rec = new Table(_sim.Script);
+        rec["id"] = q.Id;
+        rec["name"] = q.Name;
+        rec["objectives"] = DynValue.NewTable(objectives);
+        rec["mobs"] = DynValue.NewTable(mobs);
+        return rec;
+    }
 
     private DynValue MobField(CallbackArguments a, Func<SimMob, DynValue> pick)
     {

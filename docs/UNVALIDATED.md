@@ -108,6 +108,24 @@ Of the 51 `Stat` slots, these are never written by any code path here, for playe
 
 ---
 
+## 4b. Magic classes cannot fight
+
+**A wizard's magic attack never reaches the swing.** `MobActionAttack` and `PlayerAttack` both resolve
+through `DamageCalculator`'s PHYSICAL path (`roe_MinWC`/`roe_MaxWC`), so `MAmin`/`MAmax` — which the item
+catalogue loads, `sm_PrepareWeapon` stages, and `roe_MinMA`/`roe_MaxMA` exist to consume — are inert.
+
+Measured over a 20-minute grind against the same Uruga spawn, level 40, best gear per class:
+
+| class | WC | orcs killed |
+|---|---:|---:|
+| Ranger | 950 | 137 |
+| Warrior / Knight | 581 | 45 |
+| HighCleric | 509 | 37 |
+| **Wizard / Enchanter** | **128** | **1** |
+
+The magic classes are not badly balanced — their damage is simply not being computed. `MobWeapon.HitType`
+(`HT_PY`/`HT_MA`) already says which path an attack should take and nothing consults it.
+
 ## 5. Rules based on theory rather than a reading
 
 These are *my* inferences. Each produces correct-looking behaviour and none was read out of the binary.

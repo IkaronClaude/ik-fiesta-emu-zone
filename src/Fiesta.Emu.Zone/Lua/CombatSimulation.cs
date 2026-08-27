@@ -35,6 +35,10 @@ public sealed class SimMob : ICombatant
     public void Define(MobCombatant definition)
     {
         Definition = definition;
+        // The NAME comes with the definition. Without this a mob defined outside MapSpawner has an empty
+        // name, and anything that counts kills BY NAME -- a kill quest, a drop table -- silently never
+        // matches. It cost a test failure that looked like the quest was broken.
+        Name = definition.Info.InxName;
         Parameters = definition.Parameters;
         Level = definition.Level;
         MaxHp = definition.MaxHp;
@@ -209,6 +213,7 @@ public sealed class CombatSimulation
             target.RespawnAt = Now + (uint)(target.RespawnSeconds * 1000);
             target.Arg.Target = null;
             Kills++;
+            _killsByName[target.Name] = _killsByName.GetValueOrDefault(target.Name) + 1;
             Log.Add($"[{Now,6}] {Describe(target)} died (respawn at {target.RespawnAt})");
         }
     }
@@ -220,6 +225,11 @@ public sealed class CombatSimulation
     /// last tick resolves against this tick's state rather than being overtaken.</para></summary>
     /// <summary>How many mobs the player has killed this run.</summary>
     public int Kills { get; private set; }
+
+    private readonly Dictionary<string, int> _killsByName = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Kills broken down by the mob's `MobRegen` name — what a kill quest counts.</summary>
+    public IReadOnlyDictionary<string, int> KillsByName => _killsByName;
 
     private static string Describe(SimMob m)
         => string.IsNullOrEmpty(m.Name) ? $"mob {m.Mob.Handle}" : $"{m.Name}#{m.Mob.Handle}";
