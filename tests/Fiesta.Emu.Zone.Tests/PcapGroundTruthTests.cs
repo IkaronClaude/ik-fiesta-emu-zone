@@ -297,22 +297,29 @@ public class PcapGroundTruthTests
     /// single piece of gear with a WC% bonus scales the Str chain on the server and not here — a few
     /// percent, which is the size of the residual.</para>
     ///
-    /// <para><b>The mechanism is confirmed by arithmetic that leaves no freedom.</b> Because
-    /// <c>displayed = Item.Plus x R/1000</c> while <c>roe_MaxWC = Str x R/1000 + displayed</c>, solving for
-    /// the gear rate R that would bracket each outgoing case gives <b>R >= 1142</b> (Orc) and
-    /// <b>R >= 1122</b> (Pinky) — two different mobs, two different armour values, one overlapping answer.
-    /// And <c>1150</c> is a WCRate that actually exists in `ItemInfo.shn`. A single real gear value, through
-    /// the mechanism read from the binary, closes both.</para>
+    /// <para><b>Five hypotheses have been tested and eliminated</b>, each by decoding or checking rather
+    /// than by argument. Recorded so nobody spends the effort again:</para>
     ///
-    /// <para>It is left RED rather than plugged in, because R >= 1142 is a bound and 1150 is a candidate —
-    /// neither is a reading. Closing it means decoding `NC_CHAR_CLIENT_ITEM_CMD`'s variable-length
-    /// `PROTO_ITEMPACKET_INFORM` records (a 103-byte `SHINE_ITEM_STRUCT` with a 101-byte union) to get the
-    /// equipped gear's actual rate.</para>
+    /// <list type="number">
+    ///   <item><b>Weapon mastery.</b> All three `NC_CHAR_CLIENT_PASSIVE_CMD` packets are `00 00` — the
+    ///         character has no passive skills at all.</item>
+    ///   <item><b>A DEF-down debuff on the mob.</b> Zero of the 41 clean outgoing hits landed while the
+    ///         target had any abstate active.</item>
+    ///   <item><b>Weapon enhancement.</b> The equipped weapon is +10, worth <c>+1197</c> — and it is in
+    ///         BOTH displayed bounds (1709-512 = 1840-643 = 1197), exactly as `roe_MinWC`/`roe_MaxWC` read
+    ///         it from the WCmax slot. It cancels.</item>
+    ///   <item><b>The equipment layer split.</b> Decoded `NC_CHAR_CLIENT_ITEM_CMD` box 8: Raging Claws,
+    ///         base WC 512-643, <c>WCRate=1000</c>. Splitting Base / Item.Plus / Upgrade.Plus reproduces
+    ///         2080-2211 — identical to collapsing the total. No difference.</item>
+    ///   <item><b>Random options.</b> The per-instance blob carries them as (type, value) triples, and the
+    ///         weapon has four: <c>ROT_STR +5, ROT_CON +23, ROT_INT +24, ROT_MEN +5</c>. All PRIMARY
+    ///         stats, so they are already inside the displayed <c>Strength.change</c> — nothing new
+    ///         reaches the weapon bounds. (`ROT_WC` is type 7 and this weapon has none.)</item>
+    /// </list>
     ///
-    /// <para>Three OTHER leads were eliminated getting here, each by checking rather than arguing: weapon
-    /// enhancement (`Upgrade.Plus[WCmax]` cancels in the max bound), a DEF-down debuff on the mob (zero of
-    /// the 41 clean outgoing hits landed while the target had any abstate), and weapon mastery (this
-    /// character has no passive skills at all).</para></summary>
+    /// <para>What is left is 3 swings in 219, 2.0-2.6% over a computed ceiling, with every nameable cause
+    /// checked off. It stays RED because "I have run out of hypotheses" is not the same as "the model is
+    /// exact", and widening the margin would bury that distinction.</para></summary>
     [SkippableFact]
     public void TheCeilingIsExact_KNOWN_RED()
     {
