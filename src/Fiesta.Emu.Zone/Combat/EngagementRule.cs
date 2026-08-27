@@ -61,6 +61,34 @@ public static class EngagementRuleExtensions
     /// <summary>Whether the rule forces every hit to be a critical, regardless of the rolled chance.</summary>
     public static bool AlwaysCriticals(this EngagementRule rule) => rule == EngagementRule.AlwaysCritical;
 
+    /// <summary>Whether this rule's `roe_Damage` adds the FREE-STAT terms — and which pair.
+    ///
+    /// <para>`roe_Damage` is <b>overridden per rule</b> at vtable slot 4, which this port missed for a
+    /// long time: it had the base function and treated it as the whole story. The two overrides call the
+    /// base and then add a flat pair (`roe_Damage@NormalPY+0x2F3`):</para>
+    /// <code>
+    /// damage = base(arg, attack, defend) + attacker-&gt;FreeStat&lt;A&gt;() - defender-&gt;FreeStat&lt;D&gt;();
+    /// </code>
+    ///
+    /// <para>Physical reads <c>FreeStatStr</c> / <c>FreeStatCon</c> (slots +0x468 / +0x474); magical reads
+    /// <c>FreeStatInt</c> / <c>FreeStatMen</c> (+0x46C / +0x478) — the governing stats of each school.</para>
+    ///
+    /// <para>Which rules use which, read off the vtables rather than assumed:</para>
+    /// <list type="bullet">
+    ///   <item>NormalPY, PhisycalSkill and <b>AlwaysCritical</b> share the physical override</item>
+    ///   <item>NormalMA and MagicalSkill share the magical one</item>
+    ///   <item>CureSkill, AlwaysHit and HealAttack keep the BASE — no free-stat term at all</item>
+    /// </list>
+    ///
+    /// <para>AlwaysCritical taking the physical override is the one that would not have been guessed.</para></summary>
+    public static DamageSchool? FreeStatSchool(this EngagementRule rule) => rule switch
+    {
+        EngagementRule.NormalPhysical or EngagementRule.PhysicalSkill or EngagementRule.AlwaysCritical
+            => DamageSchool.Physical,
+        EngagementRule.NormalMagic or EngagementRule.MagicalSkill => DamageSchool.Magical,
+        _ => null,
+    };
+
     /// <summary>Whether attack power is scaled by weapon mastery.
     ///
     /// <para>Every rule does EXCEPT <see cref="EngagementRule.MagicalSkill"/>, which ignores it entirely.

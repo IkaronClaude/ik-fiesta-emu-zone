@@ -74,6 +74,20 @@ public sealed record AttackModifiers
 
     /// <summary>The same, for the DEFENDER, feeding `roe_DefendPower`'s AC/MR block.</summary>
     public int DefenderHpMissingPermille { get; init; }
+
+    /// <summary>The attacker's FREE-STAT points in this school's governing stat — Str for a physical rule,
+    /// Int for a magical one. Added FLAT to the damage by `roe_Damage`'s per-rule override.
+    ///
+    /// <para>⚠️ <b>Free-stat points only, not the total stat.</b> The base value a class and level give you
+    /// feeds the multiplicative part through the container; only the points the player SPENT show up here.
+    /// The operator measured this in-client on 2026-07-29 — 30 points into END produced a clean −30 on
+    /// damage taken — which is also where the 1:1 scale comes from, since the accessors read level-keyed
+    /// records out of runtime-allocated globals that a static read cannot see.</para></summary>
+    public int AttackerFreeStat { get; init; }
+
+    /// <summary>The defender's free-stat points in this school's defensive stat — Con physical, Men
+    /// magical. SUBTRACTED flat.</summary>
+    public int DefenderFreeStat { get; init; }
 }
 
 /// <summary>The result of one resolved swing — the damage plus the intermediates worth logging.

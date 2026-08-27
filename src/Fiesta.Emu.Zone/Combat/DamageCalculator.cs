@@ -295,6 +295,17 @@ public static class DamageCalculator
         var defendPower = DefendPower(defender, rule, mods.DefenderHpMissingPermille);
 
         var damage = CoreDamage(attackPower, defendPower, attacker.Level, mods.BaseDamageRatePermille);
+
+        // THE PER-RULE `roe_Damage` OVERRIDE. Slot 4 of the rule vtable is not the base function for five
+        // of the eight rules: NormalPY, PhisycalSkill and AlwaysCritical add
+        //     + attacker.FreeStatStr - defender.FreeStatCon
+        // and NormalMA / MagicalSkill the Int/Men pair, on top of the base result. Verified by running the
+        // real function under emulation over six input sets -- see tools/oracle_free_stat_damage.py.
+        //
+        // A rule with no free-stat school (CureSkill, AlwaysHit, HealAttack) keeps the base untouched.
+        if (rule.FreeStatSchool() is not null)
+            damage += mods.AttackerFreeStat - mods.DefenderFreeStat;
+
         if (isCritical) damage *= 2.0;
 
         // ANGLE FIRST, THEN DAMAGE RATE -- the order the binary uses at roe_CalcDamage+0x572..+0x585:

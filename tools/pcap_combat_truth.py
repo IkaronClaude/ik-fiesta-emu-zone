@@ -33,6 +33,12 @@ ANALYSE = r"C:/Projects/fiesta-proxy/tools/analyse_damage.py"
 XOR_TABLE = os.environ.get("XOR_TABLE_PATH", r"C:/Projects/ik-fiesta-bots/xor-table.hex")
 
 # PROTO_NC_BAT_SWING_DAMAGE_CMD::flag, from Fiesta.pdb. Byte 0 then byte 1, LSB first.
+#
+# ⚠️ INCOMPLETE, and measured to be so. In Damage.pcapng the flag word takes values 0x0004 and 0x000C
+# (damage always 0 -> miss / block), 0x0001 (damage ~2x the plain range -> a CRITICAL, though this table
+# calls bit 0 "isdamage"), and a family with only HIGH bits set -- 0x2800, 0x2A00, 0x3200, 0x3E00, 0x5A00,
+# 0x7400, 0xF200 -- whose damage sits above what a maximum roll can produce. Those high bits have no names
+# here at all. Consumers must test `flagWord == 0`, never `flags == []`.
 FLAGS_B0 = ["isdamage", "iscritical", "ismissed", "isshieldblock",
             "isheal", "isenchant", "isresist", "IsCostumWeapon"]
 FLAGS_B1 = ["isDead", "isImmune", "IsCostumShield"]
@@ -111,6 +117,13 @@ def player_stats(pcap, stream, start, end):
 
 
 def flag_names(lo, hi):
+    """Named bits only — see `flagWord` for the authoritative "was this a plain hit" test.
+
+    ⚠️ NEVER decide "clean hit" from this list being empty. The two byte tables below cover 8 + 3 bits of a
+    16-bit field, so a flag word like 0x2800 (bits 11 and 13, both unnamed) yields NO names and reads as a
+    plain hit — and in `Damage.pcapng` those are precisely the swings that exceed what a maximum roll can
+    produce. An unknown bit is not the absence of a flag.
+    """
     names = [n for i, n in enumerate(FLAGS_B0) if lo & (1 << i)]
     names += [n for i, n in enumerate(FLAGS_B1) if hi & (1 << i)]
     return names
@@ -123,7 +136,7 @@ def parse(lines):
     `0000` row truncates every larger struct to its first 16 bytes — which read `NC_BAT_TARGETINFO_CMD`'s
     level (at @27) as absent and reported every player as level 0.
     """
-    swings, levels, order = [], {}, 0
+    swings, levels, chat, order = [], {}, [], 0
     pending, buf = None, bytearray()
     conv = -1
 
@@ -143,8 +156,15 @@ def parse(lines):
                 "defender": int.from_bytes(raw[2:4], "little"),
                 "damage": int.from_bytes(raw[6:8], "little"),
                 "restHp": int.from_bytes(raw[8:12], "little"),
+                "flagWord": lo | (hi << 8),
                 "flags": flag_names(lo, hi),
             })
+        elif name == "NC_ACT_CHAT_REQ" and len(raw) > 2:
+            # The operator narrates the experiment in chat while capturing, so these lines ARE the legend
+            # for the packet log. Payload is [itemLinkDataCount u8][len u8][text].
+            text = raw[2:2 + raw[1]].decode("latin-1", "replace").strip()
+            if text and not text.startswith("&"):
+                chat.append({"order": order, "text": text})
         elif name == "NC_BAT_TARGETINFO_CMD" and len(raw) > 27:
             # order u8, targethandle u16, five u32, then targetlevel u8 at @27.
             levels[int.from_bytes(raw[1:3], "little")] = raw[27]
@@ -172,7 +192,7 @@ def parse(lines):
                 buf.extend(data)
             continue
     flush()
-    return swings, levels
+    return swings, levels, chat
 
 
 def main():
@@ -181,13 +201,15 @@ def main():
     ap.add_argument("--port", type=int, help="zone port; VARIES per map (Uruga 9022, RouN 9016)")
     ap.add_argument("--stream", type=int, help="stream index for the roster lookup")
     ap.add_argument("--decoded", help="reuse/keep the decoded dump here instead of re-running")
+    ap.add_argument("--from-chat", help="keep only swings AFTER the chat line containing this text")
+    ap.add_argument("--to-chat", help="...and BEFORE the one containing this text")
     ap.add_argument("--start-packet", type=int, help="narrow the player-stat snapshot to a clean window")
     ap.add_argument("--end-packet", type=int)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
     lines = decode(a.pcap, a.port, a.decoded)
-    swings, levels = parse(lines)
+    swings, levels, chat = parse(lines)
     mobs = roster(a.pcap, a.stream)
 
     # The player is the handle that appears in combat and is NOT in the mob roster. TARGETINFO gives its
@@ -195,10 +217,29 @@ def main():
     seen = {s["attacker"] for s in swings} | {s["defender"] for s in swings}
     players = sorted(h for h in seen if h not in mobs)
 
+    # WINDOW THE SWINGS THE SAME WAY THE STATS ARE WINDOWED. Pinning the stat snapshot to a clean packet
+    # range while selecting swings across the WHOLE session is the same mistake as merging conversations,
+    # one level down: the histogram then mixes configurations the header claims are constant. The window
+    # is expressed in the operator's own chat annotations because that is what marks the experiment.
+    def order_of(fragment):
+        for c in chat:
+            if fragment.lower() in c["text"].lower():
+                return c["order"]
+        raise SystemExit("no chat line matching %r; try --list-chat" % fragment)
+
+    lo = order_of(a.from_chat) if a.from_chat else None
+    hi = order_of(a.to_chat) if a.to_chat else None
+    if lo is not None or hi is not None:
+        before = len(swings)
+        swings = [s for s in swings
+                  if (lo is None or s["order"] > lo) and (hi is None or s["order"] < hi)]
+        print("chat window: kept %d of %d swings" % (len(swings), before))
+
     stats, mixed = player_stats(a.pcap, a.stream, a.start_packet, a.end_packet)
 
     truth = {
         "source": os.path.basename(a.pcap),
+        "chat": chat,
         "playerStats": stats,
         "playerStatsMixedInWindow": mixed,
         "players": [{"handle": h, "level": levels.get(h, 0)} for h in players],
@@ -208,7 +249,7 @@ def main():
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(truth, f, indent=1)
 
-    clean = [s for s in swings if not s["flags"] and s["damage"] > 0]
+    clean = [s for s in swings if s["flagWord"] == 0 and s["damage"] > 0]
     if mixed:
         print("!! player stats CHANGE inside the chosen window -- narrow it with --start-packet/--end-packet")
     print("player stats: %s" % ", ".join("%s=%d" % kv for kv in sorted(stats.items())))

@@ -10,23 +10,29 @@ namespace Fiesta.Emu.Zone.Tests;
 /// <summary>The simulation checked against A REAL SERVER'S numbers, from a packet capture.
 ///
 /// <para>Every other test here compares the port to the binary it was read from. This compares it to what
-/// the live server actually put on the wire, which is the only check that can catch a reading that was
-/// faithful and still wrong.</para>
+/// the live server actually put on the wire — the only check that can catch a reading that was faithful
+/// and still wrong.</para>
 ///
 /// <para>Generate the fixture (the capture is BYO and never committed):</para>
 /// <code>
 /// python tools/pcap_combat_truth.py --pcap Z:/Damage.pcapng --port 9022 --stream 4 \
+///        --from-chat "At 20, let" --to-chat "END to 50" \
 ///        --start-packet 1736 --end-packet 4279 --out truth.json
 /// FIESTA_COMBAT_TRUTH=...\truth.json dotnet test
 /// </code>
 ///
-/// <para>`Damage.pcapng` is the right capture for this: the operator drove it deliberately as a damage
-/// experiment and narrated the configuration in chat ("Okay END was +3, now going to +20",
-/// "Forward-facing only now"). The window above is one clean stretch with no stat change inside it — the
-/// extractor warns when a window mixes configurations, and a mixed window makes every range meaningless.</para></summary>
+/// <para>`Damage.pcapng` is the right capture: the operator drove it as a deliberate damage experiment and
+/// narrated the configuration in chat, so the window is delimited by the operator's own annotations rather
+/// than by a guess.</para>
+///
+/// <para><b>What this instrument can and cannot settle.</b> It can show the port models the right system on
+/// real inputs. It CANNOT show bit-exactness, because the wire does not carry the character's full
+/// `Parameter::Container` — mastery rates, passive-skill plus values and abstate rates never appear in a
+/// stream of cluster totals. Bit-exactness is what <c>tools/oracle_free_stat_damage.py</c> is for: it runs
+/// the real function under emulation and diffs. Use each for what it is good for.</para></summary>
 public class PcapGroundTruthTests
 {
-    private sealed record Swing(int Conv, int Attacker, int Defender, int Damage, string[] Flags);
+    private sealed record Swing(int Conv, int Attacker, int Defender, int Damage, int FlagWord, string[] Flags);
 
     private sealed class Truth
     {
@@ -35,13 +41,17 @@ public class PcapGroundTruthTests
         public required IReadOnlyDictionary<string, int> Stats { get; init; }
         public required IReadOnlyList<Swing> Swings { get; init; }
 
-        /// <summary>Clean hits only: no flag set at all, and non-zero damage.
+        /// <summary>Clean hits only: the flag word is exactly ZERO, and the damage is non-zero.
         ///
-        /// <para>A flagged swing is a miss, a block, a critical or an immunity, and each follows a different
-        /// rule — mixing them into one damage range makes the range meaningless. Zero damage is a real
-        /// outcome rather than a decode failure, which is why it is dropped HERE and kept in the
-        /// extractor: the miss rate is ground truth too, just not for this question.</para></summary>
-        public IEnumerable<Swing> Clean => Swings.Where(s => s.Flags.Length == 0 && s.Damage > 0);
+        /// <para>⚠️ <b>Tested on the raw word, never on the decoded name list being empty.</b> The names
+        /// cover 11 of 16 bits, so a swing flagged 0x2800 decodes to no names at all — and in this capture
+        /// those are among the hits that exceed what a maximum roll can produce. An unknown bit is not the
+        /// absence of a flag.</para>
+        ///
+        /// <para>Zero damage is a real outcome rather than a decode failure, which is why it is dropped
+        /// here and kept in the extractor: the miss rate is ground truth too, just not for this
+        /// question.</para></summary>
+        public IEnumerable<Swing> Clean => Swings.Where(s => s.FlagWord == 0 && s.Damage > 0);
     }
 
     private static string? TruthPath()
@@ -72,6 +82,7 @@ public class PcapGroundTruthTests
             s.GetProperty("attacker").GetInt32(),
             s.GetProperty("defender").GetInt32(),
             s.GetProperty("damage").GetInt32(),
+            s.GetProperty("flagWord").GetInt32(),
             s.GetProperty("flags").EnumerateArray().Select(f => f.GetString()!).ToArray())).ToList();
 
         return new Truth { MobHandles = mobs, PlayerLevels = levels, Stats = stats, Swings = swings };
@@ -79,9 +90,9 @@ public class PcapGroundTruthTests
 
     /// <summary>Clean damage in one direction, for one mob type, within ONE conversation.
     ///
-    /// <para>⚠️ The conversation filter is not optional. A relog opens a new one, and the character's stats
-    /// and gear can differ across it — merged, the observed range for a single mob widened from 55-118 to
-    /// 55-213 and stopped meaning anything.</para></summary>
+    /// <para>⚠️ The conversation filter is not optional. A relog opens a new one and the character's
+    /// configuration can differ across it — merged, one mob's observed range widened from 55-118 to 55-213
+    /// and stopped meaning anything.</para></summary>
     private static List<int> Damages(Truth t, MobDataBox box, string mob, int conv, bool incoming)
     {
         var mobId = box.InfoFor(mob)!.Id;
@@ -92,6 +103,80 @@ public class PcapGroundTruthTests
             return t.PlayerLevels.ContainsKey(to)
                    && t.MobHandles.TryGetValue(from, out var id) && id == mobId;
         }).Select(s => s.Damage).ToList();
+    }
+
+    /// <summary>Rebuild the captured character from the wire.
+    ///
+    /// <para>⚠️ <b>The wire carries CLUSTER SLOT TOTALS, not accessor outputs.</b>
+    /// `Parameter::Cluster::c_compare` builds `NC_CHAR_BASEPARAMCHANGE` by walking the cluster slot by
+    /// slot, so the displayed "Dmg 1709-1840" is the WCmin/WCmax SLOT — `roe_MinWC` adds the Str chain on
+    /// top of it. Feeding the displayed number straight into <c>CoreDamage</c> as attack power
+    /// under-predicts by about 30% and looks exactly like a missing formula term. It produced a wrong
+    /// "the engine is 30% short" finding from this very harness before it was caught.</para>
+    ///
+    /// <para>An empty-modifier container with those totals as Base reproduces the same totals. What it
+    /// cannot reproduce is anything the wire does not carry, which is the honest limit of the
+    /// instrument.</para></summary>
+    private static Combatant RebuildPlayer(Truth t)
+    {
+        var p = new ParameterContainer();
+        p.Base[Stat.Str] = t.Stats["STR"];
+        p.Base[Stat.Con] = t.Stats["END"];
+        p.Base[Stat.Dex] = t.Stats["DEX"];
+        p.Base[Stat.Int] = t.Stats["INT"];
+        p.Base[Stat.Men] = t.Stats["SPR"];
+        p.Base[Stat.WCmin] = t.Stats["DmgMin"];
+        p.Base[Stat.WCmax] = t.Stats["DmgMax"];
+        p.Base[Stat.AC] = t.Stats["DEF"];
+        p.Base[Stat.MR] = t.Stats["MDef"];
+        p.Base[Stat.TH] = t.Stats["Aim"];
+        p.Base[Stat.TB] = t.Stats["Evasion"];
+        return new Combatant(t.PlayerLevels.Values.First(), p);
+    }
+
+    private readonly record struct Band(double Floor, double Ceiling);
+
+    private static Band Predict(ICombatant attacker, ICombatant defender, LevelGapTable gaps,
+                                DamageByAngleTable angle, CombatantKind attackerKind)
+    {
+        var defenderKind = attackerKind == CombatantKind.Player ? CombatantKind.Monster : CombatantKind.Player;
+        var gap = gaps.Rate(attackerKind, attacker.Level, defenderKind, defender.Level);
+        var lo = DamageCalculator.AttackPower(attacker, 0);
+        var hi = DamageCalculator.AttackPower(attacker, 1000);
+        var def = DamageCalculator.DefendPower(defender);
+
+        return new Band(
+            DamageCalculator.CoreDamage(lo, def, attacker.Level) * gap / 1000.0,
+            DamageCalculator.CoreDamage(hi, def, attacker.Level) * angle.Rates.Max() / 1000.0 * gap / 1000.0);
+    }
+
+    private sealed record Case(string Mob, bool Incoming, List<int> Observed, Band Predicted)
+    {
+        public string Label => (Incoming ? "IN " : "OUT ") + Mob;
+    }
+
+    private static List<Case> Measure(Truth t, string shine)
+    {
+        var box = MobDataBox.Load(shine);
+        var gaps = LevelGapTable.Load(shine);
+        var angle = DamageByAngleTable.Load(Path.Combine(shine, "World"));
+        var player = RebuildPlayer(t);
+        var cases = new List<Case>();
+
+        foreach (var name in new[] { "Orc", "Pinky" })
+        {
+            var mob = MobCombatant.Build(box, name)!;
+            foreach (var incoming in new[] { true, false })
+            {
+                var observed = Damages(t, box, name, conv: 0, incoming: incoming);
+                if (observed.Count < 5) continue;
+                var band = incoming
+                    ? Predict(mob, player, gaps, angle, CombatantKind.Monster)
+                    : Predict(player, mob, gaps, angle, CombatantKind.Player);
+                cases.Add(new Case(name, incoming, observed, band));
+            }
+        }
+        return cases;
     }
 
     [SkippableFact]
@@ -111,111 +196,81 @@ public class PcapGroundTruthTests
         t.Swings.ShouldContain(s => s.Flags.Contains("ismissed"));
     }
 
-    /// <summary>A monster's damage against a player stays UNDER the ceiling we predict.
+    /// <summary>⭐ THE FLOOR HOLDS, EXACTLY — every clean hit in the capture, both directions and both mob
+    /// types, is at least what a minimum roll through our formula produces.
     ///
-    /// <para>The ceiling is a maximum weapon roll through the core formula, times the largest
-    /// `DamageByAngle` rate (1200, a hit from directly behind), times the EVP level-gap rate — which every
-    /// row of that table says is 1000. Nothing legitimate can exceed it, so this is a real check even
-    /// though it is one-sided.</para>
-    ///
-    /// <para>The FLOOR is deliberately not asserted. Observed damage runs about 30% below our predicted
-    /// minimum, the same unexplained factor as the outgoing case below; asserting a floor known to be wrong
-    /// would be asserting the bug.</para></summary>
+    /// <para>This is the strongest statement the capture can support, and it has no free parameters: a
+    /// minimum weapon roll, the level-gap rate read from `DamageLvGapPVE`/`EVP`, and nothing else. No
+    /// angle (1000 head-on), no critical, no tolerance.</para></summary>
     [SkippableFact]
-    public void AMonsterNeverHitsHarderThanOurCeiling()
+    public void EveryCleanHitIsAtLeastOurPredictedMinimum()
     {
         var path = TruthPath();
         var shine = Shine();
         Skip.If(path is null, "no capture fixture");
         Skip.If(shine is null, "server data not present; set SHINE_DATA");
 
-        var t = Load(path!);
-        var box = MobDataBox.Load(shine!);
-        var gaps = LevelGapTable.Load(shine!);
-        var angle = DamageByAngleTable.Load(Path.Combine(shine!, "World"));
-        var playerLevel = t.PlayerLevels.Values.First();
-        var checkedAny = false;
+        var cases = Measure(Load(path!), shine!);
+        cases.Count.ShouldBeGreaterThanOrEqualTo(4, "the fixture should cover both mobs both ways");
 
-        foreach (var name in new[] { "Orc", "Pinky" })
-        {
-            var observed = Damages(t, box, name, conv: 0, incoming: true);
-            if (observed.Count < 20) continue;
-            checkedAny = true;
-
-            var mob = MobCombatant.Build(box, name)!;
-            var gap = gaps.Rate(CombatantKind.Monster, mob.Level, CombatantKind.Player, playerLevel);
-            gap.ShouldBe(1000, "every DamageLvGapEVP row is 1000");
-
-            var ceiling = DamageCalculator.CoreDamage(
-                    DamageCalculator.MaxWeaponDamage(mob), t.Stats["DEF"], mob.Level)
-                * angle.Rates.Max() / 1000.0 * gap / 1000.0;
-
-            observed.Max().ShouldBeLessThanOrEqualTo((int)Math.Ceiling(ceiling),
-                $"{name} hit harder than a maximum roll from directly behind allows");
-        }
-
-        checkedAny.ShouldBeTrue("the fixture carried no mob with enough clean hits to check");
+        foreach (var c in cases)
+            c.Observed.Min().ShouldBeGreaterThanOrEqualTo((int)Math.Floor(c.Predicted.Floor),
+                $"{c.Label}: a hit landed below a minimum roll");
     }
 
-    /// <summary>⛔ KNOWN RED — the port under-predicts a player's damage by a consistent factor.
+    /// <summary>The ceiling holds to within a MEASURED margin, asserted as a maximum so any regression
+    /// widens it and fails here.
     ///
-    /// <para>Measured on `Damage.pcapng`, conversation 0: a level 82 character with a displayed attack of
-    /// 1709–1840 who changed neither gear nor stats inside the window.</para>
+    /// <para>Measured on `Damage.pcapng`, one chat-delimited window, level 82 character:</para>
     ///
     /// <list type="table">
-    ///   <item><term>Orc (lv 61, our AC 242)</term><description>observed 1128–1401, predicted 879–1136 — 6% inside</description></item>
-    ///   <item><term>Pinky (lv 61, our AC 288)</term><description>observed 964–1174, predicted 739–954 — 0% inside</description></item>
+    ///   <item><term>OUT Pinky</term><description>observed 964-1174 against 899-1147 — ceiling +2.4%</description></item>
+    ///   <item><term>OUT Orc</term><description>observed 1128-1401 against 1070-1365 — +2.6%</description></item>
+    ///   <item><term>IN Pinky</term><description>observed 50-72 against 46-68 — +5.9%</description></item>
+    ///   <item><term>IN Orc</term><description>observed 71-107 against 64-96 — +11.5%</description></item>
     /// </list>
     ///
-    /// <para><b>The shape of the error is the useful part.</b> Solving for the attack power that WOULD
-    /// produce the observed minimum gives 2192 against the Orc and 2230 against the Pinky — the same number
-    /// for two mobs with DIFFERENT armour. A defence error cannot do that; it would give two different
-    /// answers. So the missing term is on the ATTACK side, worth roughly +30% over the client's displayed
-    /// 1709, and it is neither the level gap (already applied at 1500) nor the angle (capped at 1200).</para>
+    /// <para><b>Excluded as the cause</b>, each by reading and porting rather than by argument: the
+    /// level-gap rate, the angle multiplier (capped at 1200), the per-rule `roe_Damage` free-stat term
+    /// (oracle-verified, and it moves the incoming case the WRONG way), the HP-down passives, conversation
+    /// mixing, window mixing, and the flag-decode hole that let unnamed-bit swings count as clean.</para>
     ///
-    /// <para><b>Leading hypothesis, and it points at this TEST as much as the engine.</b> This comparison
-    /// feeds the client's displayed `DmgMin`/`DmgMax` straight into <c>CoreDamage</c>, which bypasses
-    /// <see cref="DamageCalculator.AttackPower"/> entirely. The server's `roe_AttackPower` ends with
-    /// <c>value * container[+0x858] / 1000</c>, and +0x858 is `PassiveSkill.Rate[PhisycalWeaponMastery]`
-    /// (slot 24, arithmetic checked). If the client's displayed attack is the PRE-mastery figure, the
-    /// missing term is exactly that rate — mob-independent and multiplicative, which is the shape measured.
-    /// A level 82 character with maxed weapon mastery around 1280 permille would account for all of it.</para>
-    ///
-    /// <para>That is a lean, not a reading: the capture does not carry the character's mastery, so it
-    /// cannot be confirmed from this fixture. Confirming it needs either a capture where mastery is known,
-    /// or the client-side formula for the displayed attack number.</para>
-    ///
-    /// <para>Do not close this by scaling something until it fits. Close it by finding what the server's
-    /// attack power reads that this port does not: the capture says what the answer is worth, not what it
-    /// is.</para></summary>
+    /// <para><b>What remains</b> is the part of the container the wire does not carry. See the class
+    /// comment.</para></summary>
     [SkippableFact]
-    public void PlayerDamageMatchesTheCapture_KNOWN_RED()
+    public void TheCeilingHoldsToWithinTheMeasuredMargin()
     {
         var path = TruthPath();
         var shine = Shine();
         Skip.If(path is null, "no capture fixture");
         Skip.If(shine is null, "server data not present; set SHINE_DATA");
 
-        var t = Load(path!);
-        var box = MobDataBox.Load(shine!);
-        var gaps = LevelGapTable.Load(shine!);
-        var angle = DamageByAngleTable.Load(Path.Combine(shine!, "World"));
-        var playerLevel = t.PlayerLevels.Values.First();
+        const double allowed = 0.12;
+        foreach (var c in Measure(Load(path!), shine!))
+        {
+            var over = c.Observed.Max() / c.Predicted.Ceiling - 1.0;
+            over.ShouldBeLessThanOrEqualTo(allowed,
+                $"{c.Label}: observed {c.Observed.Max()} against a ceiling of {c.Predicted.Ceiling:F0}");
+        }
+    }
 
-        var observed = Damages(t, box, "Orc", conv: 0, incoming: false);
-        observed.Count.ShouldBeGreaterThan(20, "not enough clean hits to say anything");
+    /// <summary>⛔ KNOWN RED — the ceiling should need NO margin at all.
+    ///
+    /// <para>The test above pins the residual so it cannot grow. This one states that it should not exist:
+    /// a maximum roll from directly behind is the hardest a clean swing can legitimately land, so nothing
+    /// clean should exceed it. It stays red rather than the margin being widened until it passes.</para>
+    ///
+    /// <para>Closing it needs a capture where the character's mastery and passive rates are known, not more
+    /// analysis of this one.</para></summary>
+    [SkippableFact]
+    public void TheCeilingIsExact_KNOWN_RED()
+    {
+        var path = TruthPath();
+        var shine = Shine();
+        Skip.If(path is null, "no capture fixture");
+        Skip.If(shine is null, "server data not present; set SHINE_DATA");
 
-        var mob = MobCombatant.Build(box, "Orc")!;
-        var armour = DamageCalculator.ArmourClass(mob);
-        var gap = gaps.Rate(CombatantKind.Player, playerLevel, CombatantKind.Monster, mob.Level);
-        gap.ShouldBe(1500, "82 against 61 is a gap of -21, which lands on the -10 row");
-
-        var floor = DamageCalculator.CoreDamage(t.Stats["DmgMin"], armour, playerLevel) * gap / 1000.0;
-        var ceiling = DamageCalculator.CoreDamage(t.Stats["DmgMax"], armour, playerLevel)
-                      * angle.Rates.Max() / 1000.0 * gap / 1000.0;
-
-        var inside = observed.Count(d => d >= floor - 1 && d <= ceiling + 1);
-        inside.ShouldBe(observed.Count,
-            $"every clean hit should sit in [{floor:F0}, {ceiling:F0}]; {inside}/{observed.Count} do");
+        foreach (var c in Measure(Load(path!), shine!))
+            c.Observed.Max().ShouldBeLessThanOrEqualTo((int)Math.Ceiling(c.Predicted.Ceiling), c.Label);
     }
 }

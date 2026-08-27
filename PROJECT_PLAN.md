@@ -86,9 +86,10 @@ Currently red, deliberately: **one.**
 
 | red test | what it states |
 |---|---|
-| `PcapGroundTruthTests.PlayerDamageMatchesTheCapture_KNOWN_RED` | A player's damage is under-predicted by a consistent ~1.28x against a real capture. Only 2 of 34 clean hits land in our predicted band. Solving for the attack power that WOULD produce the observed minimum gives **2192 against the Orc and 2230 against the Pinky — the same number for two mobs with different armour**, so the missing term is on the ATTACK side, not the defence. Not the level gap (applied, 1500) and not the angle (capped at 1200). |
+| `PcapGroundTruthTests.TheCeilingIsExact_KNOWN_RED` | Against a real capture the observed maximum exceeds our predicted ceiling by 2.4-11.5%, and a maximum roll from directly behind should be the hardest a clean swing can land. The residual survives every term that has been read and ported; what is left is the part of the character's container the wire does not carry. |
 
-⚠️ **Do not close that one by scaling something until it fits.** The capture says what the answer is
+⚠️ **Do not close it by widening the margin.** `TheCeilingHoldsToWithinTheMeasuredMargin` already pins the
+residual so it cannot grow; this one says it should not exist.
 worth, not what it is.
 
 Closed so far:
@@ -359,3 +360,50 @@ Also still open: the two `EventRun_IncDmgRate` item-action observers `roe_Attack
 attacker and defender, which can put both bounds through `GetRateAppliValue`. Not ported.
 
 221 tests: 220 green, 1 deliberately red.
+
+### 2026-08-27 (later) — the operator was right about free stats, and the harness was the bigger bug
+
+**`roe_Damage` is overridden per rule.** The port had the base function and treated it as the whole story.
+Five of the eight rules override slot 4 and add a FLAT pair on top of the base result:
+
+```
+damage = base(arg, attack, defend) + attacker->FreeStatStr() - defender->FreeStatCon()   (NormalPY,
+                                   + attacker->FreeStatInt() - defender->FreeStatMen()    PhisycalSkill,
+                                                                                          AlwaysCritical)
+```
+
+NormalMA and MagicalSkill take the Int/Men pair; CureSkill, AlwaysHit and HealAttack keep the base.
+**AlwaysCritical taking the physical override is the one nobody would have guessed.**
+
+Verified by EXECUTION, not by reading: `tools/oracle_free_stat_damage.py` stubs the two accessors and runs
+the real function under emulation over six input sets, every one exact. The accessors return level-keyed
+records out of runtime-allocated globals, so the VALUES are invisible to a static read — the 1:1 scale
+comes from the operator measuring it in-client on 2026-07-29 (30 points into END gave a clean -30). That
+measurement was already in the agent memory and was not applied when the harness was built.
+
+**The bigger finding is that the harness was wrong, not the engine.**
+`Parameter::Cluster::c_compare` builds the CHANGEPARAM packet by walking the cluster slot by slot, so the
+client's displayed "Dmg 1709-1840" is the WCmin/WCmax SLOT, not `roe_MinWC` — which adds the Str chain on
+top. The harness had been feeding the displayed number straight into `CoreDamage` as attack power:
+
+| | feeding the displayed value | feeding a rebuilt container |
+|---|---:|---:|
+| OUT Orc | 2/34 inside | 20/22 |
+| OUT Pinky | 0/7 | 6/7 |
+| IN Orc | — | 105/121 |
+| IN Pinky | — | 67/69 |
+
+Reported earlier in this session as "the engine under-predicts player damage by ~30%". It did not. That is
+the second time this session a confident finding turned out to be the instrument (the first was the
+capstone sweep covering 25% of `.text`).
+
+Two more harness defects fixed on the way: swings were selected across the whole session while the stat
+snapshot came from one clean window (now delimited by the operator's own chat annotations), and "clean hit"
+was decided by the decoded flag NAME list being empty — which is true for flag words like `0x2800` whose
+bits have no names, and those are exactly the swings that exceed a maximum roll.
+
+**Where it stands.** Every observed minimum sits at or above our predicted floor, in all four
+direction/mob cases, with no tolerance at all. The ceiling is over by 2.4-11.5%, pinned by one test and
+stated as wrong by another.
+
+231 tests: 230 green, 1 deliberately red.
