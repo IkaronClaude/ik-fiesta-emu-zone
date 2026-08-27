@@ -15,9 +15,19 @@ namespace Fiesta.Emu.Zone.Combat;
 ///   <item><term>180°</term><description>1200 — from directly behind</description></item>
 /// </list>
 ///
-/// <para><b>The whole range is 1000–1200.</b> That is worth stating because it bounds how much of an
-/// observed damage spread a backstab can explain: at most 20%, so a wider spread than that in a capture is
-/// something else and must not be written off as "the angle".</para>
+/// <para><b>The whole range is 1000–1200</b> in the `Z:/ServerSource` copy of the file. That bounds how
+/// much of an observed damage spread a backstab can explain: at most 20%.</para>
+///
+/// <para>⚠️ <b>THE DEPLOYED SERVER'S TABLE IS FLAT.</b> Read live out of two different zone processes on
+/// 2026-08-27 — zone00 and zone02, the latter being the one that served the `Damage.pcapng` capture — the
+/// expanded 91-entry array at `damagebyangle_Ply` (0x0AF0D0F0) and `damagebyangle_Mob` (0x0AF0D1A8) is
+/// <b>1000 in every slot</b>. A wide read around it confirms the array starts where the symbol says and is
+/// uniformly 1000, so the running server applies NO positional bonus at all.</para>
+///
+/// <para>So the file under `Z:/ServerSource` is not what that deployment runs. Anything predicting damage
+/// for that server must use 1000, and a table loaded from the reference tree will over-predict a maximum
+/// by 20%. This is the first place in this port where the reference data and the live server have been
+/// shown to disagree — treat `Z:/ServerSource` as the STOCK data, not as what is deployed.</para>
 ///
 /// <para>Ported from `dt_Load` (0x0045CA10) and `operator[]` (0x0045C9A0).</para></summary>
 public sealed class DamageByAngleTable

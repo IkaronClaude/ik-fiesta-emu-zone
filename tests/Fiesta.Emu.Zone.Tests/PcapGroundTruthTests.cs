@@ -297,29 +297,38 @@ public class PcapGroundTruthTests
     /// single piece of gear with a WC% bonus scales the Str chain on the server and not here — a few
     /// percent, which is the size of the residual.</para>
     ///
-    /// <para><b>Five hypotheses have been tested and eliminated</b>, each by decoding or checking rather
+    /// <para><b>Seven hypotheses tested and eliminated</b>, each by decoding, running or measuring rather
     /// than by argument. Recorded so nobody spends the effort again:</para>
     ///
     /// <list type="number">
-    ///   <item><b>Weapon mastery.</b> All three `NC_CHAR_CLIENT_PASSIVE_CMD` packets are `00 00` — the
-    ///         character has no passive skills at all.</item>
-    ///   <item><b>A DEF-down debuff on the mob.</b> Zero of the 41 clean outgoing hits landed while the
-    ///         target had any abstate active.</item>
-    ///   <item><b>Weapon enhancement.</b> The equipped weapon is +10, worth <c>+1197</c> — and it is in
-    ///         BOTH displayed bounds (1709-512 = 1840-643 = 1197), exactly as `roe_MinWC`/`roe_MaxWC` read
-    ///         it from the WCmax slot. It cancels.</item>
-    ///   <item><b>The equipment layer split.</b> Decoded `NC_CHAR_CLIENT_ITEM_CMD` box 8: Raging Claws,
-    ///         base WC 512-643, <c>WCRate=1000</c>. Splitting Base / Item.Plus / Upgrade.Plus reproduces
-    ///         2080-2211 — identical to collapsing the total. No difference.</item>
-    ///   <item><b>Random options.</b> The per-instance blob carries them as (type, value) triples, and the
-    ///         weapon has four: <c>ROT_STR +5, ROT_CON +23, ROT_INT +24, ROT_MEN +5</c>. All PRIMARY
-    ///         stats, so they are already inside the displayed <c>Strength.change</c> — nothing new
-    ///         reaches the weapon bounds. (`ROT_WC` is type 7 and this weapon has none.)</item>
+    ///   <item><b>The accessors.</b> Ruled out by the ORACLE: `tools/oracle_accessors.py` runs the real
+    ///         `roe_MinWC` / `roe_MaxWC` / `roe_AC` on the same reconstructed containers and returns
+    ///         2080 / 2211 / 1215 for the character and 1569 / 1959 / 242 for the Orc — identical to this
+    ///         port, to the digit. The containers and the accessors are right; the fault is downstream.</item>
+    ///   <item><b>Weapon mastery.</b> All three `NC_CHAR_CLIENT_PASSIVE_CMD` packets are `00 00`.</item>
+    ///   <item><b>A DEF-down debuff.</b> Zero of the 41 clean outgoing hits landed while the target had
+    ///         any abstate active.</item>
+    ///   <item><b>Weapon enhancement.</b> +10, worth +1197, and present in BOTH displayed bounds
+    ///         (1709-512 = 1840-643) exactly as `roe_*WC` reads it from the WCmax slot. It cancels.</item>
+    ///   <item><b>The equipment layer split.</b> Decoded box 8: Raging Claws, WC 512-643,
+    ///         <c>WCRate=1000</c>. Splitting Base / Item.Plus / Upgrade.Plus reproduces 2080-2211 —
+    ///         identical to collapsing the total.</item>
+    ///   <item><b>Random options.</b> Decoded from the per-instance blob: ROT_STR +5, ROT_CON +23,
+    ///         ROT_INT +24, ROT_MEN +5 — all PRIMARY stats, already inside the displayed totals.</item>
+    ///   <item><b>The HP-down passive.</b> Correlating outgoing damage against the character's HP at each
+    ///         swing gives <c>r = +0.26</c> — weak, and the WRONG SIGN. Damage does not rise as they are
+    ///         hurt.</item>
     /// </list>
     ///
-    /// <para>What is left is 3 swings in 219, 2.0-2.6% over a computed ceiling, with every nameable cause
-    /// checked off. It stays RED because "I have run out of hypotheses" is not the same as "the model is
-    /// exact", and widening the margin would bury that distinction.</para></summary>
+    /// <para><b>And one assumption was found to be outright wrong, which makes the gap WIDER, not
+    /// narrower.</b> The deployed server's `DamageByAngle` tables are flat 1000 (read live from zone02, the
+    /// zone that served this capture), so there is no positional bonus at all. Both directions then exceed
+    /// a flat-angle ceiling by about 1.2x — a continuous, per-swing multiplier that applies to a MOB
+    /// attacker as well as a player, which rules out anything gear- or item-action-driven.</para>
+    ///
+    /// <para>The observed outgoing damage spans 1.24x on a smooth distribution while the weapon range
+    /// spans only 1.06x, so the attack bounds themselves vary per swing by something not yet found. That is
+    /// the open question, stated precisely.</para></summary>
     [SkippableFact]
     public void TheCeilingIsExact_KNOWN_RED()
     {

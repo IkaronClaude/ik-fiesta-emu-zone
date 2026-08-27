@@ -34,6 +34,23 @@ Ordered worst-first. "Worst" means *most likely to be silently wrong*, not most 
 
 ---
 
+## 0. THE REFERENCE TREE IS NOT THE DEPLOYED DATA (found 2026-08-27)
+
+`DamageByAngle.txt` under `Z:/ServerSource` expands to 1000–1200. The **deployed server's table is flat
+1000** — read live from `damagebyangle_Ply` (0x0AF0D0F0) and `damagebyangle_Mob` (0x0AF0D1A8) in two
+separate zone processes, including zone02 which served the `Damage.pcapng` capture. A wide read confirms
+the array starts at the symbol and is uniformly 1000.
+
+That means the running server applies **no positional damage bonus at all**, and any prediction built from
+the reference file over-states a maximum by 20%.
+
+⚠️ **The general lesson is bigger than the one table.** Every number this project takes from
+`Z:/ServerSource` is STOCK data, and this is the first case where it has been shown to differ from what is
+actually deployed. Where a prediction is checked against a live capture, the live value wins — and where
+it matters, read the global rather than the file.
+
+---
+
 ## 1. Invented constants that SHADOW a real data column
 
 **The most dangerous category.** The simulation makes a number up while the server reads a per-mob value
