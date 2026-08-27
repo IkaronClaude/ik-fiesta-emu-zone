@@ -88,8 +88,12 @@ Currently red, deliberately: **one.**
 |---|---|
 | `PcapGroundTruthTests.TheCeilingIsExact_KNOWN_RED` | 98.6% of clean hits in a real capture fall inside the predicted band (216/219). **All 190 INCOMING hits are exact.** The three survivors are outgoing, where the reconstruction still puts the displayed Dmg TOTAL into `Base[WCmax]` — but `roe_MaxWC` applies its three trailing rates to the whole sum INCLUDING the Str chain, while `c_MakeTotal` applies them only to `base + Item.Plus`. One WC%-bonus item scales the Str chain on the server and not here. |
 
-⚠️ **Do not close it by widening a margin.** Splitting that needs the equipment layers, and the capture
-carries them (`NC_CHAR_CLIENT_ITEM_CMD`, 39 items).
+⚠️ **Do not close it by widening a margin.** The mechanism is confirmed: solving for the gear WC rate that
+would bracket each outgoing case gives **R ≥ 1142** (Orc) and **R ≥ 1122** (Pinky) — two mobs, two armour
+values, one overlapping answer — and **1150 is a WCRate that exists in `ItemInfo.shn`**. It stays red
+because a bound and a candidate are not a reading. Closing it means decoding
+`NC_CHAR_CLIENT_ITEM_CMD`'s variable-length `PROTO_ITEMPACKET_INFORM` records (103-byte
+`SHINE_ITEM_STRUCT`, 101-byte union) for the equipped gear's actual rate.
 (`NC_CHAR_CLIENT_ITEM_CMD`, 39 items) to split those layers; decoding it is the next step.
 residual so it cannot grow; this one says it should not exist.
 worth, not what it is.
