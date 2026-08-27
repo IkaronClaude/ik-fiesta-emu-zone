@@ -47,12 +47,12 @@ public sealed record AttackModifiers
     /// <summary>Level-difference multiplier from <c>DamageLvGap</c>: flat 1000 for monster → player, up to
     /// 1500 for player → monster.
     ///
-    /// <para>⚠️ <b>This is the one approximation in the pipeline.</b> The server does not apply it as a
-    /// rate at all: it converts the damage to an integer first and then calls
-    /// <c>roe_LevelGapDamageRevision(attacker, defender, damage)</c>, an int-in/int-out function
-    /// (<c>roe_CalcDamage+0x5C1</c>). Applying it as a double beforehand is exact at the neutral 1000 and
-    /// an estimate at any other value — and the differential fuzz cannot tell, because it has only ever
-    /// run this at 1000. Pin it against the server before trusting a real level gap.</para>
+    /// <para>The application point is exact: <see cref="DamageCalculator.Resolve"/> applies it AFTER the
+    /// integer conversion as a wrapping 32-bit multiply and a truncating divide by 1000, which is what
+    /// <c>roe_LevelGapDamageRevision</c> (<c>roe_CalcDamage+0x5C1</c>) does. What was missing was the rate
+    /// itself, and it is now read from the game's own tables — see <see cref="LevelGapTable"/>. Supply one
+    /// through <c>CombatSimulation.LevelGaps</c>; the 1000 default here means "no table", which is right
+    /// for a monster attacking a player and wrong by up to 50% the other way.</para>
     ///
     /// <para>Not modelled at all: the two <c>so_ply_JobChangeDamageUp</c> hooks that run alongside it
     /// (<c>+0x59E</c>, <c>+0x5B2</c>). <c>ShineObject</c>'s base implementation is a pass-through, so they

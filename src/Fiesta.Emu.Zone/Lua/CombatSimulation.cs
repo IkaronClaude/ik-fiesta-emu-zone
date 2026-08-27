@@ -206,9 +206,31 @@ public sealed class CombatSimulation
         // happily make its own roll, but combat randomness on the real server comes from WELL512, and this
         // simulation's whole reproducibility story is "same seed, same run" -- a second, unrelated RNG
         // inside the damage path would quietly break that.
-        var roll = new AttackModifiers { RollPermille = (int)Rng.well512_GetRandom(1001) };
+        var roll = new AttackModifiers
+        {
+            RollPermille = (int)Rng.well512_GetRandom(1001),
+            LevelGapRatePermille = LevelGapRate(attacker, defender),
+        };
         return DamageCalculator.ResolveDamage(attacker, defender, roll, rule: NormalAttackRuleOf(attacker));
     }
+
+    /// <summary>`DamageLvGapPVE.shn` / `DamageLvGapEVP.shn`, when a table has been supplied.
+    ///
+    /// <para>Without one this returns <see cref="LevelGapTable.NoAdjustment"/>, which is correct for a
+    /// monster hitting a player (every EVP row is 1000) and <b>wrong by up to 50%</b> for a player hitting
+    /// something below their level. Set <see cref="LevelGaps"/> whenever game data is available.</para></summary>
+    private int LevelGapRate(ICombatant attacker, ICombatant defender)
+    {
+        if (LevelGaps is null) return LevelGapTable.NoAdjustment;
+        return LevelGaps.Rate(KindOf(attacker), attacker.Level, KindOf(defender), defender.Level);
+    }
+
+    private static CombatantKind KindOf(ICombatant c)
+        => c is SimMob ? CombatantKind.Monster : CombatantKind.Player;
+
+    /// <summary>The level-difference damage tables. Null means "no adjustment", which is honest rather than
+    /// invented — see <see cref="LevelGapRate"/> for what it costs.</summary>
+    public LevelGapTable? LevelGaps { get; set; }
 
     /// <summary>Which rules of engagement an attacker's NORMAL swing goes through — the ported
     /// `smo_RulesOfNormalAttack`.
