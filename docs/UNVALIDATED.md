@@ -49,9 +49,15 @@ Chase speed is now per-mob from `MobInfo.RunSpeed`, and turning from `MobInfoSer
 the fact that **`TurnSpeed` is a duration, not a rate**: `elapsedTenths * 18000 / TurnSpeed` units turned,
 so a full turn lands at `TurnSpeed / 100` tenths. Bigger is slower. Zero is instant.
 
-`WalkChase` was listed here as a chase-speed source and that was wrong — it is **zero for 2,862 of 2,878
-mobs**, so it is a rare special case rather than the general speed, even though `MobActionChase::mab_Think`
-is what reads it.
+`WalkChase` was listed here as a chase-speed source and that was wrong twice over. It is not a speed at
+all: it is the **distance INSIDE which a chasing mob walks instead of running**
+(`MobActionChase::mab_Think+0x895` — `if (WalkChase >= ddt_Distance(...)) mab_WalkTo else mab_RunTo`).
+Zero means always run, which is 2,862 of 2,878 mobs. The 16 that use it are the `B_SubHel` family at 400
+(run 400, walk 115 — they sprint in and cover the last stretch slowly), the golems at 150/300, `Anvil` at
+100, and `KQ_SK_Dash` at 1. Now ported.
+
+The first version of this note said the column was "a rare special case rather than the general speed" —
+true, and still not a reading. Sitting between two speed columns is what made a speed the obvious guess.
 
 ---
 
@@ -75,7 +81,7 @@ into the mob's `Item.Plus` cluster alongside `MinWc`/`MaxWc`.
 Columns the tables carry that this project does not read. `MobInfoServer` has **49 columns and 16 are
 captured**.
 
-**`MobInfoServer`** — `WalkChase` and `RegenInterval` are now decoded but unused; `Visible`, `MobKillInx`, `EXPRange`, `ResetInterval`,
+**`MobInfoServer`** — `RegenInterval` is decoded but unused (`WalkChase` is now connected); `Visible`, `MobKillInx`, `EXPRange`, `ResetInterval`,
 `CutInterval`, `CutNonAT`, `PceHPRcvDly`, `PceHPRcv`, `AtkHPRcvDly`, `AtkHPRcv`, `MobRaceType`,
 `FamilyArea`, `FamilyRescArea`, `FamilyRescCount`, `BloodingResi`, `StunResi`, `MoveSpeedResi`,
 `FearResi`, `ResIndex`, `KQKillPoint`, `Return2Regen`, `IsRoaming`, `RoamingNumber`, `RoamingDistance`,

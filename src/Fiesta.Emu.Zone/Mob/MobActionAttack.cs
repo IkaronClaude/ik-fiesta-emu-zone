@@ -64,14 +64,34 @@ public sealed class MobCombatState
     /// state would be one speed for every mob in the world.</para></summary>
     public int RunSpeed { get; set; } = 50;
 
+    /// <summary>`MobInfo.WalkSpeed` — the speed used while inside <see cref="WalkChaseDistance"/>.</summary>
+    public int WalkSpeed { get; set; } = 30;
+
+    /// <summary>`MobInfoServer.WalkChase` — the distance INSIDE which a chasing mob walks instead of runs.
+    ///
+    /// <para>⚠️ It is a DISTANCE, not a speed, and the difference is easy to get backwards because the
+    /// column sits between two speed columns. `MobActionChase::mab_Think+0x895`:</para>
+    /// <code>
+    /// if (serv->WalkChase >= ddt_Distance(dx, dy)) mab_WalkTo(...);   // +0x89F, jge
+    /// else                                         mab_RunTo(...);    // +0x8AB
+    /// </code>
+    ///
+    /// <para><b>Zero means always run</b>, and 2,862 of 2,878 mobs are zero — which is why treating every
+    /// chase as a run was right for almost everything. The 16 that are not: `B_SubHel01`–`08` at 400 (walk
+    /// 115, run 400 — they close the last 400 units at a quarter speed), the golems at 150/300, `Anvil` at
+    /// 100, and `KQ_SK_Dash` at 1.</para></summary>
+    public int WalkChaseDistance { get; set; }
+
     /// <summary>`MobInfoServer.TurnSpeed`. <b>Zero means the mob turns instantly</b> — `mat_Reserv` returns
     /// the next action rather than entering the turning state.
     ///
-    /// <para>⚠️ The meaning of a NON-zero value is NOT read. The column has only four values across the
-    /// whole table — 100 (2,755 mobs), 0 (60), 300 (43), 500 (20) — and whether a larger number turns the
-    /// mob faster or slower is undetermined; the distribution alone cannot say. Until `mab_Think`'s turn
-    /// progress is ported, non-zero mobs use <see cref="MobActionTurning.TurnRateUnitsPerSecond"/> as
-    /// before. Only the zero branch is acted on, because only that one was read.</para></summary>
+    /// <para>A non-zero value is a DURATION — milliseconds per full turn — so <b>bigger is slower</b>.
+    /// `MobActionTurning::mab_Think` divides by it (<see cref="MobActionTurning.UnitsTurned"/>), and a full
+    /// 180-unit turn completes at <c>elapsedTenths == TurnSpeed / 100</c>. The column has four values:
+    /// 100 (2,755 mobs, 0.1 s per turn), 0 (60), 300 (43), 500 (20, half a second).</para>
+    ///
+    /// <para>This doc said the non-zero meaning was unread for a while, on the grounds that the
+    /// distribution could not settle it. It could not — but the ASM could, one function away.</para></summary>
     public int TurnSpeed { get; set; } = 100;
 
     /// <summary>Whether this mob skips the turning state entirely.</summary>
@@ -241,8 +261,18 @@ public sealed class MobActionChase : MobActionBase
         if (squared <= (long)combat.AttackRange * combat.AttackRange)
             return MobActionAttack.Actor_Attack;
 
-        // Per-mob speed from MobInfo.RunSpeed; SpeedPerSecond is only the fallback for mobs with no data.
-        var speed = combat.RunSpeed > 0 ? combat.RunSpeed : SpeedPerSecond;
+        // WALK when already inside WalkChase of the target, RUN otherwise -- `mab_Think+0x895`. The server
+        // compares `ddt_Distance` against the threshold; comparing squares is the same test for
+        // non-negative values and avoids introducing a second distance function whose rounding could
+        // disagree with the one the rest of this file uses.
+        var threshold = (long)combat.WalkChaseDistance * combat.WalkChaseDistance;
+        var walking = combat.WalkChaseDistance > 0 && threshold >= squared;
+
+        // SpeedPerSecond is only the fallback for a mob with no data at all.
+        var speed = walking
+            ? (combat.WalkSpeed > 0 ? combat.WalkSpeed : SpeedPerSecond)
+            : (combat.RunSpeed > 0 ? combat.RunSpeed : SpeedPerSecond);
+
         arg.MoveToward(target, Math.Max(1, (int)(speed * arg.ElapsedMs / 1000)));
         return this;
     }

@@ -109,6 +109,55 @@ public class MobMovementTests
         mob.Arg.Combat.Facing.ShouldBe(90, "it has not turned yet");
     }
 
+    /// <summary>`WalkChase` is a DISTANCE, not a speed: inside it a chasing mob WALKS, beyond it RUNS.
+    /// The column sits between two speed columns, which is what makes the misreading tempting.</summary>
+    [Fact]
+    public void WalkChaseIsTheDistanceInsideWhichAMobWalks()
+    {
+        static int Travelled(int walkChase)
+        {
+            var sim = new CombatSimulation(seed: 1);
+            var mob = sim.AddMob(handle: 10, x: 0, y: 0, configure: m => m.RespawnSeconds = 99_999);
+            mob.Mob.so_getDetectRange = 4000;
+            mob.Arg.Combat.RunSpeed = 400;
+            mob.Arg.Combat.WalkSpeed = 100;
+            mob.Arg.Combat.WalkChaseDistance = walkChase;
+            mob.Arg.Combat.AttackRange = 5;
+            mob.Arg.Target = sim.Player;
+            mob.Arg.Current = MobActionAttack.Actor_Chase;
+
+            sim.Player.X = 900;
+            sim.Player.Hp = sim.Player.MaxHp = 10_000_000;
+            sim.Run(maxTicks: 10);
+            return mob.Mob.X;
+        }
+
+        // Threshold 0 = always run, so it covers the most ground.
+        var alwaysRun = Travelled(0);
+
+        // A threshold LARGER than the whole gap means it walks the entire way.
+        var alwaysWalk = Travelled(2000);
+
+        alwaysWalk.ShouldBeLessThan(alwaysRun, "inside the threshold the mob walks");
+        alwaysRun.ShouldBeGreaterThan(0);
+    }
+
+    /// <summary>The 16 mobs that use it, and what they use it for — a `B_SubHel` sprints in at 400 and
+    /// covers the last 400 units at 115.</summary>
+    [SkippableFact]
+    public void OnlySixteenMobsWalkTheLastStretch()
+    {
+        Skip.If(Shine() is null, "server data not present; set SHINE_DATA");
+        var box = MobDataBox.Load(Shine()!);
+
+        box.Server.Values.Count(s => s.WalkChase != 0).ShouldBe(16);
+
+        var hel = box.ServerFor("B_SubHel01")!;
+        hel.WalkChase.ShouldBe(400);
+        var info = box.InfoFor("B_SubHel01")!;
+        info.WalkSpeed.ShouldBeLessThan(info.RunSpeed);
+    }
+
     /// <summary>The columns decode, and TurnSpeed really does have only four values — which is why its
     /// non-zero meaning is left unread rather than guessed.</summary>
     [SkippableFact]
@@ -122,8 +171,8 @@ public class MobMovementTests
 
         box.Server.Values.Count(s => s.TurnsInstantly).ShouldBeInRange(1, 200);
 
-        // WalkChase is almost always zero, so it is NOT the general chase speed -- an easy misreading given
-        // that MobActionChase::mab_Think is what reads it.
+        // WalkChase is almost always zero. It is read by MobActionChase::mab_Think, but as a DISTANCE
+        // threshold rather than a speed -- see WalkChaseIsTheDistanceInsideWhichAMobWalks.
         box.Server.Values.Count(s => s.WalkChase == 0).ShouldBeGreaterThan(2800);
     }
 }

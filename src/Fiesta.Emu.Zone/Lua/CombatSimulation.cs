@@ -55,6 +55,8 @@ public sealed class SimMob : ICombatant
         NormalAttackRule = definition.NormalAttackRule;
         Mob.Selector.Policy = definition.Policy;
         Arg.Combat.RunSpeed = definition.Info.RunSpeed;
+        Arg.Combat.WalkSpeed = definition.Info.WalkSpeed;
+        Arg.Combat.WalkChaseDistance = definition.Server.WalkChase;
         Arg.Combat.TurnSpeed = definition.Server.TurnSpeed;
 
         if (definition.NormalAttack is not { } w) return;

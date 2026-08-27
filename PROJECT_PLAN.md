@@ -243,3 +243,27 @@ player side, which the normal-attack path structurally cannot provide.
 Open questions are down to two: mob skill attacks, and the source of `so_DamagedBy`'s aggro rate.
 
 201 tests, 0 red.
+
+### 2026-08-27 — `WalkChase` is a distance, and the last stale "not read" note
+
+Re-ran the field-reader scans under full coverage, as the sweep fix required. Two survived unchanged (the
+angle question's single call site at vtable +0x8F4; the `TurnSpeed` readers). One did not.
+
+`MobInfoServer.WalkChase` has exactly one reader, `MobActionChase::mab_Think+0x895`, and it is **a distance
+threshold, not a speed**:
+
+```c
+if (serv->WalkChase >= ddt_Distance(dx, dy)) mab_WalkTo(...);   // inside it: walk
+else                                          mab_RunTo(...);   // beyond it: run
+```
+
+Zero means always run — 2,862 of 2,878 mobs, which is why chasing at `RunSpeed` unconditionally looked
+correct. The 16 exceptions are the `B_SubHel` family at 400 (run 400, walk 115), the golems at 150/300,
+`Anvil` at 100 and `KQ_SK_Dash` at 1. Ported with `MobInfo.WalkSpeed`.
+
+The column sits between two speed columns, which is the whole reason a speed was the obvious guess — twice.
+
+Also cleared a stale doc comment claiming `TurnSpeed`'s non-zero meaning was unread. It was resolved on
+2026-08-26; the comment had not caught up.
+
+203 tests, 0 red.
