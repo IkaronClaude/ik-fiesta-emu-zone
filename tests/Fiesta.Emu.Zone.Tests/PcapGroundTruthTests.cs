@@ -40,6 +40,7 @@ public class PcapGroundTruthTests
         public required IReadOnlyDictionary<int, int> PlayerLevels { get; init; }
         public required IReadOnlyDictionary<string, int> Stats { get; init; }
         public required IReadOnlyList<Swing> Swings { get; init; }
+        public required IReadOnlyDictionary<string, int> FreeStat { get; init; }
 
         /// <summary>Clean hits only: the flag word is exactly ZERO, and the damage is non-zero.
         ///
@@ -85,7 +86,14 @@ public class PcapGroundTruthTests
             s.GetProperty("flagWord").GetInt32(),
             s.GetProperty("flags").EnumerateArray().Select(f => f.GetString()!).ToArray())).ToList();
 
-        return new Truth { MobHandles = mobs, PlayerLevels = levels, Stats = stats, Swings = swings };
+        var free = root.TryGetProperty("freeStatDistribution", out var fs)
+            ? fs.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetInt32())
+            : new Dictionary<string, int>();
+
+        return new Truth
+        {
+            MobHandles = mobs, PlayerLevels = levels, Stats = stats, Swings = swings, FreeStat = free,
+        };
     }
 
     /// <summary>Clean damage in one direction, for one mob type, within ONE conversation.
@@ -127,17 +135,12 @@ public class PcapGroundTruthTests
         p.Base[Stat.Men] = t.Stats["SPR"];
         p.Base[Stat.WCmin] = t.Stats["DmgMin"];
         p.Base[Stat.WCmax] = t.Stats["DmgMax"];
-        // ⚠️ THE DISPLAYED "DEF" IS NOT THE AC SLOT. Two measured facts pin it: the binary computes
-        // roe_AC as Con + AC (DamageCalculator.ArmourClass), and in this capture allocating ONE free point
-        // of Con moves the displayed DEF by +0.5 while moving MaxHp by +5. A cluster slot cannot gain half
-        // a point from another slot, so the display carries a Con/2 term of its own -- which means
-        //
-        //     AC slot   = displayedDEF - Con/2      and therefore
-        //     roe_AC    = Con + AC slot = displayedDEF + Con/2
-        //
-        // Putting the displayed value straight into Base[AC] double-counts Con and under-predicts every
-        // incoming hit. With the correction the Orc case brackets 121 of 121 observed hits; without it, 105.
-        p.Base[Stat.AC] = t.Stats["DEF"] - t.Stats["END"] / 2;
+        // The displayed DEF *is* what `roe_AC` returns, so the Con term has to be backed OUT of the slot
+        // or it gets counted twice. Two earlier readings of this were wrong -- treating DEF as the raw AC
+        // slot (roe_AC = Con + DEF) under-predicts, and a Con/2 correction fitted the Orc case by
+        // coincidence while being structurally wrong. This one is checked: ArmourClass(player) comes back
+        // as exactly the displayed number.
+        p.Base[Stat.AC] = t.Stats["DEF"] - t.Stats["END"];
         p.Base[Stat.MR] = t.Stats["MDef"];
         p.Base[Stat.TH] = t.Stats["Aim"];
         p.Base[Stat.TB] = t.Stats["Evasion"];
@@ -146,8 +149,18 @@ public class PcapGroundTruthTests
 
     private readonly record struct Band(double Floor, double Ceiling);
 
+    /// <summary>The free-stat tables, READ OUT OF A LIVE ZONE at 0x0DA50BC4 (Str) and 0x0DA50BD0 (Con).
+    ///
+    /// <para>`so_ply_FreeStatStr` does not return the allocation — it indexes a per-points table with it and
+    /// the caller reads a u16 at record+1. The tables are NOT identity: measured entries give
+    /// <c>Str[0]=0, Str[2]=2</c> and <c>Con[19]=10, Con[20]=10, Con[21]=11, Con[50]=25</c>, so Str is 1:1
+    /// and Con is <c>ceil(n/2)</c>. Index 0 is what a MOB gets, since the mob override returns
+    /// <c>table[0]</c> unconditionally — so a monster contributes nothing on either side.</para></summary>
+    private static int FreeStatStr(int points) => points;
+    private static int FreeStatCon(int points) => (points + 1) / 2;
+
     private static Band Predict(ICombatant attacker, ICombatant defender, LevelGapTable gaps,
-                                DamageByAngleTable angle, CombatantKind attackerKind)
+                                DamageByAngleTable angle, CombatantKind attackerKind, int flat)
     {
         var defenderKind = attackerKind == CombatantKind.Player ? CombatantKind.Monster : CombatantKind.Player;
         var gap = gaps.Rate(attackerKind, attacker.Level, defenderKind, defender.Level);
@@ -155,9 +168,11 @@ public class PcapGroundTruthTests
         var hi = DamageCalculator.AttackPower(attacker, 1000);
         var def = DamageCalculator.DefendPower(defender);
 
+        // `roe_Damage`'s per-rule override adds the flat pair INSIDE the core step, so it is inside the
+        // angle multiplier and inside the level gap -- not tacked on at the end.
         return new Band(
-            DamageCalculator.CoreDamage(lo, def, attacker.Level) * gap / 1000.0,
-            DamageCalculator.CoreDamage(hi, def, attacker.Level) * angle.Rates.Max() / 1000.0 * gap / 1000.0);
+            (DamageCalculator.CoreDamage(lo, def, attacker.Level) + flat) * gap / 1000.0,
+            (DamageCalculator.CoreDamage(hi, def, attacker.Level) + flat) * angle.Rates.Max() / 1000.0 * gap / 1000.0);
     }
 
     private sealed record Case(string Mob, bool Incoming, List<int> Observed, Band Predicted)
@@ -180,9 +195,12 @@ public class PcapGroundTruthTests
             {
                 var observed = Damages(t, box, name, conv: 0, incoming: incoming);
                 if (observed.Count < 5) continue;
+                // A mob's free-stat accessors return table[0] = 0, so only the player side contributes.
                 var band = incoming
-                    ? Predict(mob, player, gaps, angle, CombatantKind.Monster)
-                    : Predict(player, mob, gaps, angle, CombatantKind.Player);
+                    ? Predict(mob, player, gaps, angle, CombatantKind.Monster,
+                              0 - FreeStatCon(t.FreeStat.GetValueOrDefault("Constitute")))
+                    : Predict(player, mob, gaps, angle, CombatantKind.Player,
+                              FreeStatStr(t.FreeStat.GetValueOrDefault("Strength")) - 0);
                 cases.Add(new Case(name, incoming, observed, band));
             }
         }
@@ -206,8 +224,8 @@ public class PcapGroundTruthTests
         t.Swings.ShouldContain(s => s.Flags.Contains("ismissed"));
     }
 
-    /// <summary>⭐ THE HEADLINE NUMBER: 97.3% of clean hits in the capture fall inside the band our
-    /// formula predicts — 213 of 219, across both directions and both mob types.
+    /// <summary>⭐ THE HEADLINE NUMBER: 98.6% of clean hits in the capture fall inside the band our
+    /// formula predicts — 216 of 219, across both directions and both mob types.
     ///
     /// <para>Asserted as a MINIMUM so a regression fails here. For reference, the same harness scored
     /// <b>2 of 34</b> on the outgoing case before three instrument defects were found and fixed: feeding
@@ -216,10 +234,10 @@ public class PcapGroundTruthTests
     ///
     /// <para>Per case, on `Damage.pcapng`:</para>
     /// <list type="table">
-    ///   <item><term>IN Orc</term><description>121/121 — observed 71-107 against a predicted 71.2-106.7</description></item>
-    ///   <item><term>IN Pinky</term><description>66/69 — three hits land ONE point under the floor</description></item>
-    ///   <item><term>OUT Orc</term><description>20/22 — two hits 2.6% over the ceiling</description></item>
-    ///   <item><term>OUT Pinky</term><description>6/7 — one hit 2.4% over</description></item>
+    ///   <item><term>IN Orc</term><description><b>121/121</b> — observed 71-107 against a predicted 70.1-108.0</description></item>
+    ///   <item><term>IN Pinky</term><description><b>69/69</b> — observed 50-72 against 47.4-73.5</description></item>
+    ///   <item><term>OUT Orc</term><description>20/22 — two hits 2.4% over the ceiling</description></item>
+    ///   <item><term>OUT Pinky</term><description>6/7 — one hit 2.0% over</description></item>
     /// </list></summary>
     [SkippableFact]
     public void MostCleanHitsFallInsideThePredictedBand()
@@ -235,29 +253,34 @@ public class PcapGroundTruthTests
         var total = cases.Sum(c => c.Observed.Count);
         var inside = cases.Sum(c => c.Observed.Count(d => d >= c.Predicted.Floor - 1 && d <= c.Predicted.Ceiling + 1));
 
-        ((double)inside / total).ShouldBeGreaterThanOrEqualTo(0.97,
+        ((double)inside / total).ShouldBeGreaterThanOrEqualTo(0.98,
             $"only {inside}/{total} clean hits fell inside the predicted band");
     }
 
-    /// <summary>The one case the reconstruction gets EXACTLY right, kept as its own test because it is the
-    /// proof that the model is right rather than merely close.
+    /// <summary>⭐⭐ EVERY INCOMING HIT IS BRACKETED EXACTLY — 190 of 190, both mob types, no tolerance.
     ///
-    /// <para>A level 61 Orc against this level 82 character: every one of 121 clean hits lies between a
-    /// minimum roll and a maximum roll from directly behind, with no tolerance. Both bounds come from
-    /// game data and the wire — the Orc container from `MobInfoServer`/`MobWeapon`, the character defence
-    /// from the login burst — and nothing is fitted.</para></summary>
+    /// <para>This is the proof that the model is right rather than merely close. Every input is read:
+    /// the mob container from `MobInfoServer`/`MobWeapon`, the character defence from the login burst
+    /// (`roe_AC` equals the displayed DEF exactly), the level-gap rate from `DamageLvGapEVP`, the angle
+    /// cap from `DamageByAngle`, and the free-stat term from tables read out of a live zone with the
+    /// character's own allocation reconstructed from the wire. Nothing here is fitted.</para></summary>
     [SkippableFact]
-    public void TheOrcIncomingCaseBracketsEveryHitExactly()
+    public void EveryIncomingHitIsBracketedExactly()
     {
         var path = TruthPath();
         var shine = Shine();
         Skip.If(path is null, "no capture fixture");
         Skip.If(shine is null, "server data not present; set SHINE_DATA");
 
-        var orc = Measure(Load(path!), shine!).Single(c => c.Mob == "Orc" && c.Incoming);
-        orc.Observed.Count.ShouldBeGreaterThan(100);
-        orc.Observed.Min().ShouldBeGreaterThanOrEqualTo((int)Math.Floor(orc.Predicted.Floor));
-        orc.Observed.Max().ShouldBeLessThanOrEqualTo((int)Math.Ceiling(orc.Predicted.Ceiling));
+        var incoming = Measure(Load(path!), shine!).Where(c => c.Incoming).ToList();
+        incoming.Count.ShouldBe(2, "both mob types should be represented");
+        incoming.Sum(c => c.Observed.Count).ShouldBeGreaterThan(150);
+
+        foreach (var c in incoming)
+        {
+            c.Observed.Min().ShouldBeGreaterThanOrEqualTo((int)Math.Floor(c.Predicted.Floor), c.Label);
+            c.Observed.Max().ShouldBeLessThanOrEqualTo((int)Math.Ceiling(c.Predicted.Ceiling), c.Label);
+        }
     }
 
     /// <summary>⛔ KNOWN RED — the ceiling should need NO margin at all.
@@ -266,25 +289,19 @@ public class PcapGroundTruthTests
     /// and three outgoing hits 2.4-2.6% over the ceiling. A maximum roll from directly behind is the
     /// hardest a clean swing can legitimately land, so nothing clean should exceed it.</para>
     ///
-    /// <para><b>Do not close this by widening a margin.</b> What the six ARE has been narrowed to one
-    /// unknown, and the arithmetic says so: solving for the flat term that would bracket the two
-    /// outgoing Orc outliers gives <b>+20</b>, and the Pinky outlier needs at least +15 — one value fits
-    /// both. That is the size and shape of the free-stat term
-    /// (<see cref="AttackModifiers.AttackerFreeStat"/>), which this harness passes as ZERO because the
-    /// capture does not say how the character spent their points.</para>
+    /// <para>All three survivors are OUTGOING — the direction where the character is the ATTACKER, and the
+    /// only place the reconstruction is still approximate. It puts the displayed Dmg TOTAL into
+    /// <c>Base[WCmax]</c>, but `roe_MaxWC` applies its three trailing rates
+    /// (<c>AbnormalState.Rate</c>, <c>ItemPowerRate.Rate</c>, <c>PassiveSkill.Rate</c>) to the WHOLE sum
+    /// INCLUDING the Str chain, whereas `c_MakeTotal` applies them only to <c>base + Item.Plus</c>. So a
+    /// single piece of gear with a WC% bonus scales the Str chain on the server and not here — a few
+    /// percent, which is the size of the residual.</para>
     ///
-    /// <para>Three leads were ELIMINATED getting here, each by checking rather than arguing:</para>
-    /// <list type="bullet">
-    ///   <item><b>Weapon enhancement.</b> `roe_MaxWC` reads `Upgrade.Plus[WCmax]` and the displayed WCmax
-    ///         total already contains it, so it cancels — enhancement moves the FLOOR, not the ceiling.</item>
-    ///   <item><b>A DEF-down debuff on the mob.</b> Checked directly: <b>zero</b> of the 41 clean outgoing
-    ///         hits landed while the target had any abstate active.</item>
-    ///   <item><b>Weapon mastery.</b> All three `NC_CHAR_CLIENT_PASSIVE_CMD` packets are `00 00` — this
-    ///         character has no passive skills at all.</item>
-    /// </list>
-    ///
-    /// <para>Closing it needs the character's free-stat allocation, which is a question for whoever ran the
-    /// capture — not more analysis of it.</para></summary>
+    /// <para>Splitting that needs the equipment layers, and the capture carries them
+    /// (`NC_CHAR_CLIENT_ITEM_CMD`, 39 items). Three OTHER leads were eliminated getting here, each by
+    /// checking rather than arguing: weapon enhancement (`Upgrade.Plus[WCmax]` cancels in the max bound),
+    /// a DEF-down debuff on the mob (zero of the 41 clean outgoing hits landed while the target had any
+    /// abstate), and weapon mastery (this character has no passive skills at all).</para></summary>
     [SkippableFact]
     public void TheCeilingIsExact_KNOWN_RED()
     {

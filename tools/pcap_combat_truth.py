@@ -136,7 +136,7 @@ def parse(lines):
     `0000` row truncates every larger struct to its first 16 bytes — which read `NC_BAT_TARGETINFO_CMD`'s
     level (at @27) as absent and reported every player as level 0.
     """
-    swings, levels, chat, statdist, order = [], {}, [], {}, 0
+    swings, levels, chat, statdist, allocs, order = [], {}, [], {}, [], 0
     pending, buf = None, bytearray()
     conv = -1
 
@@ -165,6 +165,11 @@ def parse(lines):
             text = raw[2:2 + raw[1]].decode("latin-1", "replace").strip()
             if text and not text.startswith("&"):
                 chat.append({"order": order, "text": text})
+        elif name == "NC_CHAR_STAT_INCPOINTSUC_ACK" and raw:
+            # One accepted free-stat point. NC_CHAR_CLIENT_BASE_CMD reports the allocation as it stood at
+            # LOGIN, so a session that spends points drifts from it -- these acks are how the wire says so,
+            # and without them the distribution is stale for any window after an allocation.
+            allocs.append((order, raw[0]))
         elif name == "NC_CHAR_CLIENT_BASE_CMD" and len(raw) >= 0x5D:
             # CHARSTATDISTSTR - the character's FREE-STAT ALLOCATION, one byte per stat, at +0x57.
             #
@@ -175,9 +180,16 @@ def parse(lines):
             # goes 3 -> 50 across the capture's three sessions, and the chat reads "Okay END was +3, now
             # going to +20" then "END to 50". Placing the record at +0x56 instead (the obvious-looking
             # six small bytes) puts 90 in Strength and moves the wrong field.
-            statdist.update(zip(
-                ["Strength", "Constitute", "Dexterity", "Intelligence", "MentalPower", "RedistributePoint"],
-                raw[0x57:0x5D]))
+            # FIRST one only. Every session sends its own, and the later ones report a distribution the
+            # window has not reached yet -- taking the last gives session 3's 50 points where the window
+            # has 3, and the allocation roll-forward then compounds the error.
+            if statdist:
+                pass
+            else:
+                statdist.update(zip(
+                    ["Strength", "Constitute", "Dexterity", "Intelligence", "MentalPower",
+                     "RedistributePoint"],
+                    raw[0x57:0x5D]))
         elif name == "NC_BAT_TARGETINFO_CMD" and len(raw) > 27:
             # order u8, targethandle u16, five u32, then targetlevel u8 at @27.
             levels[int.from_bytes(raw[1:3], "little")] = raw[27]
@@ -205,7 +217,7 @@ def parse(lines):
                 buf.extend(data)
             continue
     flush()
-    return swings, levels, chat, statdist
+    return swings, levels, chat, statdist, allocs
 
 
 def main():
@@ -222,7 +234,7 @@ def main():
     a = ap.parse_args()
 
     lines = decode(a.pcap, a.port, a.decoded)
-    swings, levels, chat, statdist = parse(lines)
+    swings, levels, chat, statdist, allocs = parse(lines)
     mobs = roster(a.pcap, a.stream)
 
     # The player is the handle that appears in combat and is NOT in the mob roster. TARGETINFO gives its
@@ -247,6 +259,19 @@ def main():
         swings = [s for s in swings
                   if (lo is None or s["order"] > lo) and (hi is None or s["order"] < hi)]
         print("chat window: kept %d of %d swings" % (len(swings), before))
+
+    # Roll the login-time distribution forward by every point accepted BEFORE the window opens.
+    STAT_INDEX = {0: "Strength", 1: "Constitute", 2: "Dexterity", 3: "Intelligence", 4: "MentalPower"}
+    spent = 0
+    for o, idx in allocs:
+        if lo is not None and o > lo:
+            break
+        key = STAT_INDEX.get(idx)
+        if key:
+            statdist[key] = statdist.get(key, 0) + 1
+            spent += 1
+    if spent:
+        print("rolled %d free-stat point(s) allocated before the window into the distribution" % spent)
 
     stats, mixed = player_stats(a.pcap, a.stream, a.start_packet, a.end_packet)
 

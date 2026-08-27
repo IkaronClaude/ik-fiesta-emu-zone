@@ -86,9 +86,10 @@ Currently red, deliberately: **one.**
 
 | red test | what it states |
 |---|---|
-| `PcapGroundTruthTests.TheCeilingIsExact_KNOWN_RED` | 97.3% of clean hits in a real capture fall inside the predicted band (213/219), but not 100%. Six remain: three incoming hits one point under the floor, three outgoing 2.4-2.6% over the ceiling. The outgoing residual is on the player-as-attacker side, where the reconstruction still collapses the displayed Dmg TOTAL into `Base[WCmin]` — and `roe_MinWC` reads `Base[WCmin]`, `Upgrade.Plus[WCmax]` and a weapon-title-scaled `Item.Plus[WCmin]` as separate layers. |
+| `PcapGroundTruthTests.TheCeilingIsExact_KNOWN_RED` | 98.6% of clean hits in a real capture fall inside the predicted band (216/219). **All 190 INCOMING hits are exact.** The three survivors are outgoing, where the reconstruction still puts the displayed Dmg TOTAL into `Base[WCmax]` — but `roe_MaxWC` applies its three trailing rates to the whole sum INCLUDING the Str chain, while `c_MakeTotal` applies them only to `base + Item.Plus`. One WC%-bonus item scales the Str chain on the server and not here. |
 
-⚠️ **Do not close it by widening a margin.** The capture carries the equipment
+⚠️ **Do not close it by widening a margin.** Splitting that needs the equipment layers, and the capture
+carries them (`NC_CHAR_CLIENT_ITEM_CMD`, 39 items).
 (`NC_CHAR_CLIENT_ITEM_CMD`, 39 items) to split those layers; decoding it is the next step.
 residual so it cannot grow; this one says it should not exist.
 worth, not what it is.
@@ -460,5 +461,54 @@ Every one of those gains was an instrument defect, not an engine fix: feeding th
 into the core formula, merging conversations, merging windows, deciding "clean hit" from an empty flag-NAME
 list, and the AC double-count. The engine changed once in all of it — the per-rule `roe_Damage` override —
 and that was verified against the real function under emulation rather than against the capture.
+
+231 tests: 230 green, 1 deliberately red.
+
+### 2026-08-27 (final) — 190/190 incoming, exact, with nothing fitted
+
+Read the free-stat accessors to the end instead of stopping at the first branch. `so_ply_FreeStatStr` does
+NOT return the allocation — it indexes a per-points table with it:
+
+```c
+rec = this->so_GetStatDistStr();          // vtable +0x424, a CHARSTATDISTSTR
+byte n = rec[0] (Str) / rec[1] (Con);
+if (n > cap) return table[0];
+return table[n];                          // Str 0xDA50BC4, Con 0xDA50BD0; value is a u16 at record+1
+```
+
+`CHARSTATDISTSTR` (client PDB, 6 bytes) is on the wire in `NC_CHAR_CLIENT_BASE_CMD` at **+0x57**. Offset
+pinned against the operator's chat rather than by counting: byte[1] reads 3 → 50 across the three sessions
+and the narration is "END was +3" → "END to 50". The obvious-looking six bytes at +0x56 are off by one.
+
+The tables were read out of a live zone (one exec, three small reads, no loop) and are **not identity**:
+
+| | value |
+|---|---|
+| `Str[0]`, `Con[0]` | 0 — and index 0 is what a MOB gets, so monsters contribute nothing either side |
+| `Str[2]` | 2 — Str is 1:1 |
+| `Con[19]`, `Con[20]`, `Con[21]`, `Con[50]` | 10, 10, 11, 25 — Con is `ceil(n/2)` |
+
+And the defence reading was corrected twice: the displayed DEF **is** what `roe_AC` returns, so the Con
+term has to be backed out of the slot. Treating DEF as the raw AC slot under-predicts; a `Con/2`
+correction fitted the Orc case by coincidence and was structurally wrong.
+
+With all of that read rather than fitted:
+
+| | first attempt | now |
+|---|---:|---:|
+| IN Orc | — | **121/121** |
+| IN Pinky | — | **69/69** |
+| OUT Orc | 2/34 | 20/22 |
+| OUT Pinky | 0/7 | 6/7 |
+| overall | — | **216/219 (98.6%)** |
+
+**Every incoming hit is bracketed exactly, no tolerance** — mob container from the game tables, character
+defence from the login burst, level gap from `DamageLvGapEVP`, angle cap from `DamageByAngle`, free-stat
+term from the live tables with the allocation reconstructed from the wire (login value plus the
+`NC_CHAR_STAT_INCPOINTSUC_ACK` events before the window).
+
+Three outgoing hits remain, and the cause is named rather than guessed. Three other leads were eliminated
+by checking: weapon enhancement cancels in the max bound, zero clean outgoing hits landed while the target
+had an abstate, and this character has no passive skills at all.
 
 231 tests: 230 green, 1 deliberately red.
