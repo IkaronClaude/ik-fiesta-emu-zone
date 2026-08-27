@@ -136,7 +136,7 @@ def parse(lines):
     `0000` row truncates every larger struct to its first 16 bytes — which read `NC_BAT_TARGETINFO_CMD`'s
     level (at @27) as absent and reported every player as level 0.
     """
-    swings, levels, chat, order = [], {}, [], 0
+    swings, levels, chat, statdist, order = [], {}, [], {}, 0
     pending, buf = None, bytearray()
     conv = -1
 
@@ -165,6 +165,19 @@ def parse(lines):
             text = raw[2:2 + raw[1]].decode("latin-1", "replace").strip()
             if text and not text.startswith("&"):
                 chat.append({"order": order, "text": text})
+        elif name == "NC_CHAR_CLIENT_BASE_CMD" and len(raw) >= 0x5D:
+            # CHARSTATDISTSTR - the character's FREE-STAT ALLOCATION, one byte per stat, at +0x57.
+            #
+            # This is the input to `roe_Damage`'s per-rule override: so_ply_FreeStatStr reads byte[0] and
+            # so_ply_FreeStatCon byte[1] of this record, then indexes a per-points table.
+            #
+            # Offset verified against the operator's own chat narration rather than by counting: byte[1]
+            # goes 3 -> 50 across the capture's three sessions, and the chat reads "Okay END was +3, now
+            # going to +20" then "END to 50". Placing the record at +0x56 instead (the obvious-looking
+            # six small bytes) puts 90 in Strength and moves the wrong field.
+            statdist.update(zip(
+                ["Strength", "Constitute", "Dexterity", "Intelligence", "MentalPower", "RedistributePoint"],
+                raw[0x57:0x5D]))
         elif name == "NC_BAT_TARGETINFO_CMD" and len(raw) > 27:
             # order u8, targethandle u16, five u32, then targetlevel u8 at @27.
             levels[int.from_bytes(raw[1:3], "little")] = raw[27]
@@ -192,7 +205,7 @@ def parse(lines):
                 buf.extend(data)
             continue
     flush()
-    return swings, levels, chat
+    return swings, levels, chat, statdist
 
 
 def main():
@@ -209,7 +222,7 @@ def main():
     a = ap.parse_args()
 
     lines = decode(a.pcap, a.port, a.decoded)
-    swings, levels, chat = parse(lines)
+    swings, levels, chat, statdist = parse(lines)
     mobs = roster(a.pcap, a.stream)
 
     # The player is the handle that appears in combat and is NOT in the mob roster. TARGETINFO gives its
@@ -240,6 +253,7 @@ def main():
     truth = {
         "source": os.path.basename(a.pcap),
         "chat": chat,
+        "freeStatDistribution": statdist,
         "playerStats": stats,
         "playerStatsMixedInWindow": mixed,
         "players": [{"handle": h, "level": levels.get(h, 0)} for h in players],
@@ -252,6 +266,7 @@ def main():
     clean = [s for s in swings if s["flagWord"] == 0 and s["damage"] > 0]
     if mixed:
         print("!! player stats CHANGE inside the chosen window -- narrow it with --start-packet/--end-packet")
+    print("free-stat distribution: %s" % statdist)
     print("player stats: %s" % ", ".join("%s=%d" % kv for kv in sorted(stats.items())))
     print("%s: %d swings, %d clean (no flags, non-zero), %d mob handles, players %s"
           % (truth["source"], len(swings), len(clean), len(mobs),
