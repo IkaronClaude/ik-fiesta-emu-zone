@@ -561,3 +561,39 @@ five equipped items are byte-identical; only unrelated `ItemInfo` rows differ).
 false headline. Where a prediction is checked against a capture, read the live value.
 
 231 tests: 230 green, 1 deliberately red.
+
+### 2026-08-27 (oracle round) — the capture reconstruction is the weak link, and a live bot is not
+
+Operator: oracle first, disassembly if it disagrees. Four things came out of it.
+
+**1. The accessors are exact.** `tools/oracle_accessors.py` runs the real `roe_MinWC` / `roe_MaxWC` /
+`roe_AC` on the harness's own containers: 2080 / 2211 / 1215 and 1569 / 1959 / 242 — identical to this port.
+`roe_DefendPower@NormalPY` also returns 242, so our `DefendPower` is right too.
+
+**2. Only two layers reach the weapon accessors.** `tools/oracle_layers.py` puts a marker bonus in each
+container layer and asks the real function. `Upgrade.Plus` and `AbnormalState.Plus` reach `roe_*WC`;
+**LastTune, WeaponTitle, PassiveSkill and ItemPowerRate.Plus are invisible to them** even though
+`c_MakeTotal` folds all of them into the total the client is shown.
+
+That is a trap for any wire reconstruction. The client gets CLUSTER TOTALS, so dropping the displayed
+figure into `Base` hands the accessors a bonus the server may never have given them — inflating the attack
+and, because the bonus is flat, **compressing the min:max ratio**. Magnitude alone will not reveal it; the
+RATIO does.
+
+**3. The reconstruction is where the residual lives.** The capture character's +10 weapon is worth +1197,
+and the harness put it somewhere `roe_*WC` reads. With it the predicted ratio is 1.063; without it, 1.148.
+The observed per-handle ratios are **1.169 / 1.154 / 1.125** — consistent with 1.148, not with 1.063. So
+the harness had the bonus in the wrong layer, and neither placement gets magnitude AND ratio right, which
+says the reconstruction is under-determined rather than that the engine is wrong.
+
+**4. A live bot agrees with the port.** `FighterZero`, level 16, Broad Sword, every input known and nothing
+reconstructed. Predicted damage ratio from `roe_MinWC..MaxWC` (68..82) is 1.206. Observed clean damage
+**per target**: 1.190, 1.108, 1.130 — all within it. Pooling targets gives 1.405, which is mob-to-mob
+armour variation, not a per-swing multiplier: the earlier "1.24x unexplained multiplier" was pooling.
+
+**So the instrument should change.** A 4-week-old capture of a character whose container must be guessed is
+strictly worse than a bot this project owns, at a known level, in known gear, whose packet log carries both
+the login burst and every swing. The next step for 1:1 is to point the harness at a live bot, not to keep
+mining `Damage.pcapng`.
+
+231 tests: 230 green, 1 deliberately red.
