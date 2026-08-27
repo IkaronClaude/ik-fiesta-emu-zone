@@ -296,7 +296,15 @@ public sealed class CombatSimulation
                 if (landed.Target is SimPlayer p && p.IsAlive)
                 {
                     p.Hp -= landed.Damage;
-                    Log.Add($"[{Now,6}] mob {m.Mob.Handle} hits for {landed.Damage} (player {p.Hp}/{p.MaxHp})");
+
+                    // `smo_SwingDamage+0x4B5`, the tail of a hit that connected: the ATTACKER sheds hate for
+                    // whoever it just hit. Guarded on > 0 there, so a zero column is not "shed nothing by
+                    // accident" -- it is the branch not being taken.
+                    var shed = m.NormalAttack?.AggroInitialize ?? 0;
+                    if (shed > 0) m.Mob.so_mob_DecreaseAggro(p, shed);
+
+                    Log.Add($"[{Now,6}] mob {m.Mob.Handle} hits for {landed.Damage} (player {p.Hp}/{p.MaxHp})"
+                            + (shed > 0 ? $" [sheds {shed} aggro]" : ""));
                     if (p.Hp <= 0) Log.Add($"[{Now,6}] player died");
                 }
             }

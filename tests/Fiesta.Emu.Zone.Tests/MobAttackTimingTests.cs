@@ -20,7 +20,7 @@ public class MobAttackTimingTests
     }
 
     private static MobWeapon W(int atkSpd, int atkDly, int swingTime, int hitTime)
-        => new(0, "test", "-", atkSpd, atkDly, swingTime, hitTime, 0, 0, 0, 0, 0, 0, 0, HitType.Physical, 1000);
+        => new(0, "test", "-", atkSpd, atkDly, swingTime, hitTime, 0, 0, 0, 0, 0, 0, 0, HitType.Physical, 1000, StaStrength: 0, StaRate: 0, AggroInitialize: 0);
 
     /// <summary>Everything is in TENTHS of a second, because that is the resolution the zone's timed logic
     /// runs at — `mab_Think` converts every weapon timing with `* 10 / 1000`.</summary>

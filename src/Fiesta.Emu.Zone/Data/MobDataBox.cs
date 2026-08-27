@@ -102,8 +102,27 @@ public sealed record MobWeapon(
     int AtkSpd, int AtkDly, int SwingTime, int HitTime,
     int MinWc, int MaxWc, int Th,
     int MinMa, int MaxMa, int Mh,
-    int Range, HitType HitType, int BlastRate)
+    int Range, HitType HitType, int BlastRate,
+    int StaStrength, int StaRate, int AggroInitialize)
 {
+    /// <summary>How much hate the attacker SHEDS toward its victim when this attack lands.
+    ///
+    /// <para>Read from `ShineMobileObject::smo_SwingDamage+0x4B5`, at the tail of a hit that connected:</para>
+    /// <code>
+    /// if (aggroInitialize > 0)
+    ///     attacker->so_mob_DecreaseAggro(target, aggroInitialize);   // vtable +0x704
+    /// </code>
+    ///
+    /// <para>The direction is the surprising part and it is worth being explicit about, because the name
+    /// reads like the opposite: this does not give the victim hate, it takes hate AWAY from the attacker's
+    /// own list. A mob that lands a blow becomes less interested in whoever it just hit, which is what lets
+    /// aggro rotate around a group instead of locking onto one target forever.</para>
+    ///
+    /// <para>`ShineMob::so_mob_DecreaseAggro` (0x0042D380) then walks `sm_FamilyList` (+0x24B1), a circular
+    /// list, and applies the same decrease to <b>every family member</b> — so the shedding is shared across
+    /// a linked pack, not private to the one mob.</para></summary>
+    public int AggroShedOnHit => AggroInitialize;
+
     /// <summary>Whether this attack is resolved as magic — <c>HitType == HT_MA</c>.
     ///
     /// <para>⚠️ Read the FIELD, do not infer it from MA exceeding WC. Mobs whose normal attack really is
@@ -202,7 +221,8 @@ public sealed class MobDataBox
                 I(r, "AtkSpd"), I(r, "AtkDly"), I(r, "SwingTime"), I(r, "HitTime"),
                 I(r, "MinWC"), I(r, "MaxWC"), I(r, "TH"),
                 I(r, "MinMA"), I(r, "MaxMA"), I(r, "MH"),
-                I(r, "Range"), (HitType)I(r, "HitType"), I(r, "BlastRate")));
+                I(r, "Range"), (HitType)I(r, "HitType"), I(r, "BlastRate"),
+                I(r, "StaStrength"), I(r, "StaRate"), I(r, "AggroInitialize")));
         }
 
         return new MobDataBox

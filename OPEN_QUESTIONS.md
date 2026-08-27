@@ -39,13 +39,18 @@ WELL512 roll against `sm_GetUseWeaponRate`. None of that is ported — the excha
 
 ---
 
-## 3. `AggroInitialize`, and hate points per hit
+## 3. Where `so_DamagedBy`'s aggro RATE comes from
 
-**Status:** open, with a lead.
+**Status:** open, narrowed. (The rest of this question closed on 2026-08-27 — see Resolved.)
 
-`ShineMob::smo_SwingDamage` passes the weapon's `AggroInitialize` into the shared swing, so that column is
-the mob's per-attack aggro contribution. The column is not yet parsed, and the call that converts damage to
-hate is still unidentified.
+`ShineMob::so_DamagedBy(attacker, damage, ratePermille, flag)` turns damage into hate as
+`damage * ratePermille / 1000`, read at +0x147. What supplies `ratePermille` at each call site has not been
+traced — a plain swing and a skill plausibly pass different values, and the simulation currently hardcodes
+1000 (`SimPlayer.AggroRatePermille`).
+
+**A near-miss worth recording.** `so_mobile_MobAggroRate` looks like the answer and is not: it returns a
+BYTE, and the overrides are `ShinePlayer`/`ShineMover` → `1`, `ShineMob` → `sm_Flag & 1`, base → `0`. It is
+a yes/no "does this object draw mob aggro at all", not a permille rate. The name is the whole trap.
 
 ---
 
@@ -143,6 +148,37 @@ as though it were the finding.
 Yes. `ShinePlayer::sp_MaxHP` (0x0054A670) reads `Item.Plus.MaxHP`, `Item.Plus.MaxHP_2`,
 `AbnormalState.Plus.MaxHP` and `AbnormalState.Rate.MaxHP` on top of the class virtual. `CharClass::MaxHP`
 is one term of the answer, not the whole of it — which is why it never reads the cluster itself.
+
+## `AggroInitialize` — CLOSED 2026-08-27. It SUBTRACTS, and it is a boss mechanic.
+
+The column is parsed, and its reader is `ShineMobileObject::smo_SwingDamage+0x4B5`, at the tail of a hit
+that connected:
+
+```c
+if (aggroInitialize > 0)
+    attacker->so_mob_DecreaseAggro(target, aggroInitialize);   // vtable +0x704
+```
+
+**The direction is the opposite of what the name suggests.** It does not give the victim hate; it takes
+hate for that victim OFF the attacker's own list. A mob that lands a blow becomes less interested in whoever
+it just hit — which is how aggro rotates instead of locking on. `ShineMob::so_mob_DecreaseAggro`
+(0x0042D380) then walks `sm_FamilyList` (+0x24B1), a circular list, applying the same decrease to **every
+family member**, so a linked pack sheds together.
+
+It is a **boss** mechanic in practice: 139 of 5,815 weapon rows carry a non-zero value, at 400–1000, and
+they are `GobleKing`, `GhostKnight`, `Marlone`, `LegendaryTree` and the KQ bosses. An ordinary field mob has
+0 and never rotates.
+
+Two more facts fell out of the same read:
+
+- A **miss** still generates hate: `smo_SwingDamage+0x1D2` does `target->so_mob_AppendAggro(attacker, 1)`.
+  Not portable here yet — `roe_HitRate` is not implemented, so nothing in this simulation ever misses.
+- Slot `+0x700` is `so_mob_AppendAggro` and `+0x704` is `so_mob_DecreaseAggro`. On `ShinePlayer` both are
+  the ICF-folded empty stub, which is the mechanical statement that **players have no hate list**.
+
+Also corrected here: the field at +0x24AE is `sm_CurrentTarget` in the PDB, not "first attacker". Within
+`so_DamagedBy` it is only SEEDED (`if (== 0xFFFF) = attacker->handle`), so the behaviour previously
+described was right; whatever clears it has not been found, so it is still named for the read behaviour.
 
 ## Which rules a normal attack uses — CLOSED 2026-08-27
 

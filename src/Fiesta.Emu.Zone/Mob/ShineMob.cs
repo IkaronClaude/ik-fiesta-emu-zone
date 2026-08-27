@@ -20,11 +20,14 @@ public sealed class ShineMob : IShineObject
         set => Selector.DetectRange = value;
     }
 
-    /// <summary>The first thing that ever hit this mob, latched once.
+    /// <summary>`sm_CurrentTarget` (+0x24AE) — latched to the attacker's handle by `so_DamagedBy`, but
+    /// ONLY while it is still 0xFFFF:
+    /// <code>if (sm_CurrentTarget == 0xFFFF &amp;&amp; attacker) sm_CurrentTarget = attacker->handle;  // +0x1C4</code>
     ///
-    /// <para>`so_DamagedBy` keeps a `uint16` at mob+0x24AE seeded to 0xFFFF and writes the attacker's
-    /// handle only while it is still 0xFFFF — so it records the FIRST attacker and is never overwritten
-    /// while set, which is not the same as "current target" or "last attacker".</para></summary>
+    /// <para>⚠️ The PDB's name and this behaviour disagree, and the name is not wrong — `so_DamagedBy` only
+    /// SEEDS the field, so something else must clear it for "current" to be meaningful. That clearer has
+    /// not been found, so within the damage path this behaves as "first attacker" and is named for the
+    /// behaviour that was actually read. Do not assume it tracks the mob's live target.</para></summary>
     public ushort FirstAttackerHandle { get; private set; } = NoAttacker;
 
     public const ushort NoAttacker = 0xFFFF;
@@ -54,6 +57,35 @@ public sealed class ShineMob : IShineObject
 
         if (FirstAttackerHandle == NoAttacker)
             FirstAttackerHandle = attacker.Handle;
+    }
+
+    /// <summary>`sm_FamilyList` (+0x24B1) — the mobs this one is linked to.
+    ///
+    /// <para>A circular list in the original. It matters for aggro because
+    /// <see cref="so_mob_DecreaseAggro"/> walks it and applies the same decrease to every member: hate shed
+    /// by one family member is shed by all of them. Empty here unless a caller links a pack.</para></summary>
+    public List<ShineMob> Family { get; } = new();
+
+    /// <summary>`ShineMob::so_mob_AppendAggro` — vtable slot <c>+0x700</c>. Adds hate toward
+    /// <paramref name="who"/> on THIS mob's list.
+    ///
+    /// <para>On a player the slot is the ICF-folded empty stub, which is the mechanical statement that
+    /// <b>players have no hate list</b> — so this exists on the mob only, and there is nothing to mirror.</para></summary>
+    public void so_mob_AppendAggro(IShineObject who, int points) => Selector.mts_AppendAggroPoint(who, points);
+
+    /// <summary>`ShineMob::so_mob_DecreaseAggro` (0x0042D380) — vtable slot <c>+0x704</c>. Takes hate for
+    /// <paramref name="who"/> off this mob's list AND off every family member's.
+    ///
+    /// <para>The family walk is the whole point of the function: 0x0042D380 loops over
+    /// <c>sm_FamilyList</c> (+0x24B1) until it comes back to itself, calling `mts_DecreaseAggroPoint` on
+    /// each member's selector. A lone mob is a one-element cycle, which is why the loop reads as
+    /// pointless until a pack is linked.</para></summary>
+    public void so_mob_DecreaseAggro(IShineObject who, int points)
+    {
+        Selector.mts_DecreaseAggroPoint(who, points);
+        foreach (var member in Family)
+            if (!ReferenceEquals(member, this))
+                member.Selector.mts_DecreaseAggroPoint(who, points);
     }
 
     /// <summary>How much hate a hit generates: <c>damage * ratePermille / 1000</c>.

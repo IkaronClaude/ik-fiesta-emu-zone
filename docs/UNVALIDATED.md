@@ -87,11 +87,15 @@ damage from healing. `RegenInterval` is read by `ShineMob::so_MapMarking`.
 **`MobInfo`** — `WeaponType`, `ArmorType`, `GradeType`, `IsPlayerSide`, `AbsoluteSize`
 
 **`MobWeapon`** — `AtkType`; `MopAttackTarget` (read in `mab_Think` as a 5-way switch — the switch is
-*seen* but not ported); and `StaName`, `StaStrength`, `StaRate`, `AggroInitialize`, whose MEANING is now
-known even though the columns are still not parsed: `ShineMob::smo_SwingDamage` passes the weapon's
-abstate, `StaStrength`, `StaRate` and `AggroInitialize` into the shared swing, so they are the weapon's
-status-effect strength and chance plus its aggro contribution. `AggroInitialize` is a live lead on the
-open "hate points per hit" question in §5.
+*seen* but not ported); `StaName`; and `StaStrength`/`StaRate`, now PARSED but still unconnected — they are
+the weapon's status-effect strength and chance, and abnormal states are not modelled here at all, so
+nothing consumes them.
+
+`AggroInitialize` has left this list: it is parsed and connected. It SUBTRACTS — a mob that lands a hit
+sheds that much hate for its victim, across its whole family — and it is a boss mechanic (139 of 5,815
+rows, values 400–1000). See OPEN_QUESTIONS.md.
+
+`HitType` has also left this list: it selects the mob's `RulesOfEngagement` singleton at spawn.
 
 **`Param<Class>Server`** — `Wizdom` (no cluster slot exists for it), `AtkPerAP`, `DmgPerAP`, all twelve
 stone columns, `PainRes`, `RestraintRes`, `CurseRes`, `ShockRes`, `CharTitlePt`, `SkillPwrPt`,

@@ -21,7 +21,8 @@ public class NormalAttackRuleTests
         new(Id: 1, InxName: "w", Skill: "-",
             AtkSpd: 1000, AtkDly: 0, SwingTime: 1000, HitTime: 500,
             MinWc: 10, MaxWc: 20, Th: 0, MinMa: 100, MaxMa: 200, Mh: 0,
-            Range: 20, HitType: type, BlastRate: 0);
+            Range: 20, HitType: type, BlastRate: 0,
+            StaStrength: 0, StaRate: 0, AggroInitialize: 0);
 
     /// <summary>The three branches of `so_mob_Regenerate+0x543`, including the one the current data never
     /// takes: `HT_NONE` selects MAGIC, because the server tests <c>HitType != 0</c> rather than

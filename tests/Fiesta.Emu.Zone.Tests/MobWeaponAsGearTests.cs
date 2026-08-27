@@ -23,7 +23,7 @@ public class MobWeaponAsGearTests
     }
 
     private static MobWeapon Weapon(int minWc, int maxWc, int th = 0, int minMa = 0, int maxMa = 0, int mh = 0)
-        => new(0, "test", "-", 1000, 0, 1000, 300, minWc, maxWc, th, minMa, maxMa, mh, 20, HitType.Physical, 1000);
+        => new(0, "test", "-", 1000, 0, 1000, 300, minWc, maxWc, th, minMa, maxMa, mh, 20, HitType.Physical, 1000, StaStrength: 0, StaRate: 0, AggroInitialize: 0);
 
     /// <summary>The six values land on Item.Plus, not on the base cluster.</summary>
     [Fact]

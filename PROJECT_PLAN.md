@@ -196,3 +196,23 @@ The rule for this repo: **a negative result is a claim about the sweep, not abou
 "no callers" answer produced before this date is worth re-running.
 
 193 tests, 0 red.
+
+### 2026-08-27 — `AggroInitialize` subtracts, and it is a boss mechanic
+
+Chased straight after the sweep fix, because the open question had been parked on a negative result.
+
+`MobWeapon.AggroInitialize` is read at `smo_SwingDamage+0x4B5`, at the tail of a hit that connected, and it
+calls `attacker->so_mob_DecreaseAggro(target, value)`. **It takes hate away from the attacker**, it does not
+give it to the victim — which is how a boss rotates targets instead of locking onto one. 139 of 5,815
+weapon rows carry it (400–1000) and they are all bosses; an Orc has 0.
+
+`ShineMob::so_mob_DecreaseAggro` walks `sm_FamilyList`, so a linked pack sheds together. Ported with the
+family walk, plus `StaStrength`/`StaRate` parsed but left unconnected (abnormal states are not modelled).
+
+Corrected while reading: the +0x24AE field is `sm_CurrentTarget`, not "first attacker" — the behaviour
+previously written down was right (`so_DamagedBy` only seeds it while unset), the name was not.
+
+Still open: what supplies `so_DamagedBy`'s permille rate. `so_mobile_MobAggroRate` is NOT it — it returns a
+boolean "does this object draw aggro at all".
+
+197 tests, 0 red.
