@@ -31,22 +31,9 @@ WELL512 roll against `sm_GetUseWeaponRate`. None of that is ported — the excha
 a `RulesOfEngagement *` — so a SKILL brings its own rule, the way a mob's normal attack gets one from
 `smo_RulesOfNormalAttack`. That is where `roe_magical` / `roe_physical` enter, and therefore where caster
 damage lives for players too. `sdi_Activ` (+0x04) is the `ActiveSkillInfo` row, already loaded here by
-`SkillDataBox`; `sdi_AttackDist` (+0x74) is the skill's range.
-
----
-
-## 2. Where `so_DamagedBy`'s aggro RATE comes from
-
-**Status:** open, narrowed. (The rest of this question closed on 2026-08-27 — see Resolved.)
-
-`ShineMob::so_DamagedBy(attacker, damage, ratePermille, flag)` turns damage into hate as
-`damage * ratePermille / 1000`, read at +0x147. What supplies `ratePermille` at each call site has not been
-traced — a plain swing and a skill plausibly pass different values, and the simulation currently hardcodes
-1000 (`SimPlayer.AggroRatePermille`).
-
-**A near-miss worth recording.** `so_mobile_MobAggroRate` looks like the answer and is not: it returns a
-BYTE, and the overrides are `ShinePlayer`/`ShineMover` → `1`, `ShineMob` → `sm_Flag & 1`, base → `0`. It is
-a yes/no "does this object draw mob aggro at all", not a permille rate. The name is the whole trap.
+`SkillDataBox`; `sdi_AttackDist` (+0x74) is the skill's range. `ActiveSkillInfoServer` carries the
+rest of what a skill needs — `AggroPerDamage`, `AbsoluteAggro`, `SkillHitType`, `SkilPyHitRate` /
+`SkilMaHitRate`, `DmgIncRate` / `DmgIncValue`, `SwingTime` / `HitTime`.
 
 ---
 
@@ -144,6 +131,40 @@ as though it were the finding.
 Yes. `ShinePlayer::sp_MaxHP` (0x0054A670) reads `Item.Plus.MaxHP`, `Item.Plus.MaxHP_2`,
 `AbnormalState.Plus.MaxHP` and `AbnormalState.Rate.MaxHP` on top of the class virtual. `CharClass::MaxHP`
 is one term of the answer, not the whole of it — which is why it never reads the cluster itself.
+
+## Where `so_DamagedBy`'s aggro rate comes from — CLOSED 2026-08-27
+
+`so_DamagedBy(attacker, damage, ratePermille, flag)` turns damage into hate as `damage * rate / 1000`
+(+0x147). The rate has two sources, and the split is clean:
+
+**An ordinary attack passes the literal 1000.** All four combat call sites push `0x3E8`:
+`so_attack+0x117`, `so_smash+0x115`, `so_skillsmash+0x151`, `DamageAbsorbAction::exe+0xCC`. One point of
+damage is one point of hate. So the simulation's 1000 is exact rather than an assumption — which is the
+part that mattered, since nothing here casts.
+
+**A skill varies it.** `sds_TemplateStore` takes the rate as its 4th parameter (`[ebp+0x14]`, pushed at
++0x19A), and `smo_SkillBlast+0x5BD` builds it from the skill's server row:
+
+```c
+const ActiveSkillInfoServer* serv = skill->sdi_ServInf;
+absolute += serv->AbsoluteAggro;                                   // +0x43, accumulated flat
+rate      = <global at 0x1325EDE0> + serv->AggroPerDamage - 1000;  // +0x3F, relative to 1000
+```
+
+`AggroPerDamage` differs from 1000 for **2,580 of 2,791 skills** — `TripleHit` is 9000, nine times the
+hate per point of damage, which is what a taunt looks like in this engine. `AbsoluteAggro` is non-zero for
+251 and includes **negative** values (down to −2000), a flat hate DROP; `SnearKick01`–`05` climb 750 →
+18,000 with `AggroPerDamage` 0, so they are pure flat-threat skills that generate no damage-scaled hate at
+all.
+
+**Still unread, and small:** the global at `0x1325EDE0`. It is runtime-allocated, so it is not in the image
+and cannot be read statically — it needs a live process or its initialiser traced. Given the `- 1000`, it
+is almost certainly a server-wide baseline of 1000, which would make the rate simply `AggroPerDamage`; that
+is a lean, not a reading.
+
+A near-miss worth keeping: `so_mobile_MobAggroRate` looks like the answer and is not. It returns a BYTE —
+`ShinePlayer`/`ShineMover` → 1, `ShineMob` → `sm_Flag & 1`, base → 0. It is a yes/no "does this object draw
+mob aggro at all", not a permille rate.
 
 ## The third term of `nextAttackAt` — CLOSED 2026-08-27
 

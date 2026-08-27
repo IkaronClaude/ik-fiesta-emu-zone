@@ -267,3 +267,18 @@ Also cleared a stale doc comment claiming `TurnSpeed`'s non-zero meaning was unr
 2026-08-26; the comment had not caught up.
 
 203 tests, 0 red.
+
+### 2026-08-27 — the aggro rate, and the last of the small open questions
+
+`so_DamagedBy`'s permille rate splits cleanly. **An ordinary attack passes the literal 1000** — all four
+combat call sites push `0x3E8` — so one point of damage is one point of hate, and this simulation's 1000 is
+exact rather than an assumption. Only skills vary it: `smo_SkillBlast+0x5BD` builds the rate from
+`ActiveSkillInfoServer.AggroPerDamage` (2,580 of 2,791 skills differ from 1000; `TripleHit` is 9000 — a
+taunt) and accumulates `AbsoluteAggro` separately as flat threat, which can be negative.
+
+One term of that is still unread and is genuinely small: a runtime-allocated global at `0x1325EDE0`, which
+the `- 1000` suggests is a server-wide baseline of 1000. Not in the image, so it needs a live process.
+
+That leaves **one** open question: mob skill attacks. Three closed today.
+
+203 tests, 0 red.

@@ -20,7 +20,16 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
     public int AttackDamage { get; set; } = 40;
 
     /// <summary>Aggro generated per point of damage dealt, in permille — the third argument of
-    /// `so_DamagedBy`.</summary>
+    /// `so_DamagedBy`, which turns it into hate as <c>damage * rate / 1000</c>.
+    ///
+    /// <para><b>1000 is exact for an ordinary attack, not a placeholder.</b> Every combat caller of
+    /// `so_DamagedBy` pushes the literal <c>0x3E8</c>: `so_attack+0x117`, `so_smash+0x115`,
+    /// `so_skillsmash+0x151`, `DamageAbsorbAction::exe+0xCC`. One point of damage is one point of hate.</para>
+    ///
+    /// <para>Only the SKILL path varies it. `sds_TemplateStore` takes the rate as a parameter, and
+    /// `smo_SkillBlast+0x5BD` builds it from `ActiveSkillInfoServer.AggroPerDamage` (+0x3F) — 2,580 of
+    /// 2,791 skills differ from 1000, and `TripleHit` is 9000, nine times the hate per point. Skills are
+    /// not modelled here, so nothing sets this to anything else yet.</para></summary>
     public int AggroRatePermille { get; set; } = 1000;
 
     public int AttackRange { get; set; } = 12;
