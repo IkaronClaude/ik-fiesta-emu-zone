@@ -82,7 +82,14 @@ A green test over an unverified guess is worse than no test at all: it makes the
 it survives review, and it actively resists correction because changing the code now "breaks a test".
 A red one states the debt in the one place nobody can ignore.
 
-Currently red, deliberately: **none.**
+Currently red, deliberately: **one.**
+
+| red test | what it states |
+|---|---|
+| `PcapGroundTruthTests.PlayerDamageMatchesTheCapture_KNOWN_RED` | A player's damage is under-predicted by a consistent ~1.28x against a real capture. Only 2 of 34 clean hits land in our predicted band. Solving for the attack power that WOULD produce the observed minimum gives **2192 against the Orc and 2230 against the Pinky — the same number for two mobs with different armour**, so the missing term is on the ATTACK side, not the defence. Not the level gap (applied, 1500) and not the angle (capped at 1200). |
+
+⚠️ **Do not close that one by scaling something until it fits.** The capture says what the answer is
+worth, not what it is.
 
 Closed so far:
 
@@ -282,3 +289,41 @@ the `- 1000` suggests is a server-wide baseline of 1000. Not in the image, so it
 That leaves **one** open question: mob skill attacks. Three closed today.
 
 203 tests, 0 red.
+
+### 2026-08-27 — checked against a capture for the first time
+
+The goal moved to "full 1:1 combat sim, checked against a pcapng". Three tables that were never loaded
+are now loaded, and the port has its first check against a live server rather than against the binary.
+
+**`DamageLvGapPVE.shn` / `DamageLvGapEVP.shn`** — the level-difference rate, previously defaulted to 1000
+and documented as "the one approximation in the pipeline". `GetLevelCapRate` (0x005C8220) scans for the
+first row whose signed `LvGap` is at least `defenderLevel - attackerLevel`. A player gets 1000 at or above
+the target's level, ramping to a flat 1500 five levels down; **every EVP row is 1000**, so a monster's
+damage is never level-adjusted — assumed before, read now.
+
+**`DamageByAngle.txt`** — six anchors expanded by `dt_Load` into a 91-entry table indexed in direction
+units. Not a lerp: each slot recomputes its step from the value just written and truncates, so the ramp
+hugs the lower anchor. **The whole range is 1000-1200**, which is the number that matters when reading a
+capture — a backstab explains at most 20% of a damage spread, so anything wider is something else.
+
+**`tools/pcap_combat_truth.py`** — per-swing ground truth (attacker, defender, damage, decoded flags, the
+player's server-reported stats) as JSON. It shells out to `pcap_decode.py` and `analyse_damage.py` rather
+than reimplementing framing, the XOR and the briefinfo array.
+
+Where the port now stands against `Damage.pcapng`, one clean window, level 82 character:
+
+| direction | mob | observed | predicted | inside |
+|---|---|---:|---:|---:|
+| monster to player | Orc | 55-118 | ceiling 120 | ceiling holds |
+| player to monster | Orc | 1128-1401 | 879-1136 | 2/34 |
+| player to monster | Pinky | 964-1174 | 739-954 | 0/7 |
+
+The monster-to-player CEILING holds, which is a real result. The floor does not, and the player-to-monster
+band is short by a consistent factor — filed as the repo's one deliberate red test.
+
+**A trap worth recording.** The first read of this capture merged all three conversations in the file and
+the observed range for one mob widened from 55-118 to 55-213, which looked like our formula being wildly
+wrong. A relog opens a new conversation and the character's configuration can differ across it; the
+extractor now stamps a `conv` on every swing and the harness filters on it.
+
+215 tests: 214 green, 1 deliberately red.
