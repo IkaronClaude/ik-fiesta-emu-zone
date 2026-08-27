@@ -17,12 +17,18 @@ namespace Fiesta.Emu.Zone.Parameter;
 /// <param name="SoulSp">`SoulSP`.</param>
 /// <param name="MaxSoulSp">`MAXSoulSP`.</param>
 /// <param name="PriceSpStone">`PriceSPStone`.</param>
+/// <param name="JobChangeDmgUp">`JobChangeDmgUp` — the job-change catch-up multiplier, in permille,
+/// applied to every hit this character lands ON A MONSTER. See
+/// <see cref="Combat.AttackModifiers.JobChangeDamageUpPermille"/>: it is 1000 (no change) for a base
+/// class, and 2000 at level 20 for a first-job class, decaying with level until the next job change
+/// resets it.</param>
 public sealed record ClassParamRow(
     int Level,
     int Str, int Con, int Int, int Dex, int Men,
     int MaxHp, int MaxSp,
     int SoulHp, int MaxSoulHp, int PriceHpStone,
-    int SoulSp, int MaxSoulSp, int PriceSpStone);
+    int SoulSp, int MaxSoulSp, int PriceSpStone,
+    int JobChangeDmgUp);
 
 /// <summary>The per-class, per-level base stat tables — `9Data/Shine/World/Param&lt;Class&gt;Server.txt`.
 ///
@@ -73,7 +79,8 @@ public sealed class ClassParamTable
                 PriceHpStone: Col(r, "PriceHPStone"),
                 SoulSp: Col(r, "SoulSP"),
                 MaxSoulSp: Col(r, "MAXSoulSP"),
-                PriceSpStone: Col(r, "PriceSPStone")))
+                PriceSpStone: Col(r, "PriceSPStone"),
+                JobChangeDmgUp: Col(r, "JobChangeDmgUp")))
             .ToDictionary(r => r.Level);
 
         var name = Path.GetFileNameWithoutExtension(path);

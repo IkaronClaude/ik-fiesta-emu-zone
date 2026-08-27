@@ -137,6 +137,7 @@ def parse(lines):
     level (at @27) as absent and reported every player as level 0.
     """
     swings, levels, chat, statdist, allocs, order = [], {}, [], {}, [], 0
+    shape = {"chrclass": None}
     pending, buf = None, bytearray()
     conv = -1
 
@@ -190,6 +191,17 @@ def parse(lines):
                     ["Strength", "Constitute", "Dexterity", "Intelligence", "MentalPower",
                      "RedistributePoint"],
                     raw[0x57:0x5D]))
+        elif name == "NC_CHAR_CLIENT_SHAPE_CMD" and raw:
+            # PROTO_AVATAR_SHAPE_INFO packs race:2, chrclass:5, gender:1 into byte 0. The CLASS is the
+            # only thing here the damage engine needs, and it needs it: `so_ply_JobChangeDamageUp` reads
+            # `JobChangeDmgUp` out of THIS class's `Param<Class>Server.txt` row, which is 1000 for a base
+            # class and up to 2000 just after a job change. Without the class that multiplier cannot be
+            # looked up, and every outgoing prediction is short by it.
+            #
+            # FIRST one only, for the same reason the stat distribution takes the first: a relog re-sends
+            # it, and mixing sessions is what the conversation split exists to prevent.
+            if shape["chrclass"] is None:
+                shape["chrclass"] = (raw[0] >> 2) & 0x1F
         elif name == "NC_BAT_TARGETINFO_CMD" and len(raw) > 27:
             # order u8, targethandle u16, five u32, then targetlevel u8 at @27.
             levels[int.from_bytes(raw[1:3], "little")] = raw[27]
@@ -217,7 +229,7 @@ def parse(lines):
                 buf.extend(data)
             continue
     flush()
-    return swings, levels, chat, statdist, allocs
+    return swings, levels, chat, statdist, allocs, shape
 
 
 def main():
@@ -234,7 +246,7 @@ def main():
     a = ap.parse_args()
 
     lines = decode(a.pcap, a.port, a.decoded)
-    swings, levels, chat, statdist, allocs = parse(lines)
+    swings, levels, chat, statdist, allocs, shape = parse(lines)
     mobs = roster(a.pcap, a.stream)
 
     # The player is the handle that appears in combat and is NOT in the mob roster. TARGETINFO gives its
@@ -281,6 +293,7 @@ def main():
         "freeStatDistribution": statdist,
         "playerStats": stats,
         "playerStatsMixedInWindow": mixed,
+        "chrclass": shape["chrclass"],
         "players": [{"handle": h, "level": levels.get(h, 0)} for h in players],
         "mobHandles": {str(k): v for k, v in sorted(mobs.items())},
         "swings": swings,

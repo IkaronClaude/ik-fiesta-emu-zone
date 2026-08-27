@@ -32,6 +32,14 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
     /// not modelled here, so nothing sets this to anything else yet.</para></summary>
     public int AggroRatePermille { get; set; } = 1000;
 
+    /// <summary>`JobChangeDmgUp` for this character's class at this character's level, in permille — the
+    /// catch-up multiplier every hit ON A MONSTER goes through.
+    ///
+    /// <para><c>null</c> until <c>CharacterSheet.Become</c> reads it out of the class table, which is
+    /// honest: a player whose class is unknown has no rate, and defaulting to 1000 would silently claim
+    /// "base class" for a first-job character that should be hitting twice as hard.</para></summary>
+    public int? JobChangeDamageUpPermille { get; set; }
+
     public int AttackRange { get; set; } = 12;
     public int MoveSpeed { get; set; } = 6;
 

@@ -323,8 +323,33 @@ public static class DamageCalculator
         // damage of 8.5e12 comes back as its low 32 bits, which is negative and so floors to 1. A plain
         // (int)Math.Floor gave 2147483647 -- "maximum possible hit" where the server deals the minimum.
         var final = (int)Ftol32(damage);
+        final = ApplyJobChangeDamageUp(final, mods.JobChangeDamageUpPermille, rng);
         final = ApplyLevelGap(final, mods.LevelGapRatePermille);
         return new AttackOutcome(final > 0 ? final : 1, isCritical, rollPermille, attackPower, defendPower);
+    }
+
+    /// <summary>`ShinePlayer::so_ply_JobChangeDamageUp` (0x00560E80) — the job-change catch-up multiplier,
+    /// run at `roe_CalcDamage+0x5B2` on the ATTACKER, one call before the level gap.
+    ///
+    /// <para><paramref name="ratePermille"/> is <c>null</c> when the hook does not run: the base
+    /// `ShineObject` implementation is <c>return dmg</c>, so a mob attacker never reaches it, and the
+    /// player override returns early unless the defender is a MONSTER. That is why "does not apply" is a
+    /// null and not a rate of 1000 — 0 is a real rate here and really does zero the damage.</para>
+    ///
+    /// <para>The arithmetic is the binary's: the damage is sign-extended (<c>cdq</c>), multiplied by the
+    /// rate with <c>__allmul</c>, and divided by 1000 with <c>__aulldiv</c> — an <b>unsigned</b> 64-bit
+    /// divide. A plain <c>damage * rate / 1000</c> in int32 overflows above about 1.7M damage, which the
+    /// server does not.</para>
+    ///
+    /// <para>The rate has a 0-or-1 random added to it first, read from `rndbox` slot 2 — a shuffled pool
+    /// whose only values are 0 and 1, because `RandomBox`'s constructor fills slot <c>b</c> with
+    /// <c>floor(i * b / 16384)</c>. Worth 0.08%, and modelled because leaving it out would make this the
+    /// one step of the pipeline that is deterministic when the server's is not.</para></summary>
+    private static int ApplyJobChangeDamageUp(int damage, int? ratePermille, System.Random rng)
+    {
+        if (ratePermille is not { } rate) return damage;
+        var product = unchecked((long)damage * (rate + rng.Next(0, 2)));
+        return unchecked((int)((ulong)product / 1000UL));
     }
 
     /// <summary>`roe_LevelGapDamageRevision` — the level-difference multiplier, applied to the INTEGER

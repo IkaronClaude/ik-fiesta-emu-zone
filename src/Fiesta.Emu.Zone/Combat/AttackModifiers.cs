@@ -54,10 +54,36 @@ public sealed record AttackModifiers
     /// through <c>CombatSimulation.LevelGaps</c>; the 1000 default here means "no table", which is right
     /// for a monster attacking a player and wrong by up to 50% the other way.</para>
     ///
-    /// <para>Not modelled at all: the two <c>so_ply_JobChangeDamageUp</c> hooks that run alongside it
-    /// (<c>+0x59E</c>, <c>+0x5B2</c>). <c>ShineObject</c>'s base implementation is a pass-through, so they
-    /// are identity for a mob, but <c>ShinePlayer</c> overrides them.</para></summary>
+    /// <para>The hook that runs just before it is <see cref="JobChangeDamageUpPermille"/>. Still not
+    /// modelled: <c>so_ply_DecreaseDmgPassiveSkill</c> (<c>+0x59E</c>), the DEFENDER's half.</para></summary>
     public int LevelGapRatePermille { get; init; } = 1000;
+
+    /// <summary>`ParamXServer.txt`'s <b>JobChangeDmgUp</b> column for the attacker's class at the attacker's
+    /// level — the job-change catch-up multiplier, in permille.
+    ///
+    /// <para><c>null</c> means the hook does not run at all, which is a different thing from a rate of
+    /// 1000 and is why this is nullable. <c>roe_CalcDamage+0x5B2</c> calls the ATTACKER's vtable slot
+    /// 0xD2C; <c>ShineObject</c>'s implementation is <c>return dmg</c>, so a MOB attacker never reaches
+    /// the multiplier, and <c>ShinePlayer::so_ply_JobChangeDamageUp</c> returns early unless the defender
+    /// is a MONSTER. Player-versus-player and monster-versus-anything take neither path. A rate of 0, by
+    /// contrast, is a real table value and really does zero the damage.</para>
+    ///
+    /// <para><b>This is large, and it was missing.</b> A first-job class is on <c>2000</c> — double damage
+    /// — the moment it changes job at level 20, decaying by level to 1190 at 59 and back to 1000 at 60
+    /// when the second job change lands. Second job: 1700 at 60 down to 1055 at 99. Third: 1100 at 100
+    /// down to 1025, and 1000 from 120. A base class (Fighter, Cleric, Mage, Archer, Joker) is flat 1000
+    /// at every level. So the bonus is a catch-up for having just started a new class, and a character in
+    /// the first half of a job band hits monsters for far more than its stats suggest.</para>
+    ///
+    /// <para>Applied to the INTEGER damage, after the <c>_ftol</c> and before the level gap, as a 64-bit
+    /// multiply and an unsigned divide by 1000. Verified against the real function under emulation over
+    /// fourteen input sets — see <c>tools/oracle_jobchange_dmgup.py</c>.</para>
+    ///
+    /// <para>⚠️ The server adds a 0-or-1 draw from <c>rndbox</c> slot 2 to the rate before dividing (the
+    /// slot is a shuffled pool of 0s and 1s, so that is all it can be). It is worth 0.08% and
+    /// <see cref="DamageCalculator.Resolve"/> draws it, so a pinned <see cref="RollPermille"/> alone does
+    /// not make a swing deterministic here — pass a seeded RNG.</para></summary>
+    public int? JobChangeDamageUpPermille { get; init; }
 
     /// <summary>The server's <c>EngageArgument.nBMPDamageRate</c>, applied to attack power inside the core
     /// damage step rather than to the final figure.</summary>

@@ -37,7 +37,105 @@ rest of what a skill needs — `AggroPerDamage`, `AbsoluteAggro`, `SkillHitType`
 
 ---
 
+## 2. The capture residual, now split in two
+
+**Status:** open, and narrower than it was. `PcapGroundTruthTests.TheCeilingIsExact_KNOWN_RED` is the
+instrument; `Damage.pcapng` is the capture.
+
+Until 2026-08-27 this was recorded as one thing: "a continuous per-swing multiplier of up to 1.24x that
+applies to a MOB attacker as well as a player". Porting `so_ply_JobChangeDamageUp` (below) fixed the
+outgoing half and showed the two halves were never the same mechanism.
+
+```
+  IN  Orc    n=121  observed   71..107    predicted   70..90     ceiling x1.189
+  OUT Orc    n=22   observed 1128..1401   predicted 1373..1461   ceiling x0.959
+  IN  Pinky  n=69   observed   50..72     predicted   47..62     ceiling x1.161
+  OUT Pinky  n=7    observed  964..1174   predicted 1154..1229   ceiling x0.955
+```
+
+**(a) Incoming is ~1.17x over the ceiling.** A mob attacker reaches neither the job-change hook nor
+anything else character-side — `ShineObject`'s slot 0xD2C is `return dmg` and its item-action manager is
+`xor eax, eax`. So this is on the mob's side, or in how the harness rebuilds the mob's container and the
+character's defence. The two live hooks that CAN still scale a mob's hit are the defender's
+`so_ply_DecreaseDmgPassiveSkill` (which reduces, wrong direction) and the `ChargedEffectContainer`
+force-rate pair (which can go either way) — see §3.
+
+**(b) The outgoing spread is 1.242x where the weapon range is 1.064x.** The ceiling now lines up (x0.96)
+and the floor is 18% too high, so the reconstruction has the maximum roughly right and the minimum wrong,
+rather than being uniformly short. Ruled out for this: per-instance mob levels (every Orc and Pinky handle
+in the capture reports level 61, so the level-gap rate is constant), the normal attack's `damagerate` and
+`nBMPDamageRate` (`smo_SwingDamage` writes the literal 1000 into both), and the layer split of the
+character's weapon (Base / Item.Plus / Upgrade.Plus reproduces the same 2080-2211 either way, so the
+1.064 is not an artefact of how the totals were unpacked).
+
+**What would settle it:** the instrument, not more analysis. A bot this project owns, at a known level in
+known gear, whose packet log carries the login burst AND every swing, replaces a character whose container
+has to be guessed. That was the conclusion of the 1780db3 commit and it still stands.
+
+---
+
+## 3. Five damage hooks are read but not modelled
+
+**Status:** open. Each is a real branch of `roe_CalcDamage` or `roe_AttackPower`, each was found by reading
+the pipeline end to end on 2026-08-27, and none is reached by a clean unbuffed swing — which is why they
+cost nothing on the current capture and will cost everything on a buffed one.
+
+| where | what | why it matters |
+|---|---|---|
+| `roe_CalcDamage+0x466` | `ChargedEffectContainer::cec_AttackForceRate1024` on the attacker vs `cec_DefendForceRate1024` on the defender. Attacker higher: `dmg * (1024 + diff) / 1024`. Defender higher: `dmg * 1024 / (1024 + diff)`. | A premium/charged effect scales damage in 1024ths. Mobs share one static container (`so_ply_ChargedEffectContainer` returns a fixed global), so it is a player-side term in both directions. |
+| `roe_CalcDamage+0x4C2` | A critical is `2*dmg + dmg * container[+0xCDC] / 1000`, not `2*dmg`. | This port doubles and stops. The extra term is a real stat slot on the attacker's container. |
+| `roe_CalcDamage+0x59E` | `so_ply_DecreaseDmgPassiveSkill(att, dmg)` on the DEFENDER. | The only modelled-nowhere hook that can reduce incoming damage. Identity for a mob. |
+| `roe_AttackPower+0x129/+0x155` | `ItemActionObserveManager::EventRun_IncDmgRate` on the attacker's manager AND the defender's, then `GetRateAppliValue` applies the resulting chain of permille rates to BOTH weapon bounds. | Item actions widen or shift the attack range before the roll. Note the defender's manager is consulted too, so a player's own gear can scale the damage they RECEIVE. |
+| `roe_CalcDamage+0x60A..+0x801` | Three loops over the abnormal-state list calling per-abstate virtuals with `&damage`. One of them is gated on the attacker's `so_AttackRange > 300`, i.e. a ranged weapon. | Abstates get to rewrite the damage directly. Nothing here models that. |
+
+Skills bring one more: `MiscDataTable::mdt_ArgumentLoad` bsearches a table by skill id and writes
+`EngageArgument.damagerate` (+0x1C) and `crirateadd` (+0x20) from it, plus an abstate to apply. It is
+gated on `arg->sklinfo` being non-null, so a normal attack never reaches it.
+
+---
+
 # Resolved
+
+## The job-change catch-up multiplier — CLOSED 2026-08-27
+
+**A player hitting a monster deals `dmg * JobChangeDmgUp / 1000`, and this port applied none of it.**
+
+`roe_CalcDamage+0x5B2` calls the ATTACKER's vtable slot 0xD2C with the defender and the integer damage,
+one call before the level gap. For a mob that slot is `return dmg`. For a player it is
+`ShinePlayer::so_ply_JobChangeDamageUp` (0x00560E80):
+
+```
+if (def == NULL || def->so_ObjectType() != 5 /*monster*/)  return dmg;
+row = charClass->cc_array[level <= 150 ? level : 0];        // PrimaryParameter *[151] at charClass+0x10858
+if (row == NULL) return dmg;
+return (unsigned __int64)dmg * (row->JobChangeDmgUp + rndbox[2].next()) / 1000;
+```
+
+`PrimaryParameter::JobChangeDmgUp` is at +0x80 in the PDB and is column **`JobChangeDmgUp`** of
+`9Data/Shine/World/Param<Class>Server.txt`. The values say plainly what it is for — a catch-up for having
+just changed job:
+
+* base classes (Fighter, Cleric, Mage, Archer, Joker) — flat **1000** at every level;
+* first job — **2000** at level 20, decaying to 1190 at 59, back to 1000 at 60;
+* second job — **1700** at 60, decaying to 1055 at 99, back to 1000 at 100;
+* third job — **1100** at 100, decaying to 1025 at 115, 1000 from 120.
+
+So a character in the first half of a job band hits monsters for up to twice what its stats suggest.
+
+`rndbox[2]` is a shuffled pool of 0s and 1s — `RandomBox`'s constructor fills slot `b` with
+`floor(i * b / 16384)` for i in 0..16383 — so the random term is worth 0.08%, not the 24% the capture
+residual needed. Ruling that out mattered: a "random damage multiplier" is exactly the kind of thing that
+gets assumed to be the answer.
+
+**Verified by running it, not by reading it.** `tools/oracle_jobchange_dmgup.py` drives the real function
+under emulation over fourteen input sets — including the `ja` on a 16-bit compare that sends level > 150 to
+row 0 rather than clamping to 150, the three early returns, and a 3,000,000 damage that proves the multiply
+is 64-bit and the divide unsigned. All fourteen agree with this port.
+
+Applied to `Damage.pcapng`: the captured character is class 8 (Paladin, read off `PROTO_AVATAR_SHAPE_INFO`)
+at level 82, which is 1280. Both outgoing cases went from ~20% over the predicted ceiling to under it. The
+incoming cases did not move, and could not have — see §2.
+
 
 ## Per-mob targeting policy — CLOSED 2026-08-26
 

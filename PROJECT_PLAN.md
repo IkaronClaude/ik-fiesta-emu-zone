@@ -597,3 +597,75 @@ the login burst and every swing. The next step for 1:1 is to point the harness a
 mining `Damage.pcapng`.
 
 231 tests: 230 green, 1 deliberately red.
+
+### 2026-08-27 (the missing multiplier) — a player hitting a monster gets a job-change bonus, and this port gave it none
+
+The residual was recorded as one thing: *"a continuous per-swing multiplier of up to 1.24x that applies to a
+MOB attacker as well as a player"*. It was two things, and one of them is now read, verified and ported.
+
+**What was missed, and where.** `roe_CalcDamage` was ported from its arithmetic outward: the accessors,
+`roe_Damage`, the angle multiplier, the level gap. What had never been walked was the pair of virtual calls
+between the `_ftol` and the level gap. Slot 0xD2C on the ATTACKER is
+`ShinePlayer::so_ply_JobChangeDamageUp` (0x00560E80):
+
+```
+if (def == NULL || def->so_ObjectType() != 5 /*monster*/)  return dmg;
+row = charClass->cc_array[level <= 150 ? level : 0];        // PrimaryParameter *[151] at charClass+0x10858
+if (row == NULL) return dmg;
+return (unsigned __int64)dmg * (row->JobChangeDmgUp + rndbox[2].next()) / 1000;
+```
+
+`PrimaryParameter::JobChangeDmgUp` is +0x80 in the PDB and column **`JobChangeDmgUp`** of
+`Param<Class>Server.txt` — a column this repo's `ClassParamTable` had been reading past. Its values say what
+it is for without being told: **1000 flat** for a base class, **2000** at level 20 for a first-job class
+decaying to 1190 at 59, **1700** at 60 decaying to 1055 at 99, **1100** at 100 decaying to 1025 at 115. A
+catch-up bonus for having just changed job — and a character in the first half of a band hits monsters for
+up to **twice** what its stats suggest.
+
+`rndbox[2]` is a shuffled pool of 0s and 1s (`RandomBox`'s ctor fills slot `b` with `floor(i*b/16384)`), so
+the random term is 0.08%. Worth checking rather than assuming: "a hidden random multiplier" was the shape of
+the thing being hunted, and this was not it.
+
+**Verified by running it.** `tools/oracle_jobchange_dmgup.py` drives the real function under emulation over
+fourteen input sets — the three early returns, the `ja` on a 16-bit compare that sends level > 150 to row 0
+rather than clamping, and 3,000,000 damage to prove the multiply is 64-bit and the divide unsigned. All
+fourteen agree with the port.
+
+**Applied to the capture.** The character is class 8 — a Paladin, read off `PROTO_AVATAR_SHAPE_INFO`'s packed
+first byte, which `pcap_combat_truth.py` now extracts — at level 82, which is 1280. The test looks the rate
+up through `ClassName.shn` → `ParamPaladinServer.txt`; nothing is written into the test.
+
+```
+  IN  Orc    n=121  observed   71..107    predicted   70..90     ceiling x1.189
+  OUT Orc    n=22   observed 1128..1401   predicted 1373..1461   ceiling x0.959   <- was ~1.2 OVER
+  IN  Pinky  n=69   observed   50..72     predicted   47..62     ceiling x1.161
+  OUT Pinky  n=7    observed  964..1174   predicted 1154..1229   ceiling x0.955   <- was ~1.2 OVER
+```
+
+**The in-band score barely moved (127/219 → 128/219), and that is the honest result.** The outgoing band did
+not get better, it MOVED: the ceiling stopped being exceeded and the floor is now 18% too high. Outgoing is
+29 of 219 swings, so the number was never going to move much either way. What changed is the diagnosis, and
+that is worth more than the score:
+
+1. **Incoming (~1.17x over) was never the same problem.** A mob attacker cannot reach this hook —
+   `ShineObject`'s slot is `return dmg` — so nothing character-side explains it.
+2. **Outgoing is now a SPREAD problem, not a magnitude one.** Observed spans 1.242x where
+   `roe_MinWC..roe_MaxWC` spans 1.064; the top lines up and the bottom is 18% high.
+
+**Eliminated this round, by measurement:** per-instance mob levels (every `NC_BAT_TARGETINFO_CMD` in the
+capture reports 61 for all 20 Orc and 4 Pinky handles, so the level-gap rate is constant across the pooled
+swings), and the normal attack's `damagerate` / `nBMPDamageRate` (`smo_SwingDamage+0x132` and `+0x13F` write
+the literal 0x3E8 into both, so a plain swing is 1000/1000 and neither varies).
+
+**Five more hooks were read on the way and are now written down** rather than left to be re-found — the
+`ChargedEffectContainer` attack/defence force rates, the critical damage bonus at container+0xCDC (a crit is
+`2*dmg + dmg*bonus/1000`, not `2*dmg`), `so_ply_DecreaseDmgPassiveSkill`, the `EventRun_IncDmgRate` item
+actions inside `roe_AttackPower`, and the abstate damage callbacks. None is reached by a clean unbuffed
+swing, which is why none of them shows here — and the first two are the only remaining places a MOB's damage
+can be scaled, so incoming lives there. OPEN_QUESTIONS.md §3 has the table.
+
+**The method note.** The oracle had already cleared the accessors and the disassembly had already overturned
+the angle table, and both were right — the fault was in a part of the pipeline nobody had read, two virtual
+calls wide. A function is not ported until every call it makes has been followed.
+
+236 tests: 235 green, 1 deliberately red.

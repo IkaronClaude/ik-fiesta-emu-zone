@@ -42,6 +42,13 @@ public class PcapGroundTruthTests
         public required IReadOnlyList<Swing> Swings { get; init; }
         public required IReadOnlyDictionary<string, int> FreeStat { get; init; }
 
+        /// <summary>The character's `chrclass`, off `PROTO_AVATAR_SHAPE_INFO`'s packed first byte.
+        ///
+        /// <para>Needed for one thing and it is not cosmetic: `so_ply_JobChangeDamageUp` multiplies every
+        /// hit ON A MONSTER by this class's `JobChangeDmgUp` at this level. Class 8 at level 82 is a
+        /// Paladin on 1280 — a 28% multiplier that no stat on the wire hints at.</para></summary>
+        public int? ChrClass { get; init; }
+
         /// <summary>Clean hits only: the flag word is exactly ZERO, and the damage is non-zero.
         ///
         /// <para>⚠️ <b>Tested on the raw word, never on the decoded name list being empty.</b> The names
@@ -93,6 +100,9 @@ public class PcapGroundTruthTests
         return new Truth
         {
             MobHandles = mobs, PlayerLevels = levels, Stats = stats, Swings = swings, FreeStat = free,
+            ChrClass = root.TryGetProperty("chrclass", out var cc) && cc.ValueKind == JsonValueKind.Number
+                ? cc.GetInt32()
+                : null,
         };
     }
 
@@ -173,8 +183,30 @@ public class PcapGroundTruthTests
     /// good, built on an input that wrong, is exactly the failure this suite exists to catch.</para></summary>
     private const int DeployedAngleMax = 1000;
 
+    /// <summary>`JobChangeDmgUp` for the captured character's own class at its own level, READ from the
+    /// capture and the game's tables — the class id off `PROTO_AVATAR_SHAPE_INFO`, the name out of
+    /// `ClassName.shn`, the rate out of `Param&lt;Class&gt;Server.txt`.
+    ///
+    /// <para>Nothing here is written into the test. Hard-coding 1280 would make this instrument agree with
+    /// the capture by construction, which is the one thing it exists not to do.</para>
+    ///
+    /// <para>Null when the capture did not carry a class, or the class has no table — in which case the
+    /// prediction goes back to what it was, rather than assuming 1000 and calling that a reading.</para></summary>
+    private static int? JobChangeRate(Truth t, string shine)
+    {
+        if (t.ChrClass is not { } id) return null;
+        var names = ShnFile.Load(Path.Combine(shine, "ClassName.shn"));
+        var row = names.Rows.FirstOrDefault(r => ShnFile.Int(r, "ClassID") == id);
+        if (row is null) return null;
+
+        var file = Path.Combine(shine, "World", $"Param{ShnFile.Str(row, "acEngName")}Server.txt");
+        if (!File.Exists(file)) return null;
+        return ClassParamTable.Load(file).At(t.PlayerLevels.Values.First())?.JobChangeDmgUp;
+    }
+
     private static Band Predict(ICombatant attacker, ICombatant defender, LevelGapTable gaps,
-                                DamageByAngleTable angle, CombatantKind attackerKind, int flat)
+                                DamageByAngleTable angle, CombatantKind attackerKind, int flat,
+                                int? jobChangePermille)
     {
         var defenderKind = attackerKind == CombatantKind.Player ? CombatantKind.Monster : CombatantKind.Player;
         var gap = gaps.Rate(attackerKind, attacker.Level, defenderKind, defender.Level);
@@ -182,11 +214,19 @@ public class PcapGroundTruthTests
         var hi = DamageCalculator.AttackPower(attacker, 1000);
         var def = DamageCalculator.DefendPower(defender);
 
+        // `so_ply_JobChangeDamageUp` sits between the angle multiplier and the level gap, and it runs
+        // ONLY when a player hits a monster -- the mob's own slot is `return dmg`. The +1 is the server's
+        // 0-or-1 draw from `rndbox` slot 2, taken at the CEILING and not at the floor because that is the
+        // side each bound needs to stay a bound.
+        var jobLo = jobChangePermille is { } j ? j / 1000.0 : 1.0;
+        var jobHi = jobChangePermille is { } k ? (k + 1) / 1000.0 : 1.0;
+
         // `roe_Damage`'s per-rule override adds the flat pair INSIDE the core step, so it is inside the
         // angle multiplier and inside the level gap -- not tacked on at the end.
         return new Band(
-            (DamageCalculator.CoreDamage(lo, def, attacker.Level) + flat) * gap / 1000.0,
-            (DamageCalculator.CoreDamage(hi, def, attacker.Level) + flat) * DeployedAngleMax / 1000.0 * gap / 1000.0);
+            (DamageCalculator.CoreDamage(lo, def, attacker.Level) + flat) * jobLo * gap / 1000.0,
+            (DamageCalculator.CoreDamage(hi, def, attacker.Level) + flat)
+                * DeployedAngleMax / 1000.0 * jobHi * gap / 1000.0);
     }
 
     private sealed record Case(string Mob, bool Incoming, List<int> Observed, Band Predicted)
@@ -200,6 +240,7 @@ public class PcapGroundTruthTests
         var gaps = LevelGapTable.Load(shine);
         var angle = DamageByAngleTable.Load(Path.Combine(shine, "World"));
         var player = RebuildPlayer(t);
+        var jobChange = JobChangeRate(t, shine);
         var cases = new List<Case>();
 
         foreach (var name in new[] { "Orc", "Pinky" })
@@ -212,9 +253,13 @@ public class PcapGroundTruthTests
                 // A mob's free-stat accessors return table[0] = 0, so only the player side contributes.
                 var band = incoming
                     ? Predict(mob, player, gaps, angle, CombatantKind.Monster,
-                              0 - FreeStatCon(t.FreeStat.GetValueOrDefault("Constitute")))
+                              0 - FreeStatCon(t.FreeStat.GetValueOrDefault("Constitute")),
+                              // A MOB attacker never reaches the hook: `ShineObject`'s slot returns the
+                              // damage unchanged. Not "we chose not to apply it" -- the server does not.
+                              jobChangePermille: null)
                     : Predict(player, mob, gaps, angle, CombatantKind.Player,
-                              FreeStatStr(t.FreeStat.GetValueOrDefault("Strength")) - 0);
+                              FreeStatStr(t.FreeStat.GetValueOrDefault("Strength")) - 0,
+                              jobChange);
                 cases.Add(new Case(name, incoming, observed, band));
             }
         }
@@ -293,52 +338,73 @@ public class PcapGroundTruthTests
             c.Observed.Min().ShouldBeGreaterThanOrEqualTo((int)Math.Floor(c.Predicted.Floor), c.Label);
     }
 
-    /// <summary>⛔ KNOWN RED — the ceiling should need NO margin at all.
+    /// <summary>⛔ KNOWN RED — no clean hit should land above a maximum roll, and two of the four cases
+    /// still do.
     ///
-    /// <para>97.3% is not 100%. Six swings remain: three incoming Pinky hits one point under the floor,
-    /// and three outgoing hits 2.4-2.6% over the ceiling. A maximum roll from directly behind is the
-    /// hardest a clean swing can legitimately land, so nothing clean should exceed it.</para>
+    /// <para>The current picture, all four cases, observed against predicted:</para>
     ///
-    /// <para>All three survivors are OUTGOING — the direction where the character is the ATTACKER, and the
-    /// only place the reconstruction is still approximate. It puts the displayed Dmg TOTAL into
-    /// <c>Base[WCmax]</c>, but `roe_MaxWC` applies its three trailing rates
-    /// (<c>AbnormalState.Rate</c>, <c>ItemPowerRate.Rate</c>, <c>PassiveSkill.Rate</c>) to the WHOLE sum
-    /// INCLUDING the Str chain, whereas `c_MakeTotal` applies them only to <c>base + Item.Plus</c>. So a
-    /// single piece of gear with a WC% bonus scales the Str chain on the server and not here — a few
-    /// percent, which is the size of the residual.</para>
+    /// <code>
+    ///   IN  Orc    n=121  observed   71..107    predicted   70..90     ceiling x1.189
+    ///   OUT Orc    n=22   observed 1128..1401   predicted 1373..1461   ceiling x0.959
+    ///   IN  Pinky  n=69   observed   50..72     predicted   47..62     ceiling x1.161
+    ///   OUT Pinky  n=7    observed  964..1174   predicted 1154..1229   ceiling x0.955
+    /// </code>
     ///
-    /// <para><b>Seven hypotheses tested and eliminated</b>, each by decoding, running or measuring rather
-    /// than by argument. Recorded so nobody spends the effort again:</para>
+    /// <para><b>The outgoing ceiling is no longer exceeded, and what closed it was a whole missing
+    /// multiplier.</b> `ShinePlayer::so_ply_JobChangeDamageUp` runs at <c>roe_CalcDamage+0x5B2</c> on every
+    /// hit a PLAYER lands on a MONSTER and multiplies the damage by the attacker class's
+    /// <c>JobChangeDmgUp</c> at the attacker's level. The captured character is class 8 — a Paladin, read
+    /// off `PROTO_AVATAR_SHAPE_INFO` — at level 82, and `ParamPaladinServer.txt` puts that at
+    /// <b>1280</b>. Both outgoing cases went from about 20% OVER the ceiling to comfortably under it.
+    /// Verified against the real function under emulation: <c>tools/oracle_jobchange_dmgup.py</c>.</para>
+    ///
+    /// <para><b>That splits the old "1.2x everywhere" residual into two unrelated problems</b>, which is
+    /// the useful part. It was never one mechanism:</para>
     ///
     /// <list type="number">
-    ///   <item><b>The accessors.</b> Ruled out by the ORACLE: `tools/oracle_accessors.py` runs the real
-    ///         `roe_MinWC` / `roe_MaxWC` / `roe_AC` on the same reconstructed containers and returns
-    ///         2080 / 2211 / 1215 for the character and 1569 / 1959 / 242 for the Orc — identical to this
-    ///         port, to the digit. The containers and the accessors are right; the fault is downstream.</item>
-    ///   <item><b>Weapon mastery.</b> All three `NC_CHAR_CLIENT_PASSIVE_CMD` packets are `00 00`.</item>
-    ///   <item><b>A DEF-down debuff.</b> Zero of the 41 clean outgoing hits landed while the target had
-    ///         any abstate active.</item>
-    ///   <item><b>Weapon enhancement.</b> +10, worth +1197, and present in BOTH displayed bounds
-    ///         (1709-512 = 1840-643) exactly as `roe_*WC` reads it from the WCmax slot. It cancels.</item>
-    ///   <item><b>The equipment layer split.</b> Decoded box 8: Raging Claws, WC 512-643,
-    ///         <c>WCRate=1000</c>. Splitting Base / Item.Plus / Upgrade.Plus reproduces 2080-2211 —
-    ///         identical to collapsing the total.</item>
-    ///   <item><b>Random options.</b> Decoded from the per-instance blob: ROT_STR +5, ROT_CON +23,
-    ///         ROT_INT +24, ROT_MEN +5 — all PRIMARY stats, already inside the displayed totals.</item>
-    ///   <item><b>The HP-down passive.</b> Correlating outgoing damage against the character's HP at each
-    ///         swing gives <c>r = +0.26</c> — weak, and the WRONG SIGN. Damage does not rise as they are
-    ///         hurt.</item>
+    ///   <item><b>Incoming is still ~1.17x over the ceiling.</b> A MOB attacker cannot reach the
+    ///         job-change hook — `ShineObject`'s slot 0xD2C is <c>return dmg</c> — so nothing here was ever
+    ///         going to move it. Whatever this is, it is on the mob's side of the calculation or in how
+    ///         this harness rebuilds the mob and the character's defence.</item>
+    ///   <item><b>The outgoing SPREAD is far wider than the weapon range.</b> Observed 1128..1401 is a
+    ///         factor of 1.242 where <c>roe_MinWC..roe_MaxWC</c> spans 1.064, and the top now lines up
+    ///         while the bottom is 18% high. So the reconstruction has the maximum roughly right and the
+    ///         minimum wrong, rather than being uniformly short.</item>
     /// </list>
     ///
-    /// <para><b>And one assumption was found to be outright wrong, which makes the gap WIDER, not
-    /// narrower.</b> The deployed server's `DamageByAngle` tables are flat 1000 (read live from zone02, the
-    /// zone that served this capture), so there is no positional bonus at all. Both directions then exceed
-    /// a flat-angle ceiling by about 1.2x — a continuous, per-swing multiplier that applies to a MOB
-    /// attacker as well as a player, which rules out anything gear- or item-action-driven.</para>
+    /// <para><b>Eliminated by measurement, not by argument</b> — do not re-run these:</para>
     ///
-    /// <para>The observed outgoing damage spans 1.24x on a smooth distribution while the weapon range
-    /// spans only 1.06x, so the attack bounds themselves vary per swing by something not yet found. That is
-    /// the open question, stated precisely.</para></summary>
+    /// <list type="number">
+    ///   <item><b>The accessors.</b> `tools/oracle_accessors.py` runs the real `roe_MinWC` / `roe_MaxWC` /
+    ///         `roe_AC` on these same containers and returns 2080 / 2211 / 1215 for the character and
+    ///         1569 / 1959 / 242 for the Orc — identical to this port, to the digit.</item>
+    ///   <item><b>Per-instance mob levels.</b> Every `NC_BAT_TARGETINFO_CMD` in the capture reports level
+    ///         61 for all 20 Orc handles and all 4 Pinky handles, so the level-gap rate is constant across
+    ///         the pooled swings and cannot be widening the spread.</item>
+    ///   <item><b>The normal attack's <c>damagerate</c> and <c>nBMPDamageRate</c>.</b>
+    ///         `smo_SwingDamage+0x132` and <c>+0x13F</c> write the literal 0x3E8 into both, so a plain
+    ///         swing really is 1000/1000 and neither varies per swing.</item>
+    ///   <item><b>Weapon mastery</b> (all three `NC_CHAR_CLIENT_PASSIVE_CMD` are `00 00`), <b>a DEF-down
+    ///         debuff</b> (no clean outgoing hit landed while the target had any abstate),
+    ///         <b>enhancement</b> (+10 is worth +1197 and sits in BOTH displayed bounds, exactly as
+    ///         `roe_*WC` reads it from the WCmax slot — it cancels), <b>the equipment layer split</b>
+    ///         (Base / Item.Plus / Upgrade.Plus reproduces 2080-2211 either way), <b>random options</b>
+    ///         (all four are primaries, already inside the displayed totals), and <b>the HP-down
+    ///         passive</b> (r = +0.26 against the character's HP, and the wrong sign).</item>
+    ///   <item><b>The angle table.</b> The deployed server's is flat 1000 — read live from
+    ///         `damagebyangle_Ply` and `damagebyangle_Mob` in zone02, the zone that served this capture.
+    ///         `Z:/ServerSource`'s copy expands to 1000-1200 and is NOT what runs; using it once scored
+    ///         216/219 and the number was worthless. See <see cref="DeployedAngleMax"/>.</item>
+    /// </list>
+    ///
+    /// <para><b>Still unmodelled, and each is a real hook in this pipeline</b> — see OPEN_QUESTIONS.md:
+    /// `so_ply_DecreaseDmgPassiveSkill` (the defender's half, +0x59E), the `ChargedEffectContainer`
+    /// attack/defence force rates (+0x466), the critical damage bonus at container+0xCDC (a critical is
+    /// <c>2*dmg + dmg*bonus/1000</c>, not <c>2*dmg</c>), the `EventRun_IncDmgRate` item actions inside
+    /// `roe_AttackPower`, and the abnormal-state damage callbacks at the tail. None of them is reached by
+    /// a clean, unbuffed swing from an unbuffed character, which is why the score barely moves — but the
+    /// first two are the only remaining places a MOB's damage can be scaled, so incoming lives
+    /// there.</para></summary>
     [SkippableFact]
     public void TheCeilingIsExact_KNOWN_RED()
     {
@@ -347,7 +413,17 @@ public class PcapGroundTruthTests
         Skip.If(path is null, "no capture fixture");
         Skip.If(shine is null, "server data not present; set SHINE_DATA");
 
-        foreach (var c in Measure(Load(path!), shine!))
-            c.Observed.Max().ShouldBeLessThanOrEqualTo((int)Math.Ceiling(c.Predicted.Ceiling), c.Label);
+        // Reported for EVERY case, not failed on the first. Which cases are over and by how much is the
+        // whole content of this test while it is red; stopping at the first one hides the other three.
+        var over = Measure(Load(path!), shine!)
+            .Select(c => (c.Label, Max: c.Observed.Max(), Ceiling: (int)Math.Ceiling(c.Predicted.Ceiling),
+                          Floor: (int)Math.Floor(c.Predicted.Floor), Min: c.Observed.Min(), c.Observed.Count))
+            .ToList();
+
+        var report = string.Join(Environment.NewLine, over.Select(c =>
+            $"  {c.Label,-10} n={c.Count,-4} observed {c.Min}..{c.Max}  predicted {c.Floor}..{c.Ceiling}" +
+            $"  ceiling x{(double)c.Max / c.Ceiling:F3}"));
+
+        over.Where(c => c.Max > c.Ceiling).ShouldBeEmpty($"observed damage above a maximum roll:{Environment.NewLine}{report}");
     }
 }

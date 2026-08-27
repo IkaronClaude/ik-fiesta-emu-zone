@@ -210,6 +210,11 @@ public sealed class CombatSimulation
         {
             RollPermille = (int)Rng.well512_GetRandom(1001),
             LevelGapRatePermille = LevelGapRate(attacker, defender),
+            // `so_ply_JobChangeDamageUp` runs on the ATTACKER and returns early unless the DEFENDER is a
+            // monster, so both halves of this condition are the server's, not a simplification.
+            JobChangeDamageUpPermille = attacker is SimPlayer p && defender is SimMob
+                ? p.JobChangeDamageUpPermille
+                : null,
         };
         return DamageCalculator.ResolveDamage(attacker, defender, roll, rule: NormalAttackRuleOf(attacker));
     }

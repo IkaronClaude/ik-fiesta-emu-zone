@@ -19,10 +19,10 @@ public class StatDrivenCombatTests
         ClassName = "Test",
         ByLevel = new Dictionary<int, ClassParamRow>
         {
-            //         lvl  str con int dex men  hp    sp   soulHp maxSoulHp price soulSp maxSoulSp price
-            [1] = new(1, 5, 4, 1, 3, 4, 46, 32, 32, 15, 3, 25, 11, 1),
-            [20] = new(20, 48, 34, 22, 39, 32, 342, 398, 239, 44, 26, 318, 35, 14),
-            [40] = new(40, 96, 68, 44, 78, 64, 1200, 800, 400, 60, 40, 600, 50, 25),
+            //         lvl  str con int dex men  hp    sp   soulHp maxSoulHp price soulSp maxSoulSp price jcDmgUp
+            [1] = new(1, 5, 4, 1, 3, 4, 46, 32, 32, 15, 3, 25, 11, 1, 1000),
+            [20] = new(20, 48, 34, 22, 39, 32, 342, 398, 239, 44, 26, 318, 35, 14, 1000),
+            [40] = new(40, 96, 68, 44, 78, 64, 1200, 800, 400, 60, 40, 600, 50, 25, 1000),
         },
     };
 

@@ -14,6 +14,10 @@ public static class CharacterSheet
     /// <para>Swings now go through the real damage formula rather than a flat number: this sets
     /// <see cref="SimPlayer.UsesStatFormula"/>, and <c>DamageCalculator</c> reads the stat layers directly.</para>
     ///
+    /// <para>It also carries over the class table's <c>JobChangeDmgUp</c> for this level — the multiplier
+    /// every hit on a MONSTER goes through. It is 1000 for a base class and up to 2000 just after a job
+    /// change, so a first-job character that does not get it deals half the damage it should.</para>
+    ///
     /// <para>⚠️ Weapon damage is <b>gear only</b>. That is not a gap in the port: <c>CharClass::WC</c> is
     /// <c>xor eax, eax; ret 8</c> and no player class overrides it, so a player's base weapon value
     /// genuinely is zero. An unequipped character really does deal no weapon damage — give it a
@@ -33,6 +37,7 @@ public static class CharacterSheet
         player.MaxHp = CharacterParameters.MaxHp(table, level, total);
         player.Hp = player.MaxHp;
         player.UsesStatFormula = true;
+        player.JobChangeDamageUpPermille = table.At(level)?.JobChangeDmgUp;
         return container;
     }
 
