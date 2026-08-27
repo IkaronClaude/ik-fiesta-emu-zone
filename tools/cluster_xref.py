@@ -111,11 +111,8 @@ def main():
 
     if a.sym:
         va = c.syms[a.sym]
-        size = min(c.extent(va), 0x2000)
-        from capstone import Cs, CS_ARCH_X86, CS_MODE_32
-        md = Cs(CS_ARCH_X86, CS_MODE_32)
         seen = []
-        for ins in md.disasm(c.data[c.off(va):c.off(va) + size], va):
+        for ins in c.func(va):
             for opnd in [ins.op_str]:
                 import re
                 for m in re.finditer(r"\+ (0x[0-9a-f]+)\]", opnd):

@@ -92,12 +92,31 @@ class Code:
             return "?", 0
         return self.by_va[self.sorted_vas[i]], va - self.sorted_vas[i]
 
-    def dump(self, va, count=400, only=None):
+    def func(self, va, size=None):
+        """One function's instructions, resynchronising past bytes capstone cannot decode.
+
+        Same failure as `sweep`, one scale down: a jump table or alignment padding in the middle of a large
+        body stops `disasm` dead, and a dump that ends early is indistinguishable from a function that ends
+        early — which is how a branch gets missed.
+        """
         from capstone import Cs, CS_ARCH_X86, CS_MODE_32
         md = Cs(CS_ARCH_X86, CS_MODE_32)
-        size = min(self.extent(va), 0x2000)
+        size = min(size or self.extent(va), 0x2000)
+        blob = self.data[self.off(va):self.off(va) + size]
+        pos = 0
+        while pos < len(blob):
+            moved = False
+            for ins in md.disasm(blob[pos:], va + pos):
+                yield ins
+                pos = ins.address - va + ins.size
+                moved = True
+            if not moved:
+                pos += 1
+
+    def dump(self, va, count=400, only=None):
+        from capstone import Cs, CS_ARCH_X86, CS_MODE_32
         out = []
-        for n, ins in enumerate(md.disasm(self.data[self.off(va):self.off(va) + size], va)):
+        for n, ins in enumerate(self.func(va)):
             if n > count:
                 break
             note = ""
