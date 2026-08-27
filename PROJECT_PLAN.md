@@ -86,9 +86,10 @@ Currently red, deliberately: **one.**
 
 | red test | what it states |
 |---|---|
-| `PcapGroundTruthTests.TheCeilingIsExact_KNOWN_RED` | Against a real capture the observed maximum exceeds our predicted ceiling by 2.4-11.5%, and a maximum roll from directly behind should be the hardest a clean swing can land. The residual survives every term that has been read and ported; what is left is the part of the character's container the wire does not carry. |
+| `PcapGroundTruthTests.TheCeilingIsExact_KNOWN_RED` | 97.3% of clean hits in a real capture fall inside the predicted band (213/219), but not 100%. Six remain: three incoming hits one point under the floor, three outgoing 2.4-2.6% over the ceiling. The outgoing residual is on the player-as-attacker side, where the reconstruction still collapses the displayed Dmg TOTAL into `Base[WCmin]` — and `roe_MinWC` reads `Base[WCmin]`, `Upgrade.Plus[WCmax]` and a weapon-title-scaled `Item.Plus[WCmin]` as separate layers. |
 
-⚠️ **Do not close it by widening the margin.** `TheCeilingHoldsToWithinTheMeasuredMargin` already pins the
+⚠️ **Do not close it by widening a margin.** The capture carries the equipment
+(`NC_CHAR_CLIENT_ITEM_CMD`, 39 items) to split those layers; decoding it is the next step.
 residual so it cannot grow; this one says it should not exist.
 worth, not what it is.
 
@@ -405,5 +406,59 @@ bits have no names, and those are exactly the swings that exceed a maximum roll.
 **Where it stands.** Every observed minimum sits at or above our predicted floor, in all four
 direction/mob cases, with no tolerance at all. The ceiling is over by 2.4-11.5%, pinned by one test and
 stated as wrong by another.
+
+231 tests: 230 green, 1 deliberately red.
+
+### 2026-08-27 (later still) — the capture DOES carry it; 2/34 to 213/219
+
+The operator pushed back twice, and both times the assertion being corrected was mine.
+
+**"The wire definitely carries it all, we might not read it all."** Correct, and the client PDB maps it.
+`PROTO_NC_CHAR_MAPLOGIN_ACK` is size 242 — exactly the 0x1802 payload — and every stat inside
+`CHAR_PARAMETER_DATA` is a `SHINE_CHAR_STATVAR { base, change }`, EIGHT bytes. The existing tooling reads
+only the `change` half:
+
+| stat | base | change |
+|---|---:|---:|
+| Strength | 315 | 371 |
+| Constitute | 236 | 302 |
+| Dexterity | 208 | 246 |
+| Intelligence | 156 | 201 |
+| MentalPower | 224 | 255 |
+| WClow / WChigh / AC / TH / TB / MR | 0 | the value |
+
+`Wizdom`'s slot holds ASCII heap garbage (`" awaits "`) — the server never fills it, which independently
+confirms the "no cluster slot for Wizdom" note.
+
+**"My assumption is highest level mastery passive skill."** Ruled out for THIS capture by the wire, not by
+argument: all three `NC_CHAR_CLIENT_PASSIVE_CMD` packets are `00 00`. The character has zero passives, so
+there is no mastery bonus here. The mechanic is real; it is not what moves these numbers.
+
+**What did.** The displayed DEF is not the AC slot. `roe_AC` is `Con + AC`, and one free point of Con was
+measured to move the displayed DEF by **+0.5** while moving MaxHp by +5 — a cluster slot cannot gain half a
+point from another slot, so the display carries its own Con/2 term:
+
+```
+AC slot = displayedDEF - Con/2     =>     roe_AC = displayedDEF + Con/2
+```
+
+Putting the displayed value straight into `Base[AC]` double-counts Con. With the correction the Orc
+incoming case brackets **121 of 121** observed hits between a minimum roll and a maximum roll from directly
+behind, no tolerance, both bounds from game data and the wire.
+
+**Where the harness has travelled**, same capture throughout:
+
+| | first attempt | now |
+|---|---:|---:|
+| OUT Orc | 2/34 | 20/22 |
+| OUT Pinky | 0/7 | 6/7 |
+| IN Orc | — | **121/121** |
+| IN Pinky | — | 66/69 |
+| overall | — | **213/219 (97.3%)** |
+
+Every one of those gains was an instrument defect, not an engine fix: feeding the displayed attack straight
+into the core formula, merging conversations, merging windows, deciding "clean hit" from an empty flag-NAME
+list, and the AC double-count. The engine changed once in all of it — the per-rule `roe_Damage` override —
+and that was verified against the real function under emulation rather than against the capture.
 
 231 tests: 230 green, 1 deliberately red.
