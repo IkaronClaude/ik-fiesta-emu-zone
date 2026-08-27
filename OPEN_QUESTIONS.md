@@ -11,7 +11,9 @@ believed, what it rests on, and what would settle it.
 3. **Never close an entry with an argument from absence.** This is a release C++ binary: `/OPT:REF` strips
    unreferenced code and data, so anything still in the image is referenced by *something*. "I could not
    find the caller" and "there is no caller" are different claims, and only the second is worth writing
-   down. Three entries have already been closed the wrong way round by ignoring this — see Resolved.
+   down. Four entries have already been closed the wrong way round by ignoring this — see Resolved.
+   The fourth was manufactured by my own tool: a whole-image scan that silently covered 24.8% of `.text`
+   (see `tools/disasm.py`'s `Code.sweep`). **A negative result is only as good as the sweep behind it.**
 
 ---
 
@@ -141,6 +143,28 @@ as though it were the finding.
 Yes. `ShinePlayer::sp_MaxHP` (0x0054A670) reads `Item.Plus.MaxHP`, `Item.Plus.MaxHP_2`,
 `AbnormalState.Plus.MaxHP` and `AbnormalState.Rate.MaxHP` on top of the class virtual. `CharClass::MaxHP`
 is one term of the answer, not the whole of it — which is why it never reads the cluster itself.
+
+## Which rules a normal attack uses — CLOSED 2026-08-27
+
+`MobWeapon.HitType` had been decoded and connected to nothing, and the wizard's 1-kill grind had been
+written up as "magic classes cannot fight". Both are now read.
+
+`ShineMobileObject::smo_RulesOfNormalAttack` (`+0x1E74`) is the field. `ShineMob::so_mob_Regenerate+0x543`
+sets it from weapon row 0's `HitType`; everything else defaults to `roe_normalPY` from the
+`ShineMobileObject` constructor. **A player is always physical, every class** — the only other writer is
+`sp_SetRulesOfEngagement`, whose one caller is the GM `&allcritical`. So the wizard result was the game,
+not a gap. Ported as `MobParameters.NormalAttackRule`; 334 fightable mobs now attack against MR.
+
+**How it was nearly missed, and the lesson.** The first pass concluded "nothing writes `+0x1E74` except a
+GM command" — which was an argument from absence, exactly what rule 3 forbids, and it was produced by a
+broken tool rather than by sloppy reasoning. `capstone`'s `disasm()` stops at the first undecodable byte
+and returns what it has; on this binary that is 0x004ADFEF, so every whole-image scan in `tools/` had been
+seeing **228,684 of 922,891 instructions (24.8%)** while looking exhaustive. The constructor's write sits
+at 0x559284, well past the cut. `Code.sweep()` now resynchronises. Every earlier "no callers" answer from
+`xref_vcall.py` should be re-run before being trusted.
+
+Left open on this path: `roe_HitRate` and `roe_CriticalRate` are per-rule and neither is implemented, so a
+swing in this port never misses and crits only when told to.
 
 ## Pinky: physical, not magic — CLOSED 2026-08-26
 

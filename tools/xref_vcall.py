@@ -9,6 +9,10 @@ offset finds nothing, which reads as "no callers" rather than "wrong technique".
 .text with capstone and matches the PAIR: a load from `[reg+off]` and a `call` of that same register a
 few instructions later.
 
+⚠️ The sweep RESYNCHRONISES past undecodable bytes (see `Code.sweep`). An earlier version
+looped over `md.disasm(raw, base)` directly, which stops at the first bad byte and so covered only 25%
+of .text -- every "no callers" answer it ever gave was worth a quarter of a binary.
+
 Slot offsets are small numbers that also appear as ordinary field accesses, so expect noise. The output
 is grouped by containing function precisely so the plausible ones can be picked out by name.
 """
@@ -28,18 +32,12 @@ def main():
     a = ap.parse_args()
     off = int(a.offset, 0)
 
-    from capstone import Cs, CS_ARCH_X86, CS_MODE_32
     c = Code()
-    text = [s for s in c.pe.sections if s.Name.rstrip(b"\0") == b".text"][0]
-    base = IMAGE + text.VirtualAddress
-    raw = c.data[text.PointerToRawData:text.PointerToRawData + text.SizeOfRawData]
-
-    md = Cs(CS_ARCH_X86, CS_MODE_32)
-    pending = {}          # register -> instruction index where it was loaded from [reg+off]
+    pending = {}          # register -> (instruction index, address) where it was loaded from [reg+off]
     hits = collections.defaultdict(list)
     needle = "+ 0x%x]" % off
 
-    for idx, ins in enumerate(md.disasm(raw, base)):
+    for idx, ins in enumerate(c.sweep()):
         m = ins.mnemonic
         if m == "mov" and needle in ins.op_str and ins.op_str.startswith(("eax", "ecx", "edx", "ebx", "esi", "edi")):
             reg = ins.op_str.split(",")[0].strip()

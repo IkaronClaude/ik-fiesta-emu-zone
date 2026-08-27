@@ -291,10 +291,41 @@ the real interval rather than certainly the whole of it.
 and Uruga never spawns it. A simulation that spawns the map naively has its character walking up to a
 mushroom and swinging at something it can never kill.
 
-`MobWeapon.HitType` (`HT_PY` / `HT_MA`) declares whether an attack resolves as physical or magical — read
-the field rather than inferring it from MA exceeding WC. Mobs that really are `HT_MA` do carry MA far
+### Which rules a normal attack resolves through
+
+`ShineMobileObject::smo_RulesOfNormalAttack` (`+0x1E74`) holds a pointer to one of the eight
+`RulesOfEngagement` singletons, and it governs the WHOLE swing: `smo_SwingDamage` calls `roe_HitRate`
+(slot 6), `roe_HitRateByGlobalAction` (slot 11) and `roe_CalcDamage` (slot 7) through it.
+
+Every object starts physical — `ShineMobileObject::ShineMobileObject+0xC4` writes `&roe_normalPY`. A mob
+then overwrites it once, at regeneration:
+
+```c
+// ShineMob::so_mob_Regenerate+0x543
+const MobDataBoxIndex* box = mob->sm_MobDataBox;         // +0x1F90
+if      (box->weapon == NULL)                  roe = &roe_normalPY;   // no weapon array
+else if (box->weapon[0].weapon == NULL)        roe = &roe_normalMA;   // (counterintuitive, but measured)
+else if (box->weapon[0].weapon->HitType != 0)  roe = &roe_normalMA;   // HitType at MobWeapon+0x6D
+else                                           roe = &roe_normalPY;
+```
+
+Three consequences:
+
+- **Weapon row 0 decides for the whole mob**, once, at spawn. 304 mobs are physical at row 0 and magical
+  further down the list; none of them ever swings magically at a player.
+- **The test is `!= HT_PY`, not `== HT_MA`.** `HT_NONE` also selects magic. 708 mobs carry it at row 0 —
+  629 not fightable, the rest props with WC 0-0 — so nothing behaves differently for it today.
+- **A player is ALWAYS physical, every class.** The only writer that could change it for a player is
+  `sp_SetRulesOfEngagement`, whose one caller is the GM command `&allcritical`. Caster damage comes from
+  skills, not from the auto-attack.
+
+Of the 2,059 fightable mobs with a weapon row, **334 attack magically**: resisted by MR rather than AC,
+and unblockable, since `RulesOfEngagementNormalMA` leaves `roe_ShieldBlock` at the base return-0 stub
+where `NormalPY` overrides it.
+
+Read `HitType` rather than inferring it from MA exceeding WC. Mobs that really are `HT_MA` do carry MA far
 above WC (GoblinMage: WC 19–30, MA 273–415), but the converse fails: `Pinky` has MA 72–110 alongside WC
-520–792 and is declared `HT_PY`.
+520–792 and is declared `HT_PY` — which the operator confirmed in game.
 
 ## Open, and known to be open
 

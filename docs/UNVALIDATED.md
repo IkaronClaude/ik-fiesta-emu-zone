@@ -11,10 +11,20 @@ invisible in normal use: a made-up constant produces plausible behaviour and nev
 
 Ordered worst-first. "Worst" means *most likely to be silently wrong*, not most work to fix.
 
-> **A tooling bug that manufactured false absences.** The scan used to find field readers only matched
-> `disp8` addressing, and `disp8` is SIGNED — so any struct offset at or above `0x80` is encoded as
-> `disp32` and was invisible to it. `TurnSpeed` at `+0x9C` looked unreferenced for that reason alone. If an
-> older note in this file says "nothing reads X", check whether X sits past `0x7F` before believing it.
+> **TWO tooling bugs that manufactured false absences.**
+>
+> 1. The scan used to find field readers only matched `disp8` addressing, and `disp8` is SIGNED — so any
+>    struct offset at or above `0x80` is encoded as `disp32` and was invisible to it. `TurnSpeed` at
+>    `+0x9C` looked unreferenced for that reason alone.
+> 2. **Worse:** every whole-image scan looped over `capstone.Cs.disasm(raw, base)` directly. That
+>    generator **STOPS at the first byte it cannot decode and returns what it had** — on this binary,
+>    0x004ADFEF, 44% of the way through `.text`. The loop looks exhaustive and saw **228,684 of 922,891
+>    instructions, 24.8%**. It hid the `ShineMobileObject` constructor's write to
+>    `smo_RulesOfNormalAttack` through a whole pass of "nothing sets this field". Fixed by `Code.sweep()`
+>    in `tools/disasm.py`, which resynchronises; `xref_vcall.py` and `xref_call.py` now use it. **Any
+>    negative result from before 2026-08-27 was worth a quarter of a binary.**
+>
+> If an older note in this file says "nothing reads X", it predates both fixes.
 >
 > **Rule 3, carried from OPEN_QUESTIONS.md:** this is a release C++ binary, so `/OPT:REF` strips
 > unreferenced code and data. Anything still in the image is referenced by something. Every "nothing uses
@@ -108,13 +118,25 @@ Of the 51 `Stat` slots, these are never written by any code path here, for playe
 
 ---
 
-## 4b. Magic classes cannot fight
+## 4b. Magic classes cannot auto-attack — RESOLVED 2026-08-27, and it is the game, not a gap
 
-**A wizard's magic attack never reaches the swing.** `MobActionAttack` and `PlayerAttack` both resolve
-through `DamageCalculator`'s PHYSICAL path (`roe_MinWC`/`roe_MaxWC`), so `MAmin`/`MAmax` — which the item
-catalogue loads, `sm_PrepareWeapon` stages, and `roe_MinMA`/`roe_MaxMA` exist to consume — are inert.
+**This entry was wrong and is kept as a correction.** It read the wizard's grind result as a missing
+feature. It is not: `smo_RulesOfNormalAttack` (`ShineMobileObject+0x1E74`) is the field that chooses a
+normal attack's rules, and **a player's is always `roe_normalPY`.** Every writer of that field, over a
+full-coverage instruction scan:
 
-Measured over a 20-minute grind against the same Uruga spawn, level 40, best gear per class:
+| writer | value |
+|---|---|
+| `ShineMobileObject::ShineMobileObject+0xC4` (0x559284) | `&roe_normalPY` — the default for everything |
+| `ShineMob::so_mob_Regenerate+0x55D/+0x569` | `&roe_normalMA` / `&roe_normalPY` from `MobWeapon.HitType` |
+| `ShinePet::spt_Regenerate+0x2B1` | `&roe_normalPY` |
+| `ShinePlayer::sp_SetRulesOfEngagement` | whatever it is passed — **one caller: the GM `&allcritical`** |
+
+So a wizard swinging a wand for almost nothing is correct behaviour. Caster damage arrives through
+SKILLS (`roe_magical`, `roe_normalMA` for skill casts), which this project does not model at all — that is
+the real gap, and it is §2's "mob skill attacks" problem seen from the player's side.
+
+The grind table stands as measured; only its interpretation changes:
 
 | class | WC | orcs killed |
 |---|---:|---:|
@@ -123,8 +145,14 @@ Measured over a 20-minute grind against the same Uruga spawn, level 40, best gea
 | HighCleric | 509 | 37 |
 | **Wizard / Enchanter** | **128** | **1** |
 
-The magic classes are not badly balanced — their damage is simply not being computed. `MobWeapon.HitType`
-(`HT_PY`/`HT_MA`) already says which path an attack should take and nothing consults it.
+**`MobWeapon.HitType` is now connected** (`MobParameters.NormalAttackRule`). Of the 2,059 fightable mobs
+with a weapon row, **334 attack magically** — resisted by MR, not AC, and unblockable, because
+`RulesOfEngagementNormalMA` leaves `roe_ShieldBlock` at the base return-0 stub. 708 mobs carry `HT_NONE`
+at row 0, which the server's `!= HT_PY` test also routes to the magical rule; 629 of those are not
+fightable and the rest are props with WC 0-0.
+
+⚠️ Still unread on this path: `roe_HitRate` and `roe_CriticalRate` differ per rule and this port does not
+implement either — a swing here never misses and crits only when told to.
 
 ## 5. Rules based on theory rather than a reading
 

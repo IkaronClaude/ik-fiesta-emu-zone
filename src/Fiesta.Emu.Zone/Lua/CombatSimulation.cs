@@ -27,6 +27,14 @@ public sealed class SimMob : ICombatant
     /// <summary>The ported attack timings, in the server's tenths of a second.</summary>
     public MobAttackTiming Timing { get; private set; }
 
+    /// <summary>`ShineMobileObject::smo_RulesOfNormalAttack` (+0x1E74) — which rules of engagement this
+    /// mob's ordinary swing resolves through.
+    ///
+    /// <para>Physical until <see cref="Define"/> reads it from game data, which is the SERVER'S default too:
+    /// the `ShineMobileObject` constructor writes <c>&amp;roe_normalPY</c> into the field and
+    /// `so_mob_Regenerate` only overwrites it for a mob whose weapon row 0 says otherwise.</para></summary>
+    public Combat.EngagementRule NormalAttackRule { get; private set; } = Combat.EngagementRule.NormalPhysical;
+
     /// <summary>Adopt a real mob definition: stats, level, HP and swing timings all from game data.
     ///
     /// <para>The timings come from <see cref="MobAttackTimingCalculator"/>, which is the ported timing block
@@ -44,6 +52,7 @@ public sealed class SimMob : ICombatant
         MaxHp = definition.MaxHp;
         Hp = MaxHp;
         NormalAttack = definition.NormalAttack;
+        NormalAttackRule = definition.NormalAttackRule;
         Mob.Selector.Policy = definition.Policy;
         Arg.Combat.RunSpeed = definition.Info.RunSpeed;
         Arg.Combat.TurnSpeed = definition.Server.TurnSpeed;
@@ -194,8 +203,29 @@ public sealed class CombatSimulation
         // simulation's whole reproducibility story is "same seed, same run" -- a second, unrelated RNG
         // inside the damage path would quietly break that.
         var roll = new AttackModifiers { RollPermille = (int)Rng.well512_GetRandom(1001) };
-        return DamageCalculator.ResolveDamage(attacker, defender, roll);
+        return DamageCalculator.ResolveDamage(attacker, defender, roll, rule: NormalAttackRuleOf(attacker));
     }
+
+    /// <summary>Which rules of engagement an attacker's NORMAL swing goes through — the ported
+    /// `smo_RulesOfNormalAttack`.
+    ///
+    /// <para>Deliberately not a member of <see cref="ICombatant"/>. On the server the rule is a field of the
+    /// mobile OBJECT (`ShineMobileObject+0x1E74`), not of its stat container, and the damage functions take
+    /// it as the `this` of a `RulesOfEngagement` singleton rather than reading it off the combatant. Keeping
+    /// it out here preserves that: the calculator still needs a level and a container, and nothing else.</para>
+    ///
+    /// <para><b>A player is ALWAYS physical, whatever their class.</b> That is not an approximation and not
+    /// a gap in this port — it is the only thing the binary can do. The `ShineMobileObject` constructor sets
+    /// <c>roe_normalPY</c>, and a full-coverage scan of every instruction touching +0x1E74 finds exactly four
+    /// writers: that constructor, `so_mob_Regenerate` (mobs), `spt_Regenerate` (pets, always physical), and
+    /// `sp_SetRulesOfEngagement` — whose ONE caller is the GM command `&amp;allcritical`. So a wizard's
+    /// auto-attack swinging a wand for almost nothing is CORRECT behaviour, not missing magic support;
+    /// caster damage arrives through skills, which use `roe_magical` and are not modelled here.</para></summary>
+    private static EngagementRule NormalAttackRuleOf(ICombatant attacker) => attacker switch
+    {
+        SimMob mob => mob.NormalAttackRule,
+        _ => EngagementRule.NormalPhysical,
+    };
 
     /// <summary>The player swings at a mob: damage now, aggro now, both through the ported paths.</summary>
     public void PlayerAttack(SimMob target)

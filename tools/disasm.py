@@ -52,6 +52,46 @@ class Code:
             return struct.unpack_from("<f", self.data, o)[0]
         return None
 
+    def sweep(self, section=b".text"):
+        """Every instruction in a section, RESYNCHRONISING past bytes capstone cannot decode.
+
+        ⚠️ `Cs.disasm` STOPS at the first byte it cannot decode and quietly returns what it had so far.
+        On this binary that is 0x004ADFEF — 44% of the way through `.text` — so the obvious
+
+            for ins in md.disasm(raw, base): ...
+
+        sees less than half the image and answers "there is no such instruction" for everything past it.
+        That is an ARGUMENT FROM ABSENCE MANUFACTURED BY THE TOOL, and it is the worst kind, because the
+        loop looks exhaustive. It hid the only write to `smo_RulesOfNormalAttack` — the one at
+        `ShineMobileObject::ShineMobileObject+0xC4` (0x559284) that defaults every mobile object to
+        `roe_normalPY` — through a whole pass of "nothing sets this field".
+
+        Resynchronising costs a little noise (data bytes decode as nonsense instructions) and buys
+        complete coverage. Callers that match on symbol-resolved operands filter the noise out anyway.
+        """
+        from capstone import Cs, CS_ARCH_X86, CS_MODE_32
+        sec = [s for s in self.pe.sections if s.Name.rstrip(b"\0") == section][0]
+        base = IMAGE + sec.VirtualAddress
+        raw = self.data[sec.PointerToRawData:sec.PointerToRawData + sec.SizeOfRawData]
+        md = Cs(CS_ARCH_X86, CS_MODE_32)
+        pos = 0
+        while pos < len(raw):
+            advanced = False
+            for ins in md.disasm(raw[pos:], base + pos):
+                yield ins
+                pos = ins.address - base + ins.size
+                advanced = True
+            if not advanced:
+                pos += 1
+
+    def owner(self, va):
+        """The public symbol containing an address, and the offset into it."""
+        import bisect
+        i = bisect.bisect_right(self.sorted_vas, va) - 1
+        if i < 0:
+            return "?", 0
+        return self.by_va[self.sorted_vas[i]], va - self.sorted_vas[i]
+
     def dump(self, va, count=400, only=None):
         from capstone import Cs, CS_ARCH_X86, CS_MODE_32
         md = Cs(CS_ARCH_X86, CS_MODE_32)

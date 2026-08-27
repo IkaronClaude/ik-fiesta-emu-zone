@@ -127,7 +127,10 @@ cannot matter" was an argument from absence wearing a proof's clothing.
 | class/level base stats (`c_Storepure`, `CharClass::MaxHP`) | done | yes |
 | mob targeting / aggro (`MobTargetSelector` family) | done | yes |
 | mob tactics (`MobTacticElement::MobAction*`) | partial — Targetting/Attack/Chase/Turning | yes for what is ported |
-| mob stats (`MobInfoServer.shn`) | **not started** — mob containers are all-zero placeholders | — |
+| mob stats (`MobInfoServer.shn`) | done — `c_StoreMob` + `sm_PrepareWeapon`; a mob's weapon is its gear | yes |
+| normal-attack rules (`smo_RulesOfNormalAttack`) | done — chosen from `MobWeapon.HitType` at spawn | yes |
+| hit / critical rolls (`roe_HitRate`, `roe_CriticalRate`) | **not started** — swings never miss here | — |
+| skills (`roe_magical`, `roe_physical`) | **not started** — no caster has an attack | — |
 | everything else | not started | — |
 
 The damage engine now reads its inputs from `Parameter::Container` rather than a duplicate `CombatStats`,
@@ -168,3 +171,28 @@ MobTacticElement::MobActionBase
 `MobTargetSelector` deriving from `AxialListIterator` is the important one: target selection IS a spatial
 scan callback, so detection shape and range live in the per-candidate `ali_Work` override rather than in
 any table lookup.
+
+### 2026-08-27 — how a normal attack picks its rules, and a tool that was lying
+
+`MobWeapon.HitType` is connected. `ShineMobileObject::smo_RulesOfNormalAttack` (`+0x1E74`) is the field
+that selects one of the eight `RulesOfEngagement` singletons for an ordinary swing, and it governs the
+whole swing — `smo_SwingDamage` reaches `roe_HitRate`, `roe_HitRateByGlobalAction` and `roe_CalcDamage`
+through it. `ShineMob::so_mob_Regenerate+0x543` sets it from weapon row 0; everything else keeps the
+constructor's `&roe_normalPY`. 334 fightable mobs now attack against MR instead of AC.
+
+**A player is always physical, whatever their class.** That retires the "magic classes cannot fight"
+finding: the wizard's one-orc grind is the game, not a missing feature. Caster damage is a skill, and
+skills are not modelled here at all.
+
+**The tooling failure is the more valuable half.** The first pass concluded no code writes `+0x1E74` — an
+argument from absence, which rule 3 in `OPEN_QUESTIONS.md` exists to forbid. The cause was not reasoning:
+`capstone`'s `disasm()` stops at the first undecodable byte and returns what it already had. On this binary
+that is 0x004ADFEF, so every whole-image scan in `tools/` had been walking **228,684 of 922,891
+instructions — 24.8% — while looking exhaustive.** The write that settled the question is at 0x559284,
+past the cut. `Code.sweep()` in `tools/disasm.py` now resynchronises past bad bytes; `xref_vcall.py` and
+the new `xref_call.py` use it.
+
+The rule for this repo: **a negative result is a claim about the sweep, not about the binary.** Any
+"no callers" answer produced before this date is worth re-running.
+
+193 tests, 0 red.

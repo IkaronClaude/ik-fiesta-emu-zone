@@ -91,6 +91,53 @@ public static class MobParameters
         item[Stat.MH] = weapon.Mh;
     }
 
+    /// <summary>`ShineMob::so_mob_Regenerate+0x543` — which <see cref="Combat.EngagementRule"/> a mob's
+    /// NORMAL ATTACK resolves through, decided ONCE at spawn from `MobWeapon.HitType`.
+    ///
+    /// <para>This is the reader `HitType` was missing. Every mobile object is constructed pointing at
+    /// <c>roe_normalPY</c> (<c>ShineMobileObject::ShineMobileObject+0xC4</c> writes
+    /// <c>smo_RulesOfNormalAttack = &amp;roe_normalPY</c>), and a mob then overwrites it at regeneration
+    /// with this branch:</para>
+    /// <code>
+    /// const MobDataBoxIndex* box = mob->sm_MobDataBox;      // +0x1F90
+    /// if (box->weapon == NULL)                     roe = &amp;roe_normalPY;   // +0x54E
+    /// else if (box->weapon[0].weapon == NULL)      roe = &amp;roe_normalMA;   // +0x553  (see below)
+    /// else if (box->weapon[0].weapon->HitType)     roe = &amp;roe_normalMA;   // +0x557, HitType at +0x6D
+    /// else                                         roe = &amp;roe_normalPY;
+    /// </code>
+    ///
+    /// <para>Three things in that are worth stating because none is what you would guess:</para>
+    /// <list type="bullet">
+    ///   <item><b>Weapon index 0 decides for the whole mob.</b> The rule is chosen at spawn from row 0 and
+    ///         never revisited, so a mob with a magical row further down the list still swings physically.
+    ///         It is the same index <c>mab_Think</c> forces for a player target — see
+    ///         <see cref="Data.MobDataBox.AttackAgainstPlayer"/>.</item>
+    ///   <item><b>The test is <c>!= 0</c>, not <c>== HT_MA</c>.</b> `HT_NONE` (2) also selects the magical
+    ///         rule, and that is NOT a corner case — <b>708 of the 2,834 mobs with a weapon row carry
+    ///         `HT_NONE` at row 0</b>. 629 of them are not fightable at all and the other 79 are props
+    ///         (`KQ_Gate1`, `C_PillarofLight`, `GuildStone`) whose row 0 is WC 0-0 / MA 0-0, so nothing
+    ///         swings differently for it today. Narrowing the test to `== HT_MA` would still be wrong, and
+    ///         checking rather than assuming is the only reason that count is known.</item>
+    ///   <item><b>A null row 0 selects MAGIC, not physical</b> — the counterintuitive middle branch. It
+    ///         cannot be reached from `MobWeapon.shn`, because a parsed row always has a weapon, so
+    ///         <paramref name="weapons"/> being empty is the FIRST branch (no array at all → physical).
+    ///         The middle case is kept in the comment rather than the code because there is no honest way
+    ///         to express "present but null" here.</item>
+    /// </list>
+    ///
+    /// <para>⚠️ This governs the whole swing, not just its stat set: `smo_SwingDamage` calls
+    /// <c>roe_HitRate</c> (slot 6), <c>roe_HitRateByGlobalAction</c> (slot 11) and <c>roe_CalcDamage</c>
+    /// (slot 7) through this pointer. A magical mob is also unblockable — `RulesOfEngagementNormalMA`
+    /// leaves <c>roe_ShieldBlock</c> at the base return-0 stub, where `NormalPY` overrides it.</para>
+    ///
+    /// <para>What it changes in practice: of the 2,059 fightable mobs with a weapon row, <b>334 attack
+    /// magically</b> — measured against the defender's MR instead of AC, and unblockable. `GhostKnight`
+    /// (WC 153-234 against MA 2234-3402) is the shape of the difference.</para></summary>
+    public static Combat.EngagementRule NormalAttackRule(IReadOnlyList<Data.MobWeapon> weapons)
+        => weapons.Count > 0 && weapons[0].HitType != Data.HitType.Physical
+            ? Combat.EngagementRule.NormalMagic
+            : Combat.EngagementRule.NormalPhysical;
+
     /// <summary>`CharClassMob::MaxHP` (0x004496F0) — a mob's maximum HP.
     ///
     /// <para>Two instructions of substance: it calls a virtual to get the mob's info record and reads
@@ -115,6 +162,10 @@ public sealed class MobCombatant : Combat.ICombatant
     /// folds `MobWeapon` into a stat cluster. Its <c>MinWc</c>/<c>MaxWc</c> are the mob's attack values and
     /// its <c>SwingTime</c>/<c>HitTime</c> are the swing and damage-landing timings.</para></summary>
     public Data.MobWeapon? NormalAttack { get; init; }
+
+    /// <summary>Which rules of engagement this mob's normal attack resolves through, from
+    /// <see cref="MobParameters.NormalAttackRule"/>. Physical for all but the casters.</summary>
+    public Combat.EngagementRule NormalAttackRule { get; init; } = Combat.EngagementRule.NormalPhysical;
 
     public required ParameterContainer Parameters { get; init; }
 
@@ -157,6 +208,10 @@ public sealed class MobCombatant : Combat.ICombatant
             Info = info,
             Server = server,
             NormalAttack = weapon,
+            // The rule comes from the WHOLE weapon list, not from `weapon`: the server's branch
+            // distinguishes "no weapon array" from "array whose row 0 is null", and only the list can
+            // tell those apart.
+            NormalAttackRule = MobParameters.NormalAttackRule(box.WeaponsFor(inxName)),
             Parameters = container,
         };
     }
