@@ -266,12 +266,25 @@ public class PcapGroundTruthTests
     /// and three outgoing hits 2.4-2.6% over the ceiling. A maximum roll from directly behind is the
     /// hardest a clean swing can legitimately land, so nothing clean should exceed it.</para>
     ///
-    /// <para><b>Do not close this by widening a margin.</b> The outgoing residual is on the
-    /// player-as-attacker side, where the reconstruction still puts the whole displayed Dmg total into
-    /// Base[WCmin] — and `roe_MinWC` does not read a total, it reads `Base[WCmin]`,
-    /// `Upgrade.Plus[WCmax]` and a weapon-title-scaled `Item.Plus[WCmin]` separately. The capture carries
-    /// the equipment (`NC_CHAR_CLIENT_ITEM_CMD`, 39 items) to split those layers; decoding it is the next
-    /// step, not more analysis of the totals.</para></summary>
+    /// <para><b>Do not close this by widening a margin.</b> What the six ARE has been narrowed to one
+    /// unknown, and the arithmetic says so: solving for the flat term that would bracket the two
+    /// outgoing Orc outliers gives <b>+20</b>, and the Pinky outlier needs at least +15 — one value fits
+    /// both. That is the size and shape of the free-stat term
+    /// (<see cref="AttackModifiers.AttackerFreeStat"/>), which this harness passes as ZERO because the
+    /// capture does not say how the character spent their points.</para>
+    ///
+    /// <para>Three leads were ELIMINATED getting here, each by checking rather than arguing:</para>
+    /// <list type="bullet">
+    ///   <item><b>Weapon enhancement.</b> `roe_MaxWC` reads `Upgrade.Plus[WCmax]` and the displayed WCmax
+    ///         total already contains it, so it cancels — enhancement moves the FLOOR, not the ceiling.</item>
+    ///   <item><b>A DEF-down debuff on the mob.</b> Checked directly: <b>zero</b> of the 41 clean outgoing
+    ///         hits landed while the target had any abstate active.</item>
+    ///   <item><b>Weapon mastery.</b> All three `NC_CHAR_CLIENT_PASSIVE_CMD` packets are `00 00` — this
+    ///         character has no passive skills at all.</item>
+    /// </list>
+    ///
+    /// <para>Closing it needs the character's free-stat allocation, which is a question for whoever ran the
+    /// capture — not more analysis of it.</para></summary>
     [SkippableFact]
     public void TheCeilingIsExact_KNOWN_RED()
     {
