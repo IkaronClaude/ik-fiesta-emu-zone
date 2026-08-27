@@ -274,8 +274,19 @@ Three things fall out, and two of them contradict earlier readings in this docum
 
 `AbnormalState.Rate[AttSpeed]` is container offset `+0xA18`, so a haste or slow scales all three together.
 
-⚠️ One term in `nextAttackAt` is a local this port has not resolved, so `IntervalTenths` is the floor of
-the real interval rather than certainly the whole of it.
+The complete sum is at `mab_Think+0x8B5`:
+
+```c
+if (swing < 0) swing = 0;  if (hit < 0) hit = 0;  if (delay < 0) delay = 0;   // +0x8A3
+nextAttackAt = delay + swing + sm_GetWeaponCastTime() + clockwatchNow;        // +0x8B8..+0x8C3
+```
+
+- **The fourth term is the weapon row's SKILL cast time** — `sm_GetWeaponCastTime` (0x004B88E0) looks the
+  row's skill up in `SkillDataBox` and returns `sdi_Activ->CastTime * 10 / 1000`, or 0 on a miss.
+- It is added **after** the three clamps, so it is not clamped; and it does **not** pass through
+  `AbnormalState.Rate[AttSpeed]`, so **haste does not shorten a cast**.
+- It is zero for every attack a player can receive: `MobWeapon.Skill` is `-` on weapon row 0 of all 2,834
+  mobs, and row 0 is the row forced against a player. It begins to matter with mob skills.
 
 ## Not everything a map spawns is an enemy
 

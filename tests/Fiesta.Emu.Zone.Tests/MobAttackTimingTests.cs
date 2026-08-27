@@ -202,3 +202,75 @@ public class GatheringNodeTests
         pinky.MaxWc.ShouldBeGreaterThan(pinky.MaxMa);
     }
 }
+
+/// <summary>The third term of `nextAttackAt`, which was open until 2026-08-27.</summary>
+public class WeaponCastTimeTests
+{
+    private static string? Shine()
+    {
+        var root = Environment.GetEnvironmentVariable("SHINE_DATA") ?? @"Z:/ServerSource/9Data/Shine";
+        return File.Exists(Path.Combine(root, "ActiveSkill.shn")) ? root : null;
+    }
+
+    private static MobWeapon W(string skill) =>
+        new(0, "test", skill, 1000, 400, 1000, 300, 0, 0, 0, 0, 0, 0, 20,
+            HitType.Physical, 1000, StaStrength: 0, StaRate: 0, AggroInitialize: 0);
+
+    /// <summary>`nextAttackAt = now + delay + swing + castTime`, and the interval is now the COMPLETE sum
+    /// rather than a floor.</summary>
+    [Fact]
+    public void TheIntervalIsDelayPlusSwingPlusCast()
+    {
+        var t = MobAttackTimingCalculator.Compute(W("-"), castTimeMs: 1500);
+
+        t.DelayTenths.ShouldBe(4);
+        t.SwingTenths.ShouldBe(10);
+        t.CastTenths.ShouldBe(15);
+        t.IntervalTenths.ShouldBe(29);
+    }
+
+    /// <summary>Haste scales swing, hit and delay — and NOT the cast. The cast term is added after the
+    /// three clamps in `mab_Think` and never sees the rate.</summary>
+    [Fact]
+    public void HasteDoesNotShortenACast()
+    {
+        var normal = MobAttackTimingCalculator.Compute(W("-"), castTimeMs: 1500);
+        var hasted = MobAttackTimingCalculator.Compute(W("-"), attackSpeedRate: 500, castTimeMs: 1500);
+
+        hasted.SwingTenths.ShouldBeLessThan(normal.SwingTenths);
+        hasted.DelayTenths.ShouldBeLessThan(normal.DelayTenths);
+        hasted.CastTenths.ShouldBe(normal.CastTenths, "a cast is not hastened");
+    }
+
+    /// <summary>`-` means no skill, and `sm_GetWeaponCastTime` returns 0 on a lookup miss rather than
+    /// failing — so both spellings of "nothing" give a real zero.</summary>
+    [SkippableFact]
+    public void NoSkillMeansNoCastTime()
+    {
+        Skip.If(Shine() is null, "server data not present; set SHINE_DATA");
+        var skills = SkillDataBox.Load(Shine()!);
+
+        skills.CastTimeMs(W("-")).ShouldBe(0);
+        skills.CastTimeMs(W("NoSuchSkillExists")).ShouldBe(0, "the original returns 0 on a miss");
+    }
+
+    /// <summary>Why the term was invisible: EVERY mob's weapon row 0 names no skill, and row 0 is the row
+    /// forced when the target is a player. So the cast time is zero for every attack a character can
+    /// receive — the old two-term interval was exact for that case, not merely a floor.</summary>
+    [SkippableFact]
+    public void EveryAntiPlayerAttackHasZeroCastTime()
+    {
+        Skip.If(Shine() is null, "server data not present; set SHINE_DATA");
+        var box = MobDataBox.Load(Shine()!);
+        var skills = SkillDataBox.Load(Shine()!);
+
+        var withWeapons = box.Weapons.Keys.ToList();
+        withWeapons.Count.ShouldBeGreaterThan(2_000);
+        withWeapons.ShouldAllBe(n => skills.CastTimeMs(box.AttackAgainstPlayer(n)!) == 0);
+
+        // But the table genuinely carries cast times -- this is data, not an empty column.
+        box.Weapons.SelectMany(k => k.Value)
+            .Count(w => skills.CastTimeMs(w) > 0)
+            .ShouldBeGreaterThan(300, "skill rows do have cast times; only row 0 never does");
+    }
+}

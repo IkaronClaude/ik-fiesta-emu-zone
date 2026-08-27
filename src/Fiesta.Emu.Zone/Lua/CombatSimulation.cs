@@ -60,10 +60,12 @@ public sealed class SimMob : ICombatant
         if (definition.NormalAttack is not { } w) return;
 
         Timing = MobAttackTimingCalculator.Compute(
-            w, MobAttackTimingCalculator.AttackSpeedRate(definition.Parameters));
+            w, MobAttackTimingCalculator.AttackSpeedRate(definition.Parameters),
+            definition.NormalAttackCastTimeMs);
 
-        // The interval is the DELAY PLUS THE SWING, which is why AtkDly exceeding SwingTime was never the
-        // contradiction it looked like: they add rather than compete.
+        // The interval is DELAY + SWING + the skill's CAST TIME, which is why AtkDly exceeding SwingTime was
+        // never the contradiction it looked like: they add rather than compete. The cast term is zero for
+        // every anti-player attack in the data -- row 0 names no skill.
         SwingIntervalMs = Math.Max(100u, Timing.IntervalMs);
         SwingLandDelayMs = Timing.HitMs;
         if (w.Range > 0) Arg.Combat.AttackRange = w.Range;

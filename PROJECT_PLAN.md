@@ -130,7 +130,8 @@ cannot matter" was an argument from absence wearing a proof's clothing.
 | mob stats (`MobInfoServer.shn`) | done — `c_StoreMob` + `sm_PrepareWeapon`; a mob's weapon is its gear | yes |
 | normal-attack rules (`smo_RulesOfNormalAttack`) | done — chosen from `MobWeapon.HitType` at spawn | yes |
 | hit / critical rolls (`roe_HitRate`, `roe_CriticalRate`) | **not started** — swings never miss here | — |
-| skills (`roe_magical`, `roe_physical`) | **not started** — no caster has an attack | — |
+| skills (`roe_magical`, `roe_physical`) | **not started** — no caster has an attack. `SkillDataIndex::sdi_DamageRule` (+0x70) is the entry point | — |
+| active-skill table (`ActiveSkill.shn`) | partial — `CastTime`/`DlyTime` only, for the attack interval | yes |
 | everything else | not started | — |
 
 The damage engine now reads its inputs from `Parameter::Container` rather than a duplicate `CombatStats`,
@@ -216,3 +217,29 @@ Still open: what supplies `so_DamagedBy`'s permille rate. `so_mobile_MobAggroRat
 boolean "does this object draw aggro at all".
 
 197 tests, 0 red.
+
+### 2026-08-27 — the third term of `nextAttackAt` is a skill cast time
+
+The one open item that had been parked on "a local this port has not resolved". Reading `mab_Think` to its
+full 0x9A0 extent — which the dump could only do after the resync fix earlier today — gives:
+
+```c
+nextAttackAt = delay + swing + sm_GetWeaponCastTime() + clockwatchNow;   // +0x8B8..+0x8C3
+```
+
+`sm_GetWeaponCastTime` (0x004B88E0) resolves the weapon row's skill through `SkillDataBox` and returns
+`sdi_Activ->CastTime * 10 / 1000`, or 0 when the lookup misses. Added AFTER the three zero-clamps, and not
+scaled by `AbnormalState.Rate[AttSpeed]` — **haste does not shorten a cast.**
+
+It was invisible rather than difficult: `MobWeapon.Skill` is `-` on weapon row 0 of all 2,834 mobs, and row
+0 is the row forced against a player, so the term is zero for every attack a character can receive. The old
+two-term interval was exact for that case, not a floor. `SkillDataBox` now loads `ActiveSkill.shn`; the
+join is clean (2,974 skill-naming weapon rows, 0 unmatched, 478 with a non-zero cast time).
+
+Picked up on the way: `SkillDataIndex::sdi_DamageRule` (+0x70) is a `RulesOfEngagement *`, so a SKILL
+carries its own rule. That is the entry point for `roe_magical` — and therefore for caster damage on the
+player side, which the normal-attack path structurally cannot provide.
+
+Open questions are down to two: mob skill attacks, and the source of `so_DamagedBy`'s aggro rate.
+
+201 tests, 0 red.

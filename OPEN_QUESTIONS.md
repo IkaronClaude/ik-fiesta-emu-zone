@@ -17,19 +17,9 @@ believed, what it rests on, and what would settle it.
 
 ---
 
-## 1. The unresolved term in `nextAttackAt`
+## 1. Mob skill attacks are not modelled
 
-**Status:** open, minor.
-
-`mab_Think` computes `now + AtkDly + swing + <local>`. The two named terms are ported; the third is a
-local this port has not resolved, so `MobAttackTiming.IntervalTenths` is the **floor** of the real interval
-rather than certainly the whole of it.
-
----
-
-## 2. Mob skill attacks are not modelled
-
-**Status:** open.
+**Status:** open. The largest remaining hole in mob combat.
 
 `MobWeapon` has 5,815 rows across 2,878 mobs; 1,324 mobs have more than one. The simulation only ever uses
 weapon index 0. `AttackElement4Mob` carries a 500-entry skill sequence plus `OutOfRange` / `HPLow` /
@@ -37,9 +27,15 @@ weapon index 0. `AttackElement4Mob` carries a 500-entry skill sequence plus `Out
 WELL512 roll against `sm_GetUseWeaponRate`. None of that is ported — the exchange-rule *order* in
 `MobActionAttack` is, but its predicates are placeholders.
 
+**Two leads picked up on 2026-08-27.** `SkillDataBox::SkillDataIndex` carries `sdi_DamageRule` at +0x70,
+a `RulesOfEngagement *` — so a SKILL brings its own rule, the way a mob's normal attack gets one from
+`smo_RulesOfNormalAttack`. That is where `roe_magical` / `roe_physical` enter, and therefore where caster
+damage lives for players too. `sdi_Activ` (+0x04) is the `ActiveSkillInfo` row, already loaded here by
+`SkillDataBox`; `sdi_AttackDist` (+0x74) is the skill's range.
+
 ---
 
-## 3. Where `so_DamagedBy`'s aggro RATE comes from
+## 2. Where `so_DamagedBy`'s aggro RATE comes from
 
 **Status:** open, narrowed. (The rest of this question closed on 2026-08-27 — see Resolved.)
 
@@ -148,6 +144,30 @@ as though it were the finding.
 Yes. `ShinePlayer::sp_MaxHP` (0x0054A670) reads `Item.Plus.MaxHP`, `Item.Plus.MaxHP_2`,
 `AbnormalState.Plus.MaxHP` and `AbnormalState.Rate.MaxHP` on top of the class virtual. `CharClass::MaxHP`
 is one term of the answer, not the whole of it — which is why it never reads the cluster itself.
+
+## The third term of `nextAttackAt` — CLOSED 2026-08-27
+
+`mab_Think` computes `now + AtkDly + swing + <local>`, and the local is
+`ShineMob::sm_GetWeaponCastTime()` (0x004B88E0) — **the cast time of the SKILL named on the weapon row**:
+
+```c
+ushort skillId = box->weapon[currentIndex].skill;        // _MobWeaponIndex.skill, +0x04
+const SkillDataIndex* s = SkillDataBox[skillId];
+if (!s) return 0;                                        // the null pointer IS the return value
+return s->sdi_Activ->CastTime * 10 / 1000;               // ActiveSkillInfo+0xCB, tenths
+```
+
+Two details worth keeping. The cast is added at `+0x8BA`, **after** the three `test/jns/xor` clamps at
+`+0x8A3`, so it is not clamped. And it is **not** scaled by the attack-speed rate that swing, hit and delay
+all pass through — haste does not shorten a cast.
+
+**Why the question was invisible rather than hard.** `MobWeapon.Skill` is `-` on weapon row 0 of all 2,834
+mobs that have weapons, and row 0 is the row `mab_Think` forces when the target is a player. So the term is
+zero for every attack a character can receive, and the old two-term interval was not a floor — it was
+exact for that case. It starts to matter as soon as mob skills are modelled (question 1).
+
+The join is now loaded (`SkillDataBox` over `ActiveSkill.shn`): all 2,974 weapon rows that name a skill
+match a row, none unmatched, and 478 of them carry a non-zero cast time.
 
 ## `AggroInitialize` — CLOSED 2026-08-27. It SUBTRACTS, and it is a boss mechanic.
 

@@ -11,14 +11,27 @@ namespace Fiesta.Emu.Zone.Mob;
 /// <param name="SwingTenths">How long the swing itself takes.</param>
 /// <param name="HitTenths">How long after the swing starts the damage lands.</param>
 /// <param name="DelayTenths">Extra delay added before the NEXT attack may begin — `AtkDly`.</param>
-public readonly record struct MobAttackTiming(int SwingTenths, int HitTenths, int DelayTenths)
+/// <param name="CastTenths">The cast time of the SKILL on this weapon row, from
+/// `ShineMob::sm_GetWeaponCastTime`. Zero for an ordinary swing.</param>
+public readonly record struct MobAttackTiming(int SwingTenths, int HitTenths, int DelayTenths, int CastTenths)
 {
-    /// <summary>Time from the start of one attack to the start of the next.
+    /// <summary>Time from the start of one attack to the start of the next — the COMPLETE sum.
     ///
-    /// <para>`mab_Think` computes <c>now + AtkDly + swing + …</c>, so the delay is ON TOP of the swing.
-    /// ⚠️ There is one further term in the original — a local this port has not resolved — so this is the
-    /// floor of the real interval, not necessarily the whole of it.</para></summary>
-    public int IntervalTenths => DelayTenths + SwingTenths;
+    /// <para>Read off `mab_Think+0x8B5`, which is the whole of it:</para>
+    /// <code>
+    /// if (swing &lt; 0) swing = 0;  if (hit &lt; 0) hit = 0;  if (delay &lt; 0) delay = 0;   // +0x8A3
+    /// nextAttackAt = delay + swing + weaponCastTime + clockwatchNow;                  // +0x8B8..+0x8C3
+    /// </code>
+    ///
+    /// <para>The third term was open for a while and is `sm_GetWeaponCastTime()`. Two details it is worth
+    /// not losing: the cast time is added <b>after</b> the three clamps, so it is not clamped itself; and
+    /// it is <b>not</b> scaled by the attack-speed rate, which the other three are. Haste does not shorten
+    /// a cast.</para>
+    ///
+    /// <para>⚠️ It is zero for every attack this simulation currently makes, and that is a fact about the
+    /// data rather than a simplification: `MobWeapon.Skill` is `-` on <b>weapon row 0 of all 2,834 mobs</b>,
+    /// and row 0 is the row `mab_Think` forces when the target is a player.</para></summary>
+    public int IntervalTenths => DelayTenths + SwingTenths + CastTenths;
 
     public uint SwingMs => (uint)(SwingTenths * 100);
     public uint HitMs => (uint)(HitTenths * 100);
@@ -52,6 +65,7 @@ public static class MobAttackTimingCalculator
     /// swing      = swing * attackSpeedRate / 1000
     /// hit        = (HitTime/100) * attackSpeedRate / 1000
     /// delay      = (AtkDly/100)  * attackSpeedRate / 1000
+    /// cast       = sm_GetWeaponCastTime() / 100          // NOT scaled by attackSpeedRate
     /// </code>
     ///
     /// <para><b>The two `128`s cancel algebraically</b>, which is the key to reading this: substituting the
@@ -65,7 +79,8 @@ public static class MobAttackTimingCalculator
     /// <para><paramref name="attackSpeedRate"/> is <see cref="Stat.AttSpeed"/> from the mob's
     /// <see cref="StatModifier.AbnormalState"/> RATE cluster — container offset 0xA18 — so a haste or slow
     /// abnormal state scales all three timings together.</para></summary>
-    public static MobAttackTiming Compute(MobWeapon weapon, int attackSpeedRate = RateIdentity)
+    public static MobAttackTiming Compute(MobWeapon weapon, int attackSpeedRate = RateIdentity,
+                                          int castTimeMs = 0)
     {
         // AtkSpd of zero would divide by zero; the original substitutes 1.
         var atkSpd = weapon.AtkSpd != 0 ? weapon.AtkSpd : 1;
@@ -80,9 +95,20 @@ public static class MobAttackTimingCalculator
         var delay = ToTenths(weapon.AtkDly) * attackSpeedRate / 1000;
 
         // Each of the three is clamped at zero before use (`test/jns/xor`), so a negative rate cannot make
-        // an attack land in the past.
-        return new MobAttackTiming(Math.Max(0, swing), Math.Max(0, hit), Math.Max(0, delay));
+        // an attack land in the past. The cast term is added AFTER those clamps in the original and is not
+        // one of them, so it is not clamped here either.
+        return new MobAttackTiming(Math.Max(0, swing), Math.Max(0, hit), Math.Max(0, delay),
+                                   ToTenthsUnsigned(castTimeMs));
     }
+
+    /// <summary>The same `ms * 10 / 1000` as <see cref="ToTenths"/>, but UNSIGNED — `sm_GetWeaponCastTime`
+    /// ends in <c>mul</c> / <c>shr edx, 6</c> where the timing block uses <c>imul</c> / <c>sar</c>.
+    ///
+    /// <para>They agree for every value a cast time can hold. Kept separate anyway: the two idioms are
+    /// visibly different in the binary and collapsing them would quietly assert that the distinction does
+    /// not matter, which is a claim rather than a reading.</para></summary>
+    private static int ToTenthsUnsigned(int milliseconds)
+        => milliseconds <= 0 ? 0 : (int)((uint)milliseconds * 10u / 1000u);
 
     /// <summary>The attack-speed rate a mob's stat container carries — `[container + 0xA18]`, which is
     /// <see cref="Stat.AttSpeed"/> of the AbnormalState rate cluster.</summary>

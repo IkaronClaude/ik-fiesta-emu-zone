@@ -183,8 +183,6 @@ Honest stand-ins where the real mechanism is known but not ported.
 - **`CrtRandom`** — the MSVC LCG taken from published behaviour, **not verified against the binary**. It is
   CRT code rather than game code, but it drives spawn placement, so a mismatch would desynchronise every
   spawn.
-- **The unresolved term in `nextAttackAt`** — `mab_Think` computes `now + AtkDly + swing + <local>`.
-  `IntervalTenths` is the floor of the real interval.
 - **Action states as shared singletons** — the original embeds a per-mob instance of most action states
   inside each `MobActionArgument`. Fine while states hold no per-mob data; wrong the moment one does.
 - **`Direction.Forward`** — the port of `ddt_GetFoward` computes cos/sin where the server reads a table

@@ -167,6 +167,10 @@ public sealed class MobCombatant : Combat.ICombatant
     /// <see cref="MobParameters.NormalAttackRule"/>. Physical for all but the casters.</summary>
     public Combat.EngagementRule NormalAttackRule { get; init; } = Combat.EngagementRule.NormalPhysical;
 
+    /// <summary>`sm_GetWeaponCastTime` for this mob's anti-player attack — the third term of
+    /// `nextAttackAt`. Zero for every mob in the current data, because weapon row 0 names no skill.</summary>
+    public int NormalAttackCastTimeMs { get; init; }
+
     public required ParameterContainer Parameters { get; init; }
 
     /// <summary>From `MobInfo`, not from the cluster — mobs have no level column in their stat block.</summary>
@@ -188,7 +192,7 @@ public sealed class MobCombatant : Combat.ICombatant
     public int MaxHp => MobParameters.MaxHp(Info);
 
     /// <summary>Build a mob's combat identity from the joined tables.</summary>
-    public static MobCombatant? Build(MobDataBox box, string inxName)
+    public static MobCombatant? Build(MobDataBox box, string inxName, Data.SkillDataBox? skills = null)
     {
         var info = box.InfoFor(inxName);
         var server = box.ServerFor(inxName);
@@ -212,6 +216,9 @@ public sealed class MobCombatant : Combat.ICombatant
             // distinguishes "no weapon array" from "array whose row 0 is null", and only the list can
             // tell those apart.
             NormalAttackRule = MobParameters.NormalAttackRule(box.WeaponsFor(inxName)),
+            NormalAttackCastTimeMs = weapon is null
+                ? 0
+                : (skills ?? Data.SkillDataBox.Empty).CastTimeMs(weapon),
             Parameters = container,
         };
     }
