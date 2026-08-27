@@ -159,6 +159,20 @@ public class PcapGroundTruthTests
     private static int FreeStatStr(int points) => points;
     private static int FreeStatCon(int points) => (points + 1) / 2;
 
+    /// <summary>The angle multiplier THE SERVER THAT PRODUCED THIS CAPTURE ACTUALLY APPLIES: none.
+    ///
+    /// <para>⚠️ <b>Not <see cref="DamageByAngleTable"/> loaded from `Z:/ServerSource`.</b> That file expands
+    /// to 1000-1200, but the deployed server is flat 1000 — verified three ways: the live expanded arrays
+    /// at `damagebyangle_Ply` and `damagebyangle_Mob` in two zone processes, and both on-disk copies
+    /// (`/fiesta/9Data` and `/source/9Data`), whose file predates the capture by an hour.</para>
+    ///
+    /// <para><b>This value was 1200 and that was a mistake worth naming.</b> With 1200 the harness scored
+    /// 216/219 and was reported as "190 of 190 incoming hits exact, nothing fitted". It was not: the 1.2x
+    /// came from a file the server does not use, and it happened to be close enough to the real
+    /// (unexplained) spread to cover it. With the server's own 1000 the score is 127/219. A number that
+    /// good, built on an input that wrong, is exactly the failure this suite exists to catch.</para></summary>
+    private const int DeployedAngleMax = 1000;
+
     private static Band Predict(ICombatant attacker, ICombatant defender, LevelGapTable gaps,
                                 DamageByAngleTable angle, CombatantKind attackerKind, int flat)
     {
@@ -172,7 +186,7 @@ public class PcapGroundTruthTests
         // angle multiplier and inside the level gap -- not tacked on at the end.
         return new Band(
             (DamageCalculator.CoreDamage(lo, def, attacker.Level) + flat) * gap / 1000.0,
-            (DamageCalculator.CoreDamage(hi, def, attacker.Level) + flat) * angle.Rates.Max() / 1000.0 * gap / 1000.0);
+            (DamageCalculator.CoreDamage(hi, def, attacker.Level) + flat) * DeployedAngleMax / 1000.0 * gap / 1000.0);
     }
 
     private sealed record Case(string Mob, bool Incoming, List<int> Observed, Band Predicted)
@@ -224,21 +238,18 @@ public class PcapGroundTruthTests
         t.Swings.ShouldContain(s => s.Flags.Contains("ismissed"));
     }
 
-    /// <summary>⭐ THE HEADLINE NUMBER: 98.6% of clean hits in the capture fall inside the band our
-    /// formula predicts — 216 of 219, across both directions and both mob types.
+    /// <summary>The measured agreement against the capture, using the angle the SERVER applies: <b>127 of
+    /// 219 (58%)</b>. Asserted as a minimum so a regression fails here.
     ///
-    /// <para>Asserted as a MINIMUM so a regression fails here. For reference, the same harness scored
-    /// <b>2 of 34</b> on the outgoing case before three instrument defects were found and fixed: feeding
-    /// the displayed attack straight into the core formula, merging conversations and windows, and reading
-    /// the AC slot without the display correction.</para>
+    /// <para>Every FLOOR holds — no observed hit lands below a minimum roll, in any of the four cases, and
+    /// the floor is angle-independent so that result is solid. Every CEILING is about 20% low.</para>
     ///
-    /// <para>Per case, on `Damage.pcapng`:</para>
-    /// <list type="table">
-    ///   <item><term>IN Orc</term><description><b>121/121</b> — observed 71-107 against a predicted 70.1-108.0</description></item>
-    ///   <item><term>IN Pinky</term><description><b>69/69</b> — observed 50-72 against 47.4-73.5</description></item>
-    ///   <item><term>OUT Orc</term><description>20/22 — two hits 2.4% over the ceiling</description></item>
-    ///   <item><term>OUT Pinky</term><description>6/7 — one hit 2.0% over</description></item>
-    /// </list></summary>
+    /// <para>The gap is a continuous per-swing multiplier of up to <b>1.24x</b> that applies to a MOB
+    /// attacker as well as to the character, so it is not gear, not item actions, and not anything
+    /// character-side. The observed outgoing damage spans 1.24x on a smooth distribution while the weapon
+    /// range spans only 1.06x — the attack bounds themselves vary per swing by something not yet
+    /// found.</para>
+
     [SkippableFact]
     public void MostCleanHitsFallInsideThePredictedBand()
     {
@@ -253,19 +264,21 @@ public class PcapGroundTruthTests
         var total = cases.Sum(c => c.Observed.Count);
         var inside = cases.Sum(c => c.Observed.Count(d => d >= c.Predicted.Floor - 1 && d <= c.Predicted.Ceiling + 1));
 
-        ((double)inside / total).ShouldBeGreaterThanOrEqualTo(0.98,
+        ((double)inside / total).ShouldBeGreaterThanOrEqualTo(0.55,
             $"only {inside}/{total} clean hits fell inside the predicted band");
     }
 
-    /// <summary>⭐⭐ EVERY INCOMING HIT IS BRACKETED EXACTLY — 190 of 190, both mob types, no tolerance.
+    /// <summary>Every FLOOR holds: no clean incoming hit lands below a minimum roll.
     ///
-    /// <para>This is the proof that the model is right rather than merely close. Every input is read:
-    /// the mob container from `MobInfoServer`/`MobWeapon`, the character defence from the login burst
-    /// (`roe_AC` equals the displayed DEF exactly), the level-gap rate from `DamageLvGapEVP`, the angle
-    /// cap from `DamageByAngle`, and the free-stat term from tables read out of a live zone with the
-    /// character's own allocation reconstructed from the wire. Nothing here is fitted.</para></summary>
+    /// <para>This is the half of the model that IS verified, and it is angle-independent — a minimum roll,
+    /// the EVP level-gap rate (1000 in every row), and the free-stat term, with the mob container from
+    /// game data and the character defence from the login burst. Nothing fitted.</para>
+    ///
+    /// <para>⚠️ This test previously asserted the CEILING too and passed 190/190. That was an artefact of
+    /// using the reference tree's angle table instead of the deployed one — see
+    /// <c>DeployedAngleMax</c>.</para></summary>
     [SkippableFact]
-    public void EveryIncomingHitIsBracketedExactly()
+    public void EveryIncomingHitIsAtLeastOurFloor()
     {
         var path = TruthPath();
         var shine = Shine();
@@ -277,10 +290,7 @@ public class PcapGroundTruthTests
         incoming.Sum(c => c.Observed.Count).ShouldBeGreaterThan(150);
 
         foreach (var c in incoming)
-        {
             c.Observed.Min().ShouldBeGreaterThanOrEqualTo((int)Math.Floor(c.Predicted.Floor), c.Label);
-            c.Observed.Max().ShouldBeLessThanOrEqualTo((int)Math.Ceiling(c.Predicted.Ceiling), c.Label);
-        }
     }
 
     /// <summary>⛔ KNOWN RED — the ceiling should need NO margin at all.

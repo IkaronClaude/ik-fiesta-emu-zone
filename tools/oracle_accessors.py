@@ -49,6 +49,9 @@ def main():
 
     zero = o.alloc(16)
     def ret_ptr(p): return o._emit(bytes([0xB8]) + struct.pack("<I", p) + bytes([0xC3]))
+    # ⚠️ Must return a POINTER TO ZEROED MEMORY, not NULL. With a NULL default the accessors take a
+    # different branch and roe_MinWC comes back as 208.0 instead of 2080.0 -- a clean factor of ten that
+    # looks like a unit bug and is really the harness steering the function down another path.
     default = ret_ptr(zero)
 
     def make_object(container_bytes, level, kind):
@@ -60,7 +63,9 @@ def main():
         o.write(vt + 0x430, struct.pack("<I", ret_ptr(cont)))        # Parameter::Container getter
         o.write(vt + 0x4D0, struct.pack("<I", ret_ptr(kind)))        # object type (2 player / 5 monster)
         o.write(vt + 0x4D8, struct.pack("<I", ret_ptr(level)))       # level
-        obj = o.alloc(0x40); o.write(obj, struct.pack("<I", vt))
+        # Roomy and zeroed: roe_CalcDamage reads position and flag fields straight off the object at
+        # offsets past 0x60, so a 0x40-byte stub faults on a read rather than on anything interesting.
+        obj = o.alloc(0x3000); o.write(obj, struct.pack("<I", vt))
         return obj
 
     # The captured character, exactly as PcapGroundTruthTests.RebuildPlayer builds it.
@@ -88,10 +93,10 @@ def main():
               (label, vals["roe_MinWC"], vals["roe_MaxWC"], vals["roe_AC"]))
         objects[label] = a
 
-    # head-on angle table, so the angle term is neutral and the comparison is about the pipeline
-    o.write(0x0AF0D0F0, struct.pack("<I", o.alloc(4)))
-    tbl = o.alloc(256); o.write(tbl, struct.pack("<H", 1000) * 128)
-    o.write(0x0AF0D0F0, struct.pack("<I", tbl))
+    # The angle tables ARE the arrays -- the symbol is the object and operator[] indexes from its base.
+    # Filled with 1000, which is what the DEPLOYED server actually holds (read live from zone02).
+    o.write(0x0AF0D0F0, struct.pack("<H", 1000) * 91)
+    o.write(0x0AF0D1A8, struct.pack("<H", 1000) * 91)
 
     print()
     for label, (att, dfn) in (("player -> Orc", ("player lv82", "Orc lv61")),

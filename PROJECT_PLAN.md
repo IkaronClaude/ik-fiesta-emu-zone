@@ -86,9 +86,11 @@ Currently red, deliberately: **one.**
 
 | red test | what it states |
 |---|---|
-| `PcapGroundTruthTests.TheCeilingIsExact_KNOWN_RED` | 98.6% of clean hits in a real capture fall inside the predicted band (216/219). **All 190 INCOMING hits are exact.** The three survivors are outgoing, where the reconstruction still puts the displayed Dmg TOTAL into `Base[WCmax]` — but `roe_MaxWC` applies its three trailing rates to the whole sum INCLUDING the Str chain, while `c_MakeTotal` applies them only to `base + Item.Plus`. One WC%-bonus item scales the Str chain on the server and not here. |
+| `PcapGroundTruthTests.TheCeilingIsExact_KNOWN_RED` | Against the capture, using the angle the SERVER applies (flat 1000), agreement is **127/219 (58%)**. Every FLOOR holds; every CEILING is ~20% low. The gap is a continuous per-swing multiplier of up to **1.24x** that applies to a MOB attacker as well as the character — so not gear, not item actions, not anything character-side. |
 
-⚠️ **Do not close it by widening a margin.** The mechanism is confirmed: solving for the gear WC rate that
+⚠️ **A previously reported 98.6% was wrong.** It used `Z:/ServerSource`'s angle table (1000-1200); the
+deployed server is flat 1000. The 1.2x from a file the server does not use happened to cover the real
+spread. See the log entry below.
 would bracket each outgoing case gives **R ≥ 1142** (Orc) and **R ≥ 1122** (Pinky) — two mobs, two armour
 values, one overlapping answer — and **1150 is a WCRate that exists in `ItemInfo.shn`**. It stays red
 because a bound and a candidate are not a reading. Closing it means decoding
@@ -514,5 +516,48 @@ term from the live tables with the allocation reconstructed from the wire (login
 Three outgoing hits remain, and the cause is named rather than guessed. Three other leads were eliminated
 by checking: weapon enhancement cancels in the max bound, zero clean outgoing hits landed while the target
 had an abstate, and this character has no passive skills at all.
+
+231 tests: 230 green, 1 deliberately red.
+
+### 2026-08-27 (correction) — retracting the 98.6%, and what the oracle did settle
+
+**The oracle cleared the accessors.** `tools/oracle_accessors.py` builds the same containers the harness
+builds, runs the REAL `roe_MinWC` / `roe_MaxWC` / `roe_AC` under emulation, and returns 2080 / 2211 / 1215
+for the character and 1569 / 1959 / 242 for the Orc — identical to this port to the digit. Containers and
+accessors are correct; the residual is downstream. (Two harness traps worth keeping: the rule singleton's
+vtable pointer must be written by hand because the ctor never runs, and the default virtual stub must
+return a POINTER TO ZEROS, not NULL — with NULL the accessors take another branch and `roe_MinWC` comes
+back as 208.0 instead of 2080.0, a clean factor of ten that looks like a unit bug.)
+
+**Then the disassembly overturned a headline result of my own.** The deployed server's `DamageByAngle`
+tables are **flat 1000**, verified three ways: the live expanded arrays at `damagebyangle_Ply` and
+`damagebyangle_Mob` in two separate zone processes, and both on-disk copies (`/fiesta/9Data` and
+`/source/9Data`), whose file is dated an hour BEFORE the capture. `Z:/ServerSource`'s copy expands to
+1000-1200 and is not what runs.
+
+| angle used | agreement |
+|---|---|
+| 1200, from `Z:/ServerSource` | 216/219 (98.6%) — **what was reported** |
+| 1000, what the server applies | **127/219 (58%)** |
+
+So "190 of 190 incoming hits exact, nothing fitted" was false. The 1.2x came from a file the server does
+not use and happened to be close enough to the real, still-unexplained spread to cover it. A number that
+good, resting on an input that wrong, is precisely what this suite exists to catch — and it caught it only
+because the angle was checked against the live process instead of trusted.
+
+**What is actually established:** every FLOOR holds, in all four cases, and the floor is angle-independent
+— a minimum roll, the EVP level-gap rate, and the free-stat term, with the mob container from game data
+and the character defence from the login burst. Every ceiling is ~20% low.
+
+**The open question, stated precisely:** a continuous per-swing multiplier of up to 1.24x, applying to a
+MOB attacker as well as to a player. Outgoing damage spans 1.24x on a smooth distribution while the weapon
+range spans 1.06x, so the attack BOUNDS vary per swing. Ruled out by measurement: the accessors (oracle),
+weapon mastery, target debuffs (including `ABSTATE_CHANGE`), attacker buffs, weapon enhancement, the
+equipment layer split, random options, the HP-down passive (r = +0.26, wrong sign), handle reuse, and any
+difference between deployed and reference mob/item data (`MobInfoServer`, `MobWeapon`, `MobInfo` and the
+five equipped items are byte-identical; only unrelated `ItemInfo` rows differ).
+
+⚠️ **`Z:/ServerSource` is STOCK data, not what is deployed.** This is the first proven case and it cost a
+false headline. Where a prediction is checked against a capture, read the live value.
 
 231 tests: 230 green, 1 deliberately red.
