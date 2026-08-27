@@ -173,6 +173,18 @@ public class PcapGroundTruthTests
     /// answers. So the missing term is on the ATTACK side, worth roughly +30% over the client's displayed
     /// 1709, and it is neither the level gap (already applied at 1500) nor the angle (capped at 1200).</para>
     ///
+    /// <para><b>Leading hypothesis, and it points at this TEST as much as the engine.</b> This comparison
+    /// feeds the client's displayed `DmgMin`/`DmgMax` straight into <c>CoreDamage</c>, which bypasses
+    /// <see cref="DamageCalculator.AttackPower"/> entirely. The server's `roe_AttackPower` ends with
+    /// <c>value * container[+0x858] / 1000</c>, and +0x858 is `PassiveSkill.Rate[PhisycalWeaponMastery]`
+    /// (slot 24, arithmetic checked). If the client's displayed attack is the PRE-mastery figure, the
+    /// missing term is exactly that rate — mob-independent and multiplicative, which is the shape measured.
+    /// A level 82 character with maxed weapon mastery around 1280 permille would account for all of it.</para>
+    ///
+    /// <para>That is a lean, not a reading: the capture does not carry the character's mastery, so it
+    /// cannot be confirmed from this fixture. Confirming it needs either a capture where mastery is known,
+    /// or the client-side formula for the displayed attack number.</para>
+    ///
     /// <para>Do not close this by scaling something until it fits. Close it by finding what the server's
     /// attack power reads that this port does not: the capture says what the answer is worth, not what it
     /// is.</para></summary>

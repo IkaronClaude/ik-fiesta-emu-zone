@@ -62,6 +62,18 @@ public sealed record AttackModifiers
     /// <summary>The server's <c>EngageArgument.nBMPDamageRate</c>, applied to attack power inside the core
     /// damage step rather than to the final figure.</summary>
     public int BaseDamageRatePermille { get; init; } = 1000;
+
+    /// <summary>How much HP the ATTACKER is missing, in permille — the condition key for the HP-down
+    /// passive that `roe_AttackPower` adds to both weapon bounds.
+    ///
+    /// <para>Zero means "at full health", which is also what an unconfigured passive produces, so leaving
+    /// it alone is safe. Compute it with
+    /// <see cref="Parameter.ChangeByConditionParam.HpMissingPermille"/> rather than by hand — the server's
+    /// divide is unsigned and the rounding matters at the bucket edges.</para></summary>
+    public int AttackerHpMissingPermille { get; init; }
+
+    /// <summary>The same, for the DEFENDER, feeding `roe_DefendPower`'s AC/MR block.</summary>
+    public int DefenderHpMissingPermille { get; init; }
 }
 
 /// <summary>The result of one resolved swing — the damage plus the intermediates worth logging.

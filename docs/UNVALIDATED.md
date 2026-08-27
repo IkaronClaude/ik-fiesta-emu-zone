@@ -107,7 +107,15 @@ rows, values 400–1000). See OPEN_QUESTIONS.md.
 stone columns, `PainRes`, `RestraintRes`, `CurseRes`, `ShockRes`, `CharTitlePt`, `SkillPwrPt`,
 `JobChangeDmgUp`
 
-**`Parameter::Container` second tier** — the ~20 fields past `Total`: `DotDamagePlus`, `SPRate`,
+**`Parameter::Container` second tier, HP-DOWN PASSIVES — now CONNECTED (2026-08-27).** Six
+`ChangeByConditionParam` blocks at +0x0CE0 … +0x0D6C (`PassiveHPDownRateWCMin/Max`, `…MAMin/Max`,
+`…AC`, `…MR`) are read by `roe_AttackPower` (all four rules, both bounds) and `roe_DefendPower`
+(NormalPY, NormalMA, MagicalSkill) — eleven `cbcp_GetValue` call sites in total. The condition key is how
+much HP the owner is MISSING in permille, so the bonus grows as they are hurt. Ported; an unconfigured
+block contributes 0, so nothing that worked before changed. ⚠️ Nothing yet POPULATES these from a skill
+table — they are wired but always empty in this simulation, so the passive is modelled and never active.
+
+**`Parameter::Container` second tier** — the remaining fields past `Total`: `DotDamagePlus`, `SPRate`,
 `RangeEvasion`, `flag`, `MissPercentFix`, `DamageReflection`, `ChangeAbilityInfo`, `HealRate`,
 `PassiveBuffKeepTimeUPRate`, `PassiveHealRate`, `PassiveCriDamageRatePlus`,
 `PassiveHPDownRate{WCMin,WCMax,MAMin,MAMax,AC,MR}`, `PassiveMovingTBPlus`, `PhysicalImmuneRate`,

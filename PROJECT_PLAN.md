@@ -327,3 +327,35 @@ wrong. A relog opens a new conversation and the character's configuration can di
 extractor now stamps a `conv` on every swing and the harness filters on it.
 
 215 tests: 214 green, 1 deliberately red.
+
+### 2026-08-27 — the HP-down passives, found by chasing the capture's gap
+
+Reading `roe_AttackPower@RulesOfEngagementNormalPY` (0x00506660) to find what the port was missing turned
+up a whole family of stat modifiers it had never applied. `Parameter::ChangeByConditionParam` — a bucketed
+bonus keyed on **how much HP the owner is MISSING, in permille**:
+
+| container offset | PDB name | read by |
+|---|---|---|
+| +0x0CE0 / +0x0CFC | `PassiveHPDownRateWCMin` / `Max` | every physical `roe_AttackPower`, both bounds |
+| +0x0D18 / +0x0D34 | `PassiveHPDownRateMAMin` / `Max` | every magical `roe_AttackPower` |
+| +0x0D50 / +0x0D6C | `PassiveHPDownRateAC` / `MR` | `roe_DefendPower` |
+
+Eleven `cbcp_GetValue` call sites, all in those two functions. The lookup is
+`value[key / condition]` with **zero** returned both when nothing is configured and when the key is past
+the last bucket — never a clamp to the nearest, which is what makes it safe to add: an unconfigured block
+changes no existing result.
+
+⚠️ **`roe_AC` and `roe_MR` have no `cbcp` call at all** — it is `roe_DefendPower` that adds it. So armour
+read directly is correct as armour and incomplete as defence, and the port now keeps that distinction.
+
+This does NOT close the red test: the capture's character has no such passive configured as far as we can
+tell, and the comparison bypasses `AttackPower` anyway. What it did produce is a much sharper hypothesis
+for the red — `roe_AttackPower` ends with `value * container[+0x858] / 1000`, and +0x858 is
+`PassiveSkill.Rate[PhisycalWeaponMastery]` (slot 24, arithmetic checked). If the client's displayed attack
+excludes weapon mastery, that is exactly the mob-independent multiplicative factor measured. Recorded as a
+lean on the test itself, not as a reading.
+
+Also still open: the two `EventRun_IncDmgRate` item-action observers `roe_AttackPower` runs on both
+attacker and defender, which can put both bounds through `GetRateAppliValue`. Not ported.
+
+221 tests: 220 green, 1 deliberately red.

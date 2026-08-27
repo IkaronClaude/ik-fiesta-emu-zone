@@ -76,6 +76,30 @@ public sealed class ParameterContainer
     /// <para>The three rate steps land BETWEEN the two groups of additions, so gear's flat bonus is scaled
     /// by buffs while an upgrade's is not. That asymmetry is the reason this is a ported sequence and not a
     /// tidy sum.</para></summary>
+    /// <summary>The six `ChangeByConditionParam` blocks, keyed on how much HP the owner is MISSING.
+    ///
+    /// <para>These sit in the container's SECOND TIER, past `Total` — the region this project had decoded
+    /// but connected to nothing. The PDB names them, and `roe_AttackPower` / `roe_DefendPower` are the
+    /// eleven call sites that read them:</para>
+    ///
+    /// <list type="table">
+    ///   <item><term>+0x0CE0 / +0x0CFC</term><description>`PassiveHPDownRateWCMin` / `Max` — read by every
+    ///         PHYSICAL `roe_AttackPower`</description></item>
+    ///   <item><term>+0x0D18 / +0x0D34</term><description>`PassiveHPDownRateMAMin` / `Max` — the magical
+    ///         pair, read the same way</description></item>
+    ///   <item><term>+0x0D50 / +0x0D6C</term><description>`PassiveHPDownRateAC` / `MR` — read by
+    ///         `roe_DefendPower`, NOT by `roe_AC` / `roe_MR` themselves</description></item>
+    /// </list>
+    ///
+    /// <para>All default to <see cref="ChangeByConditionParam.None"/>, which contributes zero at every
+    /// condition — so a character without the passive behaves exactly as before this existed.</para></summary>
+    public ChangeByConditionParam PassiveHpDownWcMin { get; set; } = ChangeByConditionParam.None;
+    public ChangeByConditionParam PassiveHpDownWcMax { get; set; } = ChangeByConditionParam.None;
+    public ChangeByConditionParam PassiveHpDownMaMin { get; set; } = ChangeByConditionParam.None;
+    public ChangeByConditionParam PassiveHpDownMaMax { get; set; } = ChangeByConditionParam.None;
+    public ChangeByConditionParam PassiveHpDownAc { get; set; } = ChangeByConditionParam.None;
+    public ChangeByConditionParam PassiveHpDownMr { get; set; } = ChangeByConditionParam.None;
+
     public ParameterCluster MakeTotal()
     {
         var total = ParameterCluster.Plus();

@@ -208,12 +208,23 @@ public static class DamageCalculator
     /// returns exactly 0 even though both bounds are floored at 1 — no mastery means no damage, and the
     /// floors on the bounds do not rescue it.</para></summary>
     public static double AttackPower(ICombatant attacker, int rollPermille,
-                                    EngagementRule rule = EngagementRule.NormalPhysical)
+                                    EngagementRule rule = EngagementRule.NormalPhysical,
+                                    int hpMissingPermille = 0)
     {
         var s = attacker.Parameters;
         var magical = rule.School() == DamageSchool.Magical;
         var low = magical ? MinMagicAttack(attacker) : MinWeaponDamage(attacker);
         var high = magical ? MaxMagicAttack(attacker) : MaxWeaponDamage(attacker);
+
+        // THE HP-DOWN PASSIVE. `roe_AttackPower+0xCF` and `+0xEA` add a ChangeByConditionParam bonus to
+        // each bound, keyed on how much HP the attacker is missing -- all four rules do it, physical
+        // against the WC pair and magical against the MA pair. Added to the BOUNDS, before the roll, so it
+        // shifts the whole range rather than the result.
+        //
+        // Zero unless the character actually has the passive: an unconfigured block returns 0 for every
+        // key. See ChangeByConditionParam.
+        low += (magical ? s.PassiveHpDownMaMin : s.PassiveHpDownWcMin).Value(hpMissingPermille);
+        high += (magical ? s.PassiveHpDownMaMax : s.PassiveHpDownWcMax).Value(hpMissingPermille);
 
         // The range goes through _ftol because the server's RNG takes an int.
         var range = (long)Ftol32(high - low);
@@ -228,8 +239,20 @@ public static class DamageCalculator
 
     /// <summary>Defend power. <c>NormalPY::roe_DefendPower</c> IS <c>roe_AC</c>; the magical rules use
     /// <c>roe_MR</c> instead.</summary>
-    public static double DefendPower(ICombatant defender, EngagementRule rule = EngagementRule.NormalPhysical)
-        => rule.School() == DamageSchool.Magical ? MagicResistance(defender) : ArmourClass(defender);
+    /// <param name="hpMissingPermille">How much HP the DEFENDER is missing, in permille — the same
+    /// condition key the attack side uses, for the defensive half of the HP-down passive.</param>
+    public static double DefendPower(ICombatant defender, EngagementRule rule = EngagementRule.NormalPhysical,
+                                     int hpMissingPermille = 0)
+    {
+        var magical = rule.School() == DamageSchool.Magical;
+        var value = magical ? MagicResistance(defender) : ArmourClass(defender);
+
+        // `roe_DefendPower+0xCA` on NormalPY, NormalMA and MagicalSkill. ⚠️ It is the DEFEND POWER that
+        // reads this, not `roe_AC` / `roe_MR` — those two have no cbcp call at all, so a caller reading
+        // armour directly gets a number that is correct as armour and incomplete as defence.
+        var s = defender.Parameters;
+        return value + (magical ? s.PassiveHpDownMr : s.PassiveHpDownAc).Value(hpMissingPermille);
+    }
 
     // ---- the damage pipeline ---------------------------------------------------------------------------
 
@@ -268,8 +291,8 @@ public static class DamageCalculator
         var isCritical = rule.AlwaysCriticals()
                          || (mods.ForceCritical ?? rng.Next(0, 1000) < mods.CriticalChancePermille);
 
-        var attackPower = AttackPower(attacker, rollPermille, rule);
-        var defendPower = DefendPower(defender, rule);
+        var attackPower = AttackPower(attacker, rollPermille, rule, mods.AttackerHpMissingPermille);
+        var defendPower = DefendPower(defender, rule, mods.DefenderHpMissingPermille);
 
         var damage = CoreDamage(attackPower, defendPower, attacker.Level, mods.BaseDamageRatePermille);
         if (isCritical) damage *= 2.0;
