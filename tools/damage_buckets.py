@@ -118,6 +118,8 @@ def collect(lines):
     abstates = collections.defaultdict(set)       # (conv, handle) -> active abstate ids
     mob_of = {}                                   # (conv, handle) -> mob id, from REGENMOB
     levelups = 0
+    level = None
+    free_stat, chrclass = {}, None
     swings, chat, hit_counts = [], [], collections.Counter()
 
     def apply_abstate(conv, handle, ident, active):
@@ -165,8 +167,28 @@ def collect(lines):
                 if off + 12 > len(raw):
                     break
                 apply_abstate(conv, handle, u32(raw, off), u32(raw, off + 8))
+        elif name == "NC_CHAR_CLIENT_BASE_CMD" and len(raw) >= 0x5D:
+            # CHARSTATDISTSTR at +0x57 -- the free-stat ALLOCATION, one byte per stat. It is the input to
+            # `roe_Damage`'s per-rule override and to the term the server adds on top of every displayed
+            # accessor output, so a prediction cannot be checked without it. FIRST one only; a relog
+            # re-sends it and later ones report a distribution the window has not reached.
+            # PROTO_NC_CHAR_BASE_CMD.Level at +25, re-sent on every login. Tracked as an ABSOLUTE that
+            # each relog re-asserts, then incremented per level-up -- not read once. This capture starts at
+            # 60, is cheated down to 59, and is levelled back to 60 mid-session, so a single reading at the
+            # front is wrong for every swing that matters.
+            level = raw[25]
+            if not free_stat:
+                free_stat = dict(zip(["Strength", "Constitute", "Dexterity", "Intelligence",
+                                      "MentalPower", "RedistributePoint"], raw[0x57:0x5D]))
+        elif name == "NC_CHAR_CLIENT_SHAPE_CMD" and raw and chrclass is None:
+            # PROTO_AVATAR_SHAPE_INFO packs race:2, chrclass:5, gender:1 into byte 0. The class decides
+            # which Param<Class>Server.txt supplies JobChangeDmgUp, which is worth up to 2x on every hit
+            # a player lands on a monster -- so a prediction cannot be made without it.
+            chrclass = (raw[0] >> 2) & 0x1F
         elif name == "NC_BAT_LEVELUP_CMD":
             levelups += 1
+            if level is not None:
+                level += 1
         elif name == "NC_ACT_CHAT_REQ" and len(raw) > 2:
             text = raw[2:2 + raw[1]].decode("latin-1", "replace").strip()
             if text and not text.startswith("&"):
@@ -181,6 +203,7 @@ def collect(lines):
                 "flags": [n for i, n in enumerate(FLAGS_B0) if raw[4] & (1 << i)]
                          + [n for i, n in enumerate(FLAGS_B1) if raw[5] & (1 << i)],
                 "levelups": levelups,
+                "level": level,
                 "attackerMob": mob_of.get((conv, att)),
                 "defenderMob": mob_of.get((conv, dfn)),
                 # Snapshots, not references: the state moves on and a bucket must remember what was true
@@ -189,7 +212,7 @@ def collect(lines):
                 "attackerAbstates": tuple(sorted(abstates[(conv, att)])),
                 "defenderAbstates": tuple(sorted(abstates[(conv, dfn)])),
             })
-    return swings, chat, hit_counts
+    return swings, chat, hit_counts, free_stat, chrclass
 
 
 def main():
@@ -202,7 +225,7 @@ def main():
     a = ap.parse_args()
 
     lines = decode(a.pcap, a.port, a.decoded)
-    swings, chat, hit_counts = collect(lines)
+    swings, chat, hit_counts, free_stat, chrclass = collect(lines)
 
     # The player, per conversation: the handle that gets hit most and was never announced as a mob.
     # Robust to relogs and to a handle number meaning different things in different conversations.
@@ -234,27 +257,27 @@ def main():
             # or the relog started. Counted, never guessed at.
             unattributed += 1
             continue
-        buckets[(side, mob, s["levelups"], s["params"], own_ab, foe_ab)].append(s["damage"])
+        buckets[(side, mob, s["level"], s["params"], own_ab, foe_ab)].append(s["damage"])
 
     rows = []
-    for (side, mob, levelups, params, own_ab, foe_ab), dmg in buckets.items():
-        rows.append({"side": side, "mob": mob, "levelups": levelups,
+    for (side, mob, level, params, own_ab, foe_ab), dmg in buckets.items():
+        rows.append({"side": side, "mob": mob, "level": level,
                      "selfAbstates": list(own_ab), "enemyAbstates": list(foe_ab),
                      "params": dict(params), "n": len(dmg),
                      "min": min(dmg), "max": max(dmg),
                      "mean": round(sum(dmg) / len(dmg), 1), "damage": sorted(dmg)})
-    rows.sort(key=lambda r: (r["side"], r["mob"], r["levelups"], -r["n"]))
+    rows.sort(key=lambda r: (r["side"], r["mob"], r["level"], -r["n"]))
 
-    json.dump({"chat": chat, "buckets": rows, "playerHandlePerConv": player},
-              open(a.out, "w"), indent=1)
+    json.dump({"chat": chat, "buckets": rows, "playerHandlePerConv": player,
+               "freeStat": free_stat, "chrclass": chrclass}, open(a.out, "w"), indent=1)
 
     kept = [r for r in rows if r["n"] >= a.min_hits]
     print("%d clean hits in %d state buckets (%d with n>=%d); %d hits unattributed\n"
           % (sum(r["n"] for r in rows), len(rows), len(kept), a.min_hits, unattributed))
-    print("  side mob   lvup n    min   max   mean   self-abstates              enemy-abstates")
+    print("  side mob   lv   n    min   max   mean   self-abstates              enemy-abstates")
     for r in kept:
         print("  %-4s %-5s %-4s %-4d %-5d %-5d %-6.1f %-26s %s"
-              % (r["side"], r["mob"], r["levelups"], r["n"], r["min"], r["max"], r["mean"],
+              % (r["side"], r["mob"], r["level"], r["n"], r["min"], r["max"], r["mean"],
                  ",".join(map(str, r["selfAbstates"])) or "-",
                  ",".join(map(str, r["enemyAbstates"])) or "-"))
     print("\nwrote %s" % a.out)
