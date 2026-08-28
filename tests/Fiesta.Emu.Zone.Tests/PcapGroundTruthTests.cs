@@ -125,16 +125,40 @@ public class PcapGroundTruthTests
 
     /// <summary>Rebuild the captured character from the wire.
     ///
-    /// <para>⚠️ <b>The wire carries CLUSTER SLOT TOTALS, not accessor outputs.</b>
-    /// `Parameter::Cluster::c_compare` builds `NC_CHAR_BASEPARAMCHANGE` by walking the cluster slot by
-    /// slot, so the displayed "Dmg 1709-1840" is the WCmin/WCmax SLOT — `roe_MinWC` adds the Str chain on
-    /// top of it. Feeding the displayed number straight into <c>CoreDamage</c> as attack power
-    /// under-predicts by about 30% and looks exactly like a missing formula term. It produced a wrong
-    /// "the engine is 30% short" finding from this very harness before it was caught.</para>
+    /// <para><b>Every displayed stat is an ACCESSOR OUTPUT plus a free-stat term, and that is read out of
+    /// the binary rather than assumed.</b> `ShinePlayer::so_mobile_NotifyParameterChange` (0x00503C10) is
+    /// the function that emits opcode <c>0x1035</c> — the packet these numbers come off. It builds an
+    /// `EngageArgument` as <c>(this, this, 0, 0, 0)</c> purely to feed the accessors, and then for each
+    /// field does exactly:</para>
     ///
-    /// <para>An empty-modifier container with those totals as Base reproduces the same totals. What it
-    /// cannot reproduce is anything the wire does not carry, which is the honest limit of the
-    /// instrument.</para></summary>
+    /// <code>
+    ///   call [vtbl + freeStatSlot]        ; so_ply_FreeStatStr / Con / Dex / Int / Men
+    ///   movzx esi, word ptr [eax + 1]     ; the free-stat contribution
+    ///   call roe_Xxx(&amp;arg)  ;  call __ftol2_sse  ;  add eax, esi  ;  mov [this + 0x1Bxx], eax
+    /// </code>
+    ///
+    /// <list type="table">
+    ///   <item><term>+0x1BC8 DmgMin</term><description>`roe_MinWC` + FreeStatStr@+1</description></item>
+    ///   <item><term>+0x1BCC DmgMax</term><description>`roe_MaxWC` + FreeStatStr@+1</description></item>
+    ///   <item><term>+0x1BD0 DEF</term><description>`roe_AC` + FreeStatCon@+1</description></item>
+    ///   <item><term>+0x1BD4 Aim</term><description>`roe_TH` + FreeStatDex@+1</description></item>
+    ///   <item><term>+0x1BD8 Evasion</term><description>`roe_TB` + FreeStatDex@+3</description></item>
+    ///   <item><term>+0x1BE4 MDef</term><description>`roe_MR` + FreeStatMen@+1</description></item>
+    /// </list>
+    ///
+    /// <para>So rebuilding a container from these numbers means backing out the GOVERNING STAT CHAIN and
+    /// the FREE-STAT TERM for each — `roe_MinWC` already adds the Str chain, `roe_AC` already adds the Con
+    /// chain, and the packet already added the free stat on top.</para>
+    ///
+    /// <para><b>This harness previously did that for DEF and not for Dmg</b>, and the asymmetry hid a bug
+    /// rather than causing a small error: leaving the Str chain inside the Dmg slot inflates the attack by
+    /// 2080/1709 = 1.217, which stood in for the job-change multiplier of 1.28 the port was not applying
+    /// at all. Two errors nearly cancelling. Neither the "displayed Dmg is the cluster SLOT" reading nor
+    /// the gear-`WCRate`-of-1150 hypothesis it produced survives this function.</para>
+    ///
+    /// <para>What the wire still cannot carry: mastery rates, passive-skill plus values and abstate rates
+    /// never appear in a stream of accessor outputs. That is the honest limit of the instrument, and it is
+    /// why <c>tools/oracle_*.py</c> exists.</para></summary>
     private static Combatant RebuildPlayer(Truth t)
     {
         var p = new ParameterContainer();
@@ -143,17 +167,21 @@ public class PcapGroundTruthTests
         p.Base[Stat.Dex] = t.Stats["DEX"];
         p.Base[Stat.Int] = t.Stats["INT"];
         p.Base[Stat.Men] = t.Stats["SPR"];
-        p.Base[Stat.WCmin] = t.Stats["DmgMin"];
-        p.Base[Stat.WCmax] = t.Stats["DmgMax"];
-        // The displayed DEF *is* what `roe_AC` returns, so the Con term has to be backed OUT of the slot
-        // or it gets counted twice. Two earlier readings of this were wrong -- treating DEF as the raw AC
-        // slot (roe_AC = Con + DEF) under-predicts, and a Con/2 correction fitted the Orc case by
-        // coincidence while being structurally wrong. This one is checked: ArmourClass(player) comes back
-        // as exactly the displayed number.
-        p.Base[Stat.AC] = t.Stats["DEF"] - t.Stats["END"];
-        p.Base[Stat.MR] = t.Stats["MDef"];
-        p.Base[Stat.TH] = t.Stats["Aim"];
-        p.Base[Stat.TB] = t.Stats["Evasion"];
+
+        // Every displayed stat is `ftol(roe_Xxx) + freeStat`, so BOTH have to come back out of the slot.
+        var freeStr = FreeStatStr(t.FreeStat.GetValueOrDefault("Strength"));
+        var freeCon = FreeStatCon(t.FreeStat.GetValueOrDefault("Constitute"));
+
+        p.Base[Stat.WCmin] = t.Stats["DmgMin"] - freeStr - t.Stats["STR"];
+        p.Base[Stat.WCmax] = t.Stats["DmgMax"] - freeStr - t.Stats["STR"];
+        p.Base[Stat.AC] = t.Stats["DEF"] - freeCon - t.Stats["END"];
+
+        // TH/TB/MR carry their own free-stat terms (Dex at +1 and +3, Men at +1) which are NOT backed out
+        // here: their tables have not been read, and nothing in this test uses hit, block or magic
+        // resistance. Left as they are, and said so, rather than subtracted with a guessed table.
+        p.Base[Stat.MR] = t.Stats["MDef"] - t.Stats["SPR"];
+        p.Base[Stat.TH] = t.Stats["Aim"] - t.Stats["DEX"];
+        p.Base[Stat.TB] = t.Stats["Evasion"] - t.Stats["DEX"];
         return new Combatant(t.PlayerLevels.Values.First(), p);
     }
 
@@ -338,73 +366,62 @@ public class PcapGroundTruthTests
             c.Observed.Min().ShouldBeGreaterThanOrEqualTo((int)Math.Floor(c.Predicted.Floor), c.Label);
     }
 
-    /// <summary>⛔ KNOWN RED — no clean hit should land above a maximum roll, and two of the four cases
-    /// still do.
-    ///
-    /// <para>The current picture, all four cases, observed against predicted:</para>
+    /// <summary>⛔ KNOWN RED — no clean hit should land above what a maximum roll can produce, and with
+    /// the angle table this file assumes, all four cases do.
     ///
     /// <code>
-    ///   IN  Orc    n=121  observed   71..107    predicted   70..90     ceiling x1.189
-    ///   OUT Orc    n=22   observed 1128..1401   predicted 1373..1461   ceiling x0.959
-    ///   IN  Pinky  n=69   observed   50..72     predicted   47..62     ceiling x1.161
-    ///   OUT Pinky  n=7    observed  964..1174   predicted 1154..1229   ceiling x0.955
+    ///   IN  Orc    n=121  observed   71..107   predicted   70..91    ceiling x1.176
+    ///   OUT Orc    n=22   observed 1128..1401  predicted 1127..1216  ceiling x1.152
+    ///   IN  Pinky  n=69   observed   50..72    predicted   47..62    ceiling x1.161
+    ///   OUT Pinky  n=7    observed  964..1174  predicted  948..1022  ceiling x1.149
     /// </code>
     ///
-    /// <para><b>The outgoing ceiling is no longer exceeded, and what closed it was a whole missing
-    /// multiplier.</b> `ShinePlayer::so_ply_JobChangeDamageUp` runs at <c>roe_CalcDamage+0x5B2</c> on every
-    /// hit a PLAYER lands on a MONSTER and multiplies the damage by the attacker class's
-    /// <c>JobChangeDmgUp</c> at the attacker's level. The captured character is class 8 — a Paladin, read
-    /// off `PROTO_AVATAR_SHAPE_INFO` — at level 82, and `ParamPaladinServer.txt` puts that at
-    /// <b>1280</b>. Both outgoing cases went from about 20% OVER the ceiling to comfortably under it.
-    /// Verified against the real function under emulation: <c>tools/oracle_jobchange_dmgup.py</c>.</para>
+    /// <para><b>The residual is now ONE factor, not two.</b> That is the result worth reading here. It
+    /// used to be asymmetric — incoming 1.19x and 1.16x over, outgoing 0.96x and 0.96x under — which meant
+    /// two unrelated faults. With the job-change multiplier applied (<c>roe_CalcDamage+0x5B2</c>, verified
+    /// under emulation) and the character rebuilt the way the packet builder actually fills the wire (see
+    /// <see cref="RebuildPlayer"/>, read out of `so_mobile_NotifyParameterChange`), all four cases sit
+    /// over by <b>1.149 to 1.176</b> — the same factor for a MOB attacker and for the character.</para>
     ///
-    /// <para><b>That splits the old "1.2x everywhere" residual into two unrelated problems</b>, which is
-    /// the useful part. It was never one mechanism:</para>
+    /// <para><b>A single mechanism, applying to both attackers, bounded just under 1.2.</b> The stock
+    /// `DamageByAngle` curve tops out at exactly 1200 at 180 degrees, and an observed maximum a little
+    /// under that is what real geometry produces — the hardest hit of a session comes from near behind,
+    /// not from exactly behind. Setting <see cref="DeployedAngleMax"/> to 1200 turns this test green and
+    /// puts <b>219 of 219</b> clean hits in band, with no margin anywhere.</para>
     ///
-    /// <list type="number">
-    ///   <item><b>Incoming is still ~1.17x over the ceiling.</b> A MOB attacker cannot reach the
-    ///         job-change hook — `ShineObject`'s slot 0xD2C is <c>return dmg</c> — so nothing here was ever
-    ///         going to move it. Whatever this is, it is on the mob's side of the calculation or in how
-    ///         this harness rebuilds the mob and the character's defence.</item>
-    ///   <item><b>The outgoing SPREAD is far wider than the weapon range.</b> Observed 1128..1401 is a
-    ///         factor of 1.242 where <c>roe_MinWC..roe_MaxWC</c> spans 1.064, and the top now lines up
-    ///         while the bottom is 18% high. So the reconstruction has the maximum roughly right and the
-    ///         minimum wrong, rather than being uniformly short.</item>
-    /// </list>
+    /// <para><b>That is not proof and this test stays red until it is.</b> Which table the zone had in
+    /// memory on 2026-07-30 at 11:58 is a fact about a process, not about `Zone.exe`, and no amount of
+    /// reading the binary settles it — see <see cref="DeployedAngleMax"/> for what IS established about
+    /// the file. The decisive test is inside the capture: if the curve was live, incoming damage must
+    /// correlate with the attack geometry, and the capture carries the mob positions, the character's
+    /// position and the facings needed to compute each swing's angle index. Flat table, no correlation.
+    /// Until that is run, 1000 stands and this stays red.</para>
     ///
     /// <para><b>Eliminated by measurement, not by argument</b> — do not re-run these:</para>
     ///
     /// <list type="number">
     ///   <item><b>The accessors.</b> `tools/oracle_accessors.py` runs the real `roe_MinWC` / `roe_MaxWC` /
-    ///         `roe_AC` on these same containers and returns 2080 / 2211 / 1215 for the character and
-    ///         1569 / 1959 / 242 for the Orc — identical to this port, to the digit.</item>
-    ///   <item><b>Per-instance mob levels.</b> Every `NC_BAT_TARGETINFO_CMD` in the capture reports level
-    ///         61 for all 20 Orc handles and all 4 Pinky handles, so the level-gap rate is constant across
-    ///         the pooled swings and cannot be widening the spread.</item>
+    ///         `roe_AC` on these containers and agrees with this port to the digit.</item>
+    ///   <item><b>Per-instance mob levels.</b> Every `NC_BAT_TARGETINFO_CMD` reports level 61 for all 20
+    ///         Orc handles and all 4 Pinky handles, so the level-gap rate is constant across the pooled
+    ///         swings and cannot be widening anything.</item>
     ///   <item><b>The normal attack's <c>damagerate</c> and <c>nBMPDamageRate</c>.</b>
-    ///         `smo_SwingDamage+0x132` and <c>+0x13F</c> write the literal 0x3E8 into both, so a plain
-    ///         swing really is 1000/1000 and neither varies per swing.</item>
+    ///         `smo_SwingDamage+0x132` and <c>+0x13F</c> write the literal 0x3E8 into both.</item>
     ///   <item><b>Weapon mastery</b> (all three `NC_CHAR_CLIENT_PASSIVE_CMD` are `00 00`), <b>a DEF-down
     ///         debuff</b> (no clean outgoing hit landed while the target had any abstate),
     ///         <b>enhancement</b> (+10 is worth +1197 and sits in BOTH displayed bounds, exactly as
-    ///         `roe_*WC` reads it from the WCmax slot — it cancels), <b>the equipment layer split</b>
-    ///         (Base / Item.Plus / Upgrade.Plus reproduces 2080-2211 either way), <b>random options</b>
-    ///         (all four are primaries, already inside the displayed totals), and <b>the HP-down
-    ///         passive</b> (r = +0.26 against the character's HP, and the wrong sign).</item>
-    ///   <item><b>The angle table.</b> The deployed server's is flat 1000 — read live from
-    ///         `damagebyangle_Ply` and `damagebyangle_Mob` in zone02, the zone that served this capture.
-    ///         `Z:/ServerSource`'s copy expands to 1000-1200 and is NOT what runs; using it once scored
-    ///         216/219 and the number was worthless. See <see cref="DeployedAngleMax"/>.</item>
+    ///         `roe_*WC` reads it from the WCmax slot — it cancels), <b>the equipment layer split</b>,
+    ///         <b>random options</b> (all four are primaries, already inside the displayed totals), and
+    ///         <b>the HP-down passive</b> (r = +0.26, and the wrong sign).</item>
+    ///   <item><b>The gear `WCRate` of 1150.</b> That hypothesis existed only to explain a 5% outgoing
+    ///         gap which was the difference between the Str chain (1.217x) standing in for the job-change
+    ///         multiplier (1.28x). Both are now read rather than fitted, and it is not needed.</item>
     /// </list>
     ///
-    /// <para><b>Still unmodelled, and each is a real hook in this pipeline</b> — see OPEN_QUESTIONS.md:
-    /// `so_ply_DecreaseDmgPassiveSkill` (the defender's half, +0x59E), the `ChargedEffectContainer`
-    /// attack/defence force rates (+0x466), the critical damage bonus at container+0xCDC (a critical is
-    /// <c>2*dmg + dmg*bonus/1000</c>, not <c>2*dmg</c>), the `EventRun_IncDmgRate` item actions inside
-    /// `roe_AttackPower`, and the abnormal-state damage callbacks at the tail. None of them is reached by
-    /// a clean, unbuffed swing from an unbuffed character, which is why the score barely moves — but the
-    /// first two are the only remaining places a MOB's damage can be scaled, so incoming lives
-    /// there.</para></summary>
+    /// <para><b>Still unmodelled, and each is a real hook in this pipeline</b> — see OPEN_QUESTIONS.md §3:
+    /// `so_ply_DecreaseDmgPassiveSkill`, the `ChargedEffectContainer` force rates, the critical damage
+    /// bonus at container+0xCDC, the `EventRun_IncDmgRate` item actions, and the abstate damage callbacks.
+    /// None is reached by a clean unbuffed swing.</para></summary>
     [SkippableFact]
     public void TheCeilingIsExact_KNOWN_RED()
     {
