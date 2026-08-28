@@ -23,3 +23,8 @@ tickets.md
 __pycache__/
 *.pyc
 _scratch/
+
+# Server state snapshots from tools/capture_state.py. BYO, like the captures they pair with: they carry a
+# live character's gear and stats, and they are only meaningful next to their own pcap. Keep them beside
+# the capture, not in git.
+state-*.json

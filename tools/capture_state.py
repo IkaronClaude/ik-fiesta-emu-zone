@@ -48,6 +48,22 @@ ROOT = "/fiesta"
 # character, and any of it can carry stats, so nothing but 9 is dropped.
 INVENTORY_STORAGE_TYPE = 9
 
+# A random option's `nOptionType` low digit is the PARAMETER::STAT SLOT INDEX the bonus lands in -- not a
+# random-option enum of its own. Same ordering the port carries from the PDB and `oracle_accessors.py`.
+#
+# Confirmed on two items against the client's own tooltips: Kaineneceflight reads STR +10 (+8), Dex +7
+# (+14), END +3, INT +7 against pairs (0,8) (3,7) (2,14) and `GradeItemOption` STR 10 / CON 3 / DEX 7;
+# Kaineneceshield reads DEX (+14), END +10 (+6), SPR +5 (+7) against pairs (1,6) (4,7) (2,14) and fixed
+# CON 10 / MEN 5. Type 2 = Dex appears on both, which is what makes it a cross-check rather than a fit.
+#
+# The client labels Con as END and Men as SPR.
+STAT_SLOT = {0: "Str", 1: "Con", 2: "Dex", 3: "Int", 4: "Men"}
+
+# Within an item's option block: offset 0 is the upgrade level, offset 3 a bitmask of which random-option
+# slots are filled, and offsets (4,5) (6,7) (8,9) are (stat slot, rolled value) PAIRS. The FIXED half of
+# each bonus is not here at all -- it is `GradeItemOption`, keyed by the item's InxName.
+UPGRADE_OFFSET, RANDOM_PAIR_OFFSETS = 0, ((4, 5), (6, 7), (8, 9))
+
 # Read-only, one batch. `-h -1` drops headers, `-s |` makes it parseable, and every statement is a SELECT.
 CHARACTER_SQL = """SET NOCOUNT ON;
 SELECT '@@CHAR', c.nCharNo, c.sID, c.nLevel, s.nClass, s.nRace, s.nGender,
@@ -295,10 +311,28 @@ def main():
               % (ch["name"], ch["charNo"], ch["level"], ch["classId"]))
         print("%-30s free stat %s" % ("", ch["freeStat"]))
         for it in worn:
-            # Option type 600/700 is the upgrade level -- the +N that shifts BOTH weapon bounds.
-            up = next((o["data"] for o in it["options"] if o["type"] in (600, 700)), None)
-            print("%-30s slot %-3s item %-7s%s" % ("", it["slot"], it["itemId"],
-                                                   "" if up in (None, 0) else "  +%s" % up))
+            # `nOptionType` is BLOCK BASE + OFFSET, and the base is per EQUIP SLOT -- 400 accessory,
+            # 500 weapon, 600 armour, 700 shield, 800 helmet. Offset 0 is the upgrade level.
+            #
+            # ⚠️ This used to look for the literal types 600/700 and nothing else. On a weapon that is the
+            # WRONG BLOCK, so a +5 sword printed as unenhanced, and every random option on every item was
+            # dropped from the summary entirely. A snapshot that quietly omits stats is worse than no
+            # snapshot: it reads as authoritative.
+            opts = sorted(it["options"], key=lambda o: o["type"])
+            by_offset = {o["type"] % 100: o["data"] for o in opts}
+            up = by_offset.get(UPGRADE_OFFSET)
+
+            rolled = []
+            for slot_off, value_off in RANDOM_PAIR_OFFSETS:
+                stat, value = by_offset.get(slot_off), by_offset.get(value_off)
+                # 0 is a REAL stat slot (Str), so presence is tested on the value, never on the slot.
+                if value:
+                    rolled.append("%s+%d" % (STAT_SLOT.get(stat, "slot%s" % stat), value))
+            it["randomOptions"] = rolled
+
+            print("%-30s slot %-3s item %-7s %-6s %s"
+                  % ("", it["slot"], it["itemId"],
+                     "" if up in (None, 0) else "+%s" % up, "  ".join(rolled)))
         print()
     elif ch:
         print("!! character %r not found in %s -- nothing dumped" % (ch["name"], ch["database"]))
