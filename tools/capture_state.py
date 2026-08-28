@@ -44,6 +44,29 @@ FILES = [
 PARAM_GLOB = "9Data/Shine/World/Param*Server.txt"
 ROOT = "/fiesta"
 
+# Equipped gear. `tItem.nStorageType` 9 is the backpack -- everything else is worn or otherwise on the
+# character, and any of it can carry stats, so nothing but 9 is dropped.
+INVENTORY_STORAGE_TYPE = 9
+
+# Read-only, one batch. `-h -1` drops headers, `-s |` makes it parseable, and every statement is a SELECT.
+CHARACTER_SQL = """SET NOCOUNT ON;
+SELECT '@@CHAR', c.nCharNo, c.sID, c.nLevel, s.nClass, s.nRace, s.nGender,
+       c.nStrength, c.nConstitute, c.nDexterity, c.nIntelligence, c.nMentalPower,
+       c.nRedistributePoint, c.nAP, c.nHP, c.nSP, c.sLoginZone, c.nFame
+  FROM tCharacter c JOIN tCharacterShape s ON s.nCharNo = c.nCharNo
+ WHERE c.sID = '%(name)s';
+SELECT '@@ITEM', i.nStorageType, i.nStorage, i.nItemID, i.nFlags, i.nItemKey
+  FROM tItem i JOIN tCharacter c ON c.nCharNo = i.nOwner
+ WHERE c.sID = '%(name)s' AND i.nStorageType <> %(inv)d
+ ORDER BY i.nStorageType, i.nStorage;
+SELECT '@@OPT', o.nItemKey, o.nOptionType, o.nOptionData
+  FROM tItemOptions o JOIN tItem i ON i.nItemKey = o.nItemKey
+  JOIN tCharacter c ON c.nCharNo = i.nOwner
+ WHERE c.sID = '%(name)s' AND i.nStorageType <> %(inv)d
+ ORDER BY o.nItemKey, o.nOptionType;
+GO
+"""
+
 # One shell round-trip per pod. Sections are delimited so a partial read is detectable rather than
 # silently mis-parsed -- a truncated exec that looks like an empty table is exactly the sort of
 # "negative result" this repo has been burned by.
@@ -76,6 +99,69 @@ def kubectl(ns, pod, script):
     out = subprocess.run(["kubectl", "exec", "-n", ns, pod, "--", "bash", "-lc", script],
                          capture_output=True, env=env)
     return out.stdout.decode("utf-8", "replace").replace("\r", "")
+
+
+def sqlcmd(ns, database, sql):
+    """Run a read-only batch against the game database, through the mssql pod.
+
+    The quoting here is fiddly and this is the form that works: the SQL goes in on STDIN through
+    `exec -i` so nothing has to survive a shell, and MSYS_NO_PATHCONV stops Git-Bash rewriting the
+    /opt/... tools path into a Windows one."""
+    env = dict(os.environ, MSYS_NO_PATHCONV="1")
+    inner = ("/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa "
+             "-P \"${MSSQL_SA_PASSWORD:-$SA_PASSWORD}\" -C -W -h -1 -s '|' -d " + database)
+    out = subprocess.run(["kubectl", "exec", "-i", "-n", ns, "mssql-0", "--", "bash", "-lc", inner],
+                         input=sql.encode(), capture_output=True, env=env)
+    return out.stdout.decode("utf-8", "replace").replace(chr(13), "")
+
+
+def character(ns, database, name):
+    """The character's SERVER-SIDE parameter state, as the server persists it.
+
+    ⚠️ What this is: the INPUTS the server builds a `Parameter::Container` from -- class, level, allocated
+    free-stat points, and every worn item with its options. That is what `CharacterParameters.Build` needs,
+    and it means a capture can be checked against a container CONSTRUCTED the way the server constructs
+    one, instead of one inverted out of displayed accessor outputs. Inverting was wrong for a month.
+
+    ⚠️ What this is NOT: the live container. Buffs, abnormal states, charged effects and anything else
+    applied in-session are not persisted and are not here. It is also the state NOW, not at capture time --
+    which is exactly why this is meant to be run beside the capture, not months later."""
+    raw = sqlcmd(ns, database, CHARACTER_SQL % {"name": name.replace("'", "''"),
+                                                "inv": INVENTORY_STORAGE_TYPE})
+    rows = [[c.strip() for c in ln.split("|")] for ln in raw.splitlines() if "|" in ln]
+
+    def num(v):
+        try:
+            return int(v)
+        except ValueError:
+            return v
+
+    out = {"name": name, "database": database, "found": False, "items": [], "options": {}}
+    for r in rows:
+        if r[0] == "@@CHAR" and len(r) >= 18:
+            out.update({
+                "found": True, "charNo": num(r[1]), "sID": r[2], "level": num(r[3]),
+                # The class id -- resolve it to a name through `ClassName.shn`, which is what decides the
+                # Param<Class>Server.txt file and therefore JobChangeDmgUp. Not resolved here on purpose:
+                # this tool is a faithful dumper and has no SHN reader.
+                "classId": num(r[4]), "race": num(r[5]), "gender": num(r[6]),
+                # The CHARSTATDISTSTR allocation, i.e. the same points `so_ply_FreeStatStr` indexes.
+                "freeStat": {"Strength": num(r[7]), "Constitute": num(r[8]), "Dexterity": num(r[9]),
+                             "Intelligence": num(r[10]), "MentalPower": num(r[11]),
+                             "RedistributePoint": num(r[12])},
+                "statPointsUnspent": num(r[13]), "hp": num(r[14]), "sp": num(r[15]),
+                "loginZone": r[16], "fame": num(r[17]),
+            })
+        elif r[0] == "@@ITEM" and len(r) >= 6:
+            out["items"].append({"storageType": num(r[1]), "slot": num(r[2]), "itemId": num(r[3]),
+                                 "flags": num(r[4]), "itemKey": r[5]})
+        elif r[0] == "@@OPT" and len(r) >= 4:
+            out["options"].setdefault(r[1], []).append({"type": num(r[2]), "data": num(r[3])})
+
+    for it in out["items"]:
+        it["options"] = out["options"].get(it["itemKey"], [])
+    out.pop("options")
+    return out
 
 
 def zone_pods(ns, prefix):
@@ -178,6 +264,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--namespace", default="fiesta")
     ap.add_argument("--zone", help="pod name prefix, e.g. zone02; default is every zone pod")
+    ap.add_argument("--character", help="also dump this character's server-side parameter state")
+    ap.add_argument("--database", default="World00_Character")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
@@ -188,6 +276,9 @@ def main():
 
     state = {"takenAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
              "namespace": a.namespace, "zones": {}}
+    if a.character:
+        print("  character %s ..." % a.character, file=sys.stderr)
+        state["character"] = character(a.namespace, a.database, a.character)
     for pod in pods:
         print("  %s ..." % pod, file=sys.stderr)
         state["zones"][pod] = snapshot(a.namespace, pod)
@@ -196,6 +287,22 @@ def main():
         json.dump(state, f, indent=1)
 
     print("\nwrote %s\n" % a.out)
+
+    ch = state.get("character")
+    if ch and ch["found"]:
+        worn = [i for i in ch["items"] if i["storageType"] == 8]
+        print("%-30s charNo %s  level %s  classId %s  (resolve via ClassName.shn)"
+              % (ch["name"], ch["charNo"], ch["level"], ch["classId"]))
+        print("%-30s free stat %s" % ("", ch["freeStat"]))
+        for it in worn:
+            # Option type 600/700 is the upgrade level -- the +N that shifts BOTH weapon bounds.
+            up = next((o["data"] for o in it["options"] if o["type"] in (600, 700)), None)
+            print("%-30s slot %-3s item %-7s%s" % ("", it["slot"], it["itemId"],
+                                                   "" if up in (None, 0) else "  +%s" % up))
+        print()
+    elif ch:
+        print("!! character %r not found in %s -- nothing dumped" % (ch["name"], ch["database"]))
+
     problems = 0
     for pod, z in state["zones"].items():
         chr_rates = sorted({r for _, r in z["damageByAngle"].get("DamageByAngle_Chr", [])})

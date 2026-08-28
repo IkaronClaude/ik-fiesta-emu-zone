@@ -197,18 +197,38 @@ public class PcapGroundTruthTests
     private static int FreeStatStr(int points) => points;
     private static int FreeStatCon(int points) => (points + 1) / 2;
 
-    /// <summary>The angle multiplier THE SERVER THAT PRODUCED THIS CAPTURE ACTUALLY APPLIES: none.
+    /// <summary>The angle multiplier in force for the swings this test looks at: <b>none</b>. Settled two
+    /// independent ways, and the stronger one is the operator's own annotation.
     ///
-    /// <para>⚠️ <b>Not <see cref="DamageByAngleTable"/> loaded from `Z:/ServerSource`.</b> That file expands
-    /// to 1000-1200, but the deployed server is flat 1000 — verified three ways: the live expanded arrays
-    /// at `damagebyangle_Ply` and `damagebyangle_Mob` in two zone processes, and both on-disk copies
-    /// (`/fiesta/9Data` and `/source/9Data`), whose file predates the capture by an hour.</para>
+    /// <para><b>1. The capture says so.</b> The operator narrates the experiment in chat, and
+    /// <c>"Forward-facing only now"</c> falls INSIDE the analysed window — immediately after
+    /// <c>"At 20, let's go"</c>, the marker that opens it. `DamageByAngle` is indexed by
+    /// <c>defenderFacing - directionToAttacker</c>, so a frontal engagement sits at index 0, and index 0
+    /// is <b>1000 in every version of the table</b>, stock or flattened. Facing the target removes the
+    /// term whatever the server had loaded. The angle was engineered out of this experiment on
+    /// purpose.</para>
     ///
-    /// <para><b>This value was 1200 and that was a mistake worth naming.</b> With 1200 the harness scored
-    /// 216/219 and was reported as "190 of 190 incoming hits exact, nothing fitted". It was not: the 1.2x
-    /// came from a file the server does not use, and it happened to be close enough to the real
-    /// (unexplained) spread to cover it. With the server's own 1000 the score is 127/219. A number that
-    /// good, built on an input that wrong, is exactly the failure this suite exists to catch.</para></summary>
+    /// <para><b>2. The deployed file says so too.</b> `tools/capture_state.py` reads it out of the running
+    /// zone pods: flat 1000 in both `DamageByAngle_Chr` and `DamageByAngle_Mob`, since its mtime of
+    /// 2026-07-30 10:51 — 67 minutes before the capture — with a `.orig-damagebyangle` sibling from
+    /// 2026-03-18 holding the stock curve that tops out at 1200. On its own this proves only what is on
+    /// disk TODAY, because the table is expanded at zone STARTUP and nobody recorded whether the zone
+    /// restarted in those 67 minutes. It does not have to carry the argument alone.</para>
+    ///
+    /// <para>⚠️ <b>Not <see cref="DamageByAngleTable"/> loaded from `Z:/ServerSource`.</b> That copy
+    /// expands to 1000-1200 and is not what runs. Using it once scored 216/219 and the number was
+    /// worthless — the 1.2x came from a file the server does not use and happened to cover the real,
+    /// still-unexplained spread.</para>
+    ///
+    /// <para>⚠️ <b>And do not set it to 1200 because it makes the suite green.</b> It does: with the
+    /// job-change multiplier and the corrected reconstruction in place, 1200 gives <b>219 of 219</b> with
+    /// no margin anywhere. That configuration was reached and rejected on 2026-08-28. A residual that
+    /// happens to be bounded by a table's own maximum is not evidence that the table produced it, and here
+    /// the operator had removed the angle twice over. Reaching for it is the same mistake as the 216/219,
+    /// one level deeper — which is precisely how it would get made again.</para>
+    ///
+    /// <para>So the ~1.16x by which all four cases exceed the ceiling is a real unmodelled mechanism.
+    /// See the test below and OPEN_QUESTIONS.md §2.</para></summary>
     private const int DeployedAngleMax = 1000;
 
     /// <summary>`JobChangeDmgUp` for the captured character's own class at its own level, READ from the
@@ -383,21 +403,22 @@ public class PcapGroundTruthTests
     /// <see cref="RebuildPlayer"/>, read out of `so_mobile_NotifyParameterChange`), all four cases sit
     /// over by <b>1.149 to 1.176</b> — the same factor for a MOB attacker and for the character.</para>
     ///
-    /// <para><b>A single mechanism, applying to both attackers, bounded just under 1.2.</b> The stock
-    /// `DamageByAngle` curve tops out at exactly 1200 at 180 degrees, and an observed maximum a little
-    /// under that is what real geometry produces — the hardest hit of a session comes from near behind,
-    /// not from exactly behind. Setting <see cref="DeployedAngleMax"/> to 1200 turns this test green and
-    /// puts <b>219 of 219</b> clean hits in band, with no margin anywhere.</para>
+    /// <para><b>A single mechanism, applying to both attackers, and NOT the angle table.</b> The obvious
+    /// candidate was the stock `DamageByAngle` curve, which tops out at exactly 1200 — and it is ruled
+    /// out. The operator's chat inside this very window reads <c>"Forward-facing only now"</c>, and a
+    /// frontal engagement indexes the table at 0, which is 1000 in every version of it. Setting
+    /// <see cref="DeployedAngleMax"/> to 1200 does turn this test green at 219/219, and that is a trap:
+    /// see the warning there.</para>
     ///
-    /// <para><b>That is not proof and this test stays red until it is.</b> Which table the zone had in
-    /// memory on 2026-07-30 at 11:58 is a fact about a process, not about `Zone.exe`, and no amount of
-    /// reading the binary settles it — see <see cref="DeployedAngleMax"/> for what IS established about
-    /// the file. The decisive test is inside the capture: if the curve was live, incoming damage must
-    /// correlate with the attack geometry, and the capture carries the mob positions, the character's
-    /// position and the facings needed to compute each swing's angle index. Flat table, no correlation.
-    /// Until that is run, 1000 stands and this stays red.</para>
+    /// <para><b>So this is an unmodelled mechanism, and the capture narrows it hard.</b> It scales a MOB
+    /// attacker and the character by the same ~1.16x; it is not gear, not item actions and not anything
+    /// one-sided. The operator was chasing the same thing while capturing — the chat after the window
+    /// reads <c>"seems like END has not applied cleanly"</c>, <c>"No, seems like END has no clean flat
+    /// effect here"</c>, then <c>"Okay unequipping some armor"</c> and <c>"Unequipping some more (no end
+    /// change this time)"</c>. That is a second observation of something wrong around Constitution and
+    /// defence, made independently and from play. `OPEN_QUESTIONS.md` §2 carries it.</para>
     ///
-    /// <para><b>Eliminated by measurement, not by argument</b> — do not re-run these:</para>
+        /// <para><b>Eliminated by measurement, not by argument</b> — do not re-run these:</para>
     ///
     /// <list type="number">
     ///   <item><b>The accessors.</b> `tools/oracle_accessors.py` runs the real `roe_MinWC` / `roe_MaxWC` /

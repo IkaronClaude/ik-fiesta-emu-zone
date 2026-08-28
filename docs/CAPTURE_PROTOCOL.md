@@ -16,15 +16,20 @@ expands to 1000–1200. The deployed one is **flat 1000**. A prediction built on
 **2. The deployed file is not necessarily what the running process holds.** These tables are read once, at
 zone startup. `DamageByAngle.txt` was edited at **2026-07-30 10:51**; `Damage.pcapng` was taken at
 **11:58 the same day**. Whether the zone restarted in those 67 minutes decides whether the capture ran on
-the flat table or the stock curve — and it decides whether this port is at 136/219 or 219/219 on it.
-Nobody wrote it down, and it is not recoverable now. Reading the file today answers a question about today.
+the flat table or the stock curve. Nobody wrote it down and it is not recoverable now; reading the file
+today answers a question about today.
+
+That one is survivable only because the operator happened to narrate `"Forward-facing only now"` in chat,
+which settles the angle for that window independently of what was loaded (see below). Without that line
+the capture would have been undecidable — a 219/219 and a 136/219 reading of the same pcap, with no way to
+choose. **The chat saved it; do not rely on being that lucky twice.**
 
 ## The protocol
 
 **Before or immediately after capturing**, from the machine that can reach the cluster:
 
 ```bash
-python tools/capture_state.py --zone zone02 --out state-<capture-name>.json
+python tools/capture_state.py --zone zone02 --character <CharName> --out state-<capture-name>.json
 ```
 
 Keep it next to the pcap. It records, per zone: the **zone process start time**, the parsed
@@ -37,6 +42,17 @@ an **`inForce`** flag, which is the whole point:
 If anything comes back `NOT IN FORCE`, **restart that zone before capturing**. A capture taken over a stale
 process cannot be read against the files on disk.
 
+`--character` adds the character's **server-side parameter state**, read out of `World00_Character`: class
+id, level, the free-stat allocation, and every worn item with its options (option type 600/700 is the
+upgrade level). That is the set of INPUTS `CharacterParameters.Build` needs, so a capture can be checked
+against a container **constructed** the way the server constructs one instead of one inverted out of
+displayed accessor outputs — inverting was wrong for a month and hid a whole missing multiplier.
+
+It is the persisted state, not the live container: buffs, abnormal states and charged effects are not in
+it. And it is the state **now** — today's dump of the `Damage.pcapng` character shows the weapon carrying
+no upgrade option at all, where the July analysis assumed a +10 worth +1197. The gear changed in between.
+That is the argument for running this beside the capture, in one sentence.
+
 **Also note, in chat, inside the capture** (the operator narrates while capturing anyway, and that chat is
 the legend for the packet log):
 
@@ -48,14 +64,35 @@ the legend for the packet log):
   of `DamageByAngle.txt` an hour before `Damage.pcapng` was almost certainly deliberate — done to remove
   the angle variable from the experiment — and saying so in chat would have settled everything.**
 
+## Read the chat before analysing anything
+
+The operator's running commentary is not colour, it is the **legend**. On `Damage.pcapng` a single line —
+`"Forward-facing only now"`, inside the analysed window — eliminated a hypothesis that three sessions had
+been circling, because a frontal engagement indexes `DamageByAngle` at 0 and index 0 is 1000 in every
+version of the table. Two more lines (`"seems like END has no clean flat effect here"`,
+`"Unequipping some more (no end change this time)"`) are an independent observation of the residual that
+is still open.
+
+Decode the chat FIRST, in order, and map packets to it:
+
+```bash
+cd C:/Projects/fiesta-proxy/tools
+XOR_TABLE_PATH=C:/Projects/ik-fiesta-bots/xor-table.hex python pcap_decode.py <cap>.pcapng --opcode 0x2001
+```
+
+Read the text out of the hex dump's ASCII column, not a struct field, and join the `|...|` columns of
+consecutive rows within one frame.
+
 ## What a fresh capture would settle right now
 
 All five zones currently run a **flat 1000** angle table, in force, verified — so a capture taken today has
-no ambiguity. That makes it decisive either way:
+no ambiguity to begin with.
 
-* incoming damage lands **inside** the flat-table ceiling → the stock curve was live during
-  `Damage.pcapng`, that capture is explained, and this port is 1:1 on both;
-* incoming damage **exceeds** it by ~1.16x again → the angle table was never the explanation, there is a
-  real unmodelled mechanism scaling both attackers, and `OPEN_QUESTIONS.md` §2 is where it lives.
+The angle question is already answered — `"Forward-facing only now"` settled it — so what a fresh capture
+buys is a clean measurement of the ~1.16x that is left: one where the class, level, free stats and gear are
+recorded rather than inferred, the angle is known rather than argued, and nothing has changed between the
+capture and the analysis. `OPEN_QUESTIONS.md` §2 is where that residual lives.
 
-Either answer is worth more than more analysis of the old capture.
+Worth including in the run: some swings **from behind** as well as forward-facing ones, on a server whose
+angle table is known flat. If rear hits and frontal hits do the same damage, the table's absence is
+confirmed on the wire rather than from a file, and the last thread on that question is closed for good.
