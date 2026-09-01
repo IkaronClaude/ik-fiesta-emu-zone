@@ -243,6 +243,8 @@ public class BucketGroundTruthTests
     ///
     /// <para>Note WC actions touch BOTH bounds, which is why a debuff shifts the whole range rather than
     /// squashing it.</para></summary>
+    /// <summary>An empty <c>Stats</c> list means the action provably writes no stat slot — a behavioural
+    /// flag — as opposed to one this port has not read, which is refused instead.</summary>
     private sealed record AbstateAction(bool Rate, int Sign, params Stat[] Stats);
 
     private static readonly Dictionary<int, AbstateAction> AbstateActions = new()
@@ -254,6 +256,22 @@ public class BucketGroundTruthTests
         [81] = new(false, -1, Stat.Dex),
         [18] = new(true, +1, Stat.ShieldAC),
         [21] = new(true, +1, Stat.AttSpeed),
+
+        // ⚠️ NO PARAMETER EFFECT -- WHICH IS NOT THE SAME AS NO EFFECT. These write BEHAVIOUR BITS into
+        // `Parameter::Container::flag` (+0xCCE), whose three bits the PDB names
+        // `cannotmove_stun` / `cannotmove_entangle` / `cannotattack`:
+        //
+        //     SAA_NOATTACK  or byte [+0xCCE], 4   -> cannotattack
+        //     SAA_NOMOVE    or byte [+0xCCE], 2   -> cannotmove_entangle
+        //                   or byte [+0xCCE], 1   -> cannotmove_stun, when the sub-type at +0x26 is
+        //                                            0x15 or 0x60
+        //
+        // They are no-ops FOR THE DAMAGE FORMULA -- a stunned mob takes and deals normal damage, it just
+        // cannot act -- which is the only claim this test needs. For the mob tactic state machine they are
+        // the opposite of a no-op: they are exactly what a stun IS, and MobActionAttack / MobActionChase /
+        // MobActionTurning have to honour them. See docs/FUTURE_TESTS.md; nothing models them yet.
+        [19] = new(false, 0),   // SAA_NOMOVE
+        [25] = new(false, 0),   // SAA_NOATTACK
     };
 
     /// <summary>Apply a mob's abnormal states to its own container.
