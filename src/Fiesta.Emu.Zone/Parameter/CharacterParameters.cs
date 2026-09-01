@@ -176,6 +176,21 @@ public static class CharacterParameters
         plus[Stat.CriDam] += item.CriDamPlus;
         plus[Stat.MagCriDam] += item.MagCriDamPlus;
 
+        // THE CRITICAL TERMS GO IN THE RATE HALF, NOT THE PLUS HALF. `roe_CriticalRate` reads
+        // Item.Rate[CriDamRate] (+0x218) and Item.Rate[CriticalTB] (+0x240) -- confirmed twice over, by
+        // reading the function and by `tools/cluster_xref.py --sym roe_CriticalRate`. The Plus writes
+        // above reach `Total`, which is what the client's displayed figure comes from; they are read by
+        // nothing in the roll, so before this line a weapon's crit rate did nothing at all.
+        //
+        // `ItemInfo.CriRate` is already permille on the same scale as the roll: it runs 10..90 across the
+        // file, and this capture's three weapons are Splitter 30, Kaineneceflight 70, Kainenecefury 90.
+        //
+        // ⚠️ See `FUTURE_TESTS.md`: the container these land in is seeded with 1000 at CriDamRate, which
+        // would make every swing a critical. The gear terms are correct; the SEED is the open question.
+        var itemRate = container.Rate(StatModifier.Item);
+        itemRate[Stat.CriDamRate] += item.CriRate;
+        itemRate[Stat.CriticalTB] += item.CrlTB;
+
         var rate = container.Rate(StatModifier.ItemPowerRate);
         Compound(rate, Stat.WCmin, item.WCRate);
         Compound(rate, Stat.WCmax, item.WCRate);

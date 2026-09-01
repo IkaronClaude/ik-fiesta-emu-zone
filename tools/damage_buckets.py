@@ -58,12 +58,17 @@ FRAME = re.compile(r"^\s+(S<-|C->)\s+@\s*(\d+)\s+\[0x([0-9A-Fa-f]{4})\]\s+(\S+)"
 CONV = re.compile(r"^==== server (\S+) <-> client (\S+) ====")
 HEXROW = re.compile(r"^\s+([0-9a-f]{4})\s+((?:[0-9a-f]{2} )+)")
 
-# Named bits of PROTO_NC_BAT_SWING_DAMAGE_CMD::flag. INCOMPLETE by measurement -- the high bits have no
-# names here at all -- so "was this a plain hit" is tested on the raw word being zero, never on this list
-# being empty. See pcap_combat_truth.py, which learned it the hard way.
-FLAGS_B0 = ["isdamage", "iscritical", "ismissed", "isshieldblock",
-            "isheal", "isenchant", "isresist", "IsCostumWeapon"]
-FLAGS_B1 = ["isDead", "isImmune", "IsCostumShield"]
+# `PROTO_NC_BAT_SWING_DAMAGE_CMD::<unnamed-type-flag>`, READ FROM THE PDB -- nine one-bit fields over two
+# bytes. The list this replaced was assembled by measurement and was off by one from the start: it opened
+# with "isdamage", which does not exist, so every CRITICAL in every capture was being labelled `isdamage`
+# and `iscritical` was reading `isresist`. `ismissed` happened to land on the right bit, which is why
+# nothing looked wrong.
+#
+# "Was this a plain hit" is still tested on the raw word being zero rather than on this list being empty:
+# byte 1 has only one named bit out of eight, so a name-based test would call an unknown high bit clean.
+FLAGS_B0 = ["iscritical", "isresist", "ismissed", "isshieldblock",
+            "isCostumCharged", "isDead", "isDamege2Heal", "isImmune"]
+FLAGS_B1 = ["isCostumShieldCharged"]
 
 
 def decode(pcap, port, cache):
@@ -292,10 +297,15 @@ def main():
         if n > hit_counts.get((conv, player.get(conv, -1)), 0):
             player[conv] = handle
 
-    buckets, unattributed = collections.defaultdict(list), 0
+    # Two accumulators per bucket. `damage` is the CLEAN hits and is what the damage formula is checked
+    # against -- unchanged, because a miss carries no damage to predict and a critical is a different
+    # calculation. `outcomes` counts every swing that reached the bucket whatever its flags, which is what
+    # the hit / block / critical RATES have to be measured against: a rate whose denominator leaves out the
+    # swings that missed is not a rate.
+    buckets = collections.defaultdict(list)
+    outcomes = collections.defaultdict(collections.Counter)
+    unattributed = 0
     for s in swings:
-        if s["flagWord"] != 0 or s["damage"] <= 0:
-            continue
         me = player.get(s["conv"])
         if s["attacker"] == me:
             side, mob, own_weapon = "OUT", s["defenderMob"], s["weapon"]
@@ -311,32 +321,74 @@ def main():
             # or the relog started. Counted, never guessed at.
             unattributed += 1
             continue
-        buckets[(side, mob, s["level"], s["params"], own_ab, foe_ab,
-                 s["passives"], own_weapon)].append(s["damage"])
+        key = (side, mob, s["level"], s["params"], own_ab, foe_ab, s["passives"], own_weapon)
+
+        flags, tally = s["flagWord"], outcomes[key]
+        tally["swings"] += 1
+        # Bit names from the PDB: 0 iscritical, 2 ismissed, 3 isshieldblock. A blocked swing carries BOTH
+        # missed and blocked in every frame of this capture -- roe_HitRate sets isshieldblock and then
+        # returns 0.0, so the caller misses on it -- so these overlap by design and must never be summed
+        # as though they partitioned the swings.
+        if flags & 0x04:
+            tally["missed"] += 1
+        if flags & 0x08:
+            tally["blocked"] += 1
+        if flags & 0x01:
+            tally["critical"] += 1
+            tally["criticalDamage"] += s["damage"]
+        if flags == 0 and s["damage"] > 0:
+            buckets[key].append(s["damage"])
 
     rows = []
-    for (side, mob, level, params, own_ab, foe_ab, passives, own_weapon), dmg in buckets.items():
-        rows.append({"side": side, "mob": mob, "level": level, "passives": list(passives),
-                     "weapon": own_weapon,
-                     "selfAbstates": [list(p) for p in own_ab],
-                     "enemyAbstates": [list(p) for p in foe_ab],
-                     "params": dict(params), "n": len(dmg),
-                     "min": min(dmg), "max": max(dmg),
-                     "mean": round(sum(dmg) / len(dmg), 1), "damage": sorted(dmg)})
+    for key, tally in outcomes.items():
+        (side, mob, level, params, own_ab, foe_ab, passives, own_weapon) = key
+        dmg = buckets.get(key, [])
+        row = {"side": side, "mob": mob, "level": level, "passives": list(passives),
+               "weapon": own_weapon,
+               "selfAbstates": [list(p) for p in own_ab],
+               "enemyAbstates": [list(p) for p in foe_ab],
+               "params": dict(params),
+               # `n` stays the count of CLEAN hits, so the damage-band check keeps reading the field it
+               # always read. `swings` is the denominator for the rates.
+               "n": len(dmg), "swings": tally["swings"],
+               "missed": tally["missed"], "blocked": tally["blocked"],
+               "critical": tally["critical"], "criticalDamage": tally["criticalDamage"],
+               "damage": sorted(dmg)}
+        if dmg:
+            row.update({"min": min(dmg), "max": max(dmg), "mean": round(sum(dmg) / len(dmg), 1)})
+        rows.append(row)
     rows.sort(key=lambda r: (r["side"], r["mob"], r["level"], -r["n"]))
 
     json.dump({"chat": chat, "buckets": rows, "playerHandlePerConv": player,
                "freeStat": free_stat, "chrclass": chrclass}, open(a.out, "w"), indent=1)
 
     kept = [r for r in rows if r["n"] >= a.min_hits]
-    print("%d clean hits in %d state buckets (%d with n>=%d); %d hits unattributed\n"
-          % (sum(r["n"] for r in rows), len(rows), len(kept), a.min_hits, unattributed))
-    print("  side mob   lv   n    min   max   mean   self-abstates              enemy-abstates")
+    total = sum(r["swings"] for r in rows)
+    print("%d clean hits of %d swings in %d state buckets (%d with n>=%d); %d unattributed\n"
+          % (sum(r["n"] for r in rows), total, len(rows), len(kept), a.min_hits, unattributed))
+    print("  side mob   lv   swings hit  miss blk  crit  min   max   mean   self-abstates")
     for r in kept:
-        print("  %-4s %-5s %-4s %-4d %-5d %-5d %-6.1f %-26s %s"
-              % (r["side"], r["mob"], r["level"], r["n"], r["min"], r["max"], r["mean"],
-                 ",".join("%d@%d" % (i, st) for i, st in r["selfAbstates"]) or "-",
-                 ",".join("%d@%d" % (i, st) for i, st in r["enemyAbstates"]) or "-"))
+        print("  %-4s %-5s %-4s %-6d %-4d %-4d %-4d %-5d %-5s %-5s %-6s %s"
+              % (r["side"], r["mob"], r["level"], r["swings"], r["n"], r["missed"], r["blocked"],
+                 r["critical"], r.get("min", "-"), r.get("max", "-"), r.get("mean", "-"),
+                 ",".join("%d@%d" % (i, st) for i, st in r["selfAbstates"]) or "-"))
+
+    # The aggregate is the headline. It is the only figure here that can be compared against a predicted
+    # RATE without reconstructing a container, and the miss/block overlap is the one structural claim the
+    # roll port makes that the wire can confirm on its own.
+    for side in ("OUT", "IN"):
+        rs = [r for r in rows if r["side"] == side]
+        n = sum(r["swings"] for r in rs)
+        if not n:
+            continue
+        miss = sum(r["missed"] for r in rs)
+        blk = sum(r["blocked"] for r in rs)
+        crit = sum(r["critical"] for r in rs)
+        landed = n - miss
+        print("\n  %s  %d swings: %d missed (%.1f%%), %d blocked (%.1f%%), "
+              "%d critical of %d landed (%.1f permille)"
+              % (side, n, miss, 100.0 * miss / n, blk, 100.0 * blk / n,
+                 crit, landed, 1000.0 * crit / landed if landed else 0.0))
     print("\nwrote %s" % a.out)
 
 

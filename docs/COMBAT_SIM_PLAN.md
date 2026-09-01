@@ -118,26 +118,23 @@ WeaponTitle.Rate +0x6E0, AbnormalState.Rate +0xA10), subtracts two DEFENDER laye
 (AbnormalState.Rate +0xA38, Item.Rate +0x240), adds `FreeStatMen.CriRate`, and floors at 1.
 
 ⚠️ **OPEN, and it matters: an eraser-fresh container makes everything crit.** `ParameterCluster.Rate()`
-seeds `CriDamRate` (slot 32) with 1000, so the three attacker terms alone come to **3000** for a character
-with no gear at all. The capture says otherwise — of `FighterDamageLvl60.pcapng`'s 750 swing frames, 671
-landed and **13** carry `iscritical`, which is **19 permille**. Ikaron has 25 free-stat Men, so ~19
-permille is about what the `FreeStatMen.CriRate` term alone would contribute, and the three layer terms
-must be **0** in a live container rather than the eraser's 1000. Either the rate eraser's slot 32 is not
-1000 in the running process — the eraser was read out of live memory, but a static template is not a live
-character, which is the same trap `capture_state.py` exists for — or something zeroes those three slots
-before combat. **Do not "fix" this by reading a different slot**: the offsets are unambiguous and
-`roe_ShieldBlock` lands on the same layer map. Settle it by reading a live player's container at +0x218 /
-+0x6E0 / +0xA10, the way `FreeStatStr` was settled.
+seeds `CriDamRate` (slot 32) with 1000, so the three attacker terms come to **3000** before any gear. The
+capture says 55.6 permille. `CharacterParameters.Equip` was also filing a weapon's `CriRate` into
+`Item.Plus[Critical]`, which nothing in the roll reads — now fixed to `Item.Rate[CriDamRate]`. The SEED is
+what remains. Full evidence, both competing measurements and the experiment that settles it are in
+`FUTURE_TESTS.md`; **do not resolve it by reading a different slot**, the offsets are confirmed twice.
 
-**Where the ground truth already is.** Flag byte of the capture's 750 `NC_BAT_SWING_DAMAGE_CMD` frames
-(bit0 `iscritical`, bit2 `ismissed`, bit3 `isshieldblock`):
+**Where the ground truth already is.** `damage_buckets.py` now counts every swing's outcome per state
+bucket, not only the clean hits, and reports the rates per DIRECTION — pooling the two gives a denominator
+that describes neither side:
 
 ```
-0x00  658   clean hit
-0x04   64   missed                    -> 10.5% of all swings miss
-0x0C   15   missed AND shield-blocked ->  2.0% blocked
-0x01   13   critical                  -> 19 permille of the 671 that landed
+OUT  234 swings:   0 missed (0.0%),  0 blocked (0.0%),  13 critical of 234 landed (55.6 permille)
+IN   516 swings:  79 missed (15.3%), 15 blocked (2.9%),  0 critical of 437 landed ( 0.0 permille)
 ```
+
+The player never misses this mob tier and is never blocked — mobs carry no shield, so `roe_ShieldBlock`
+returns 0 for them. The mobs miss 15.3% of the time and do not crit once in 516 swings.
 
 **Not one frame is blocked without also being missed.** That is not a coincidence in the data, it is
 forced by the code: `roe_HitRate` sets `isshieldblock` and then returns `0.0`, and `smo_SwingDamage` rolls

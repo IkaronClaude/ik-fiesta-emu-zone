@@ -77,7 +77,13 @@ public class BucketGroundTruthTests
     private static Fixture Load(string path)
     {
         var root = JsonDocument.Parse(File.ReadAllText(path)).RootElement;
-        var buckets = root.GetProperty("buckets").EnumerateArray().Select(b => new Bucket(
+        // Buckets with no CLEAN hits carry no damage band -- since the bucketer started counting misses,
+        // blocks and criticals, a bucket can exist because a swing missed there and nothing landed. Those
+        // have nothing for a damage check to predict, so they are dropped HERE rather than by the tool,
+        // which still needs to report them.
+        var buckets = root.GetProperty("buckets").EnumerateArray()
+            .Where(b => b.GetProperty("n").GetInt32() > 0)
+            .Select(b => new Bucket(
             b.GetProperty("side").GetString()!,
             b.GetProperty("mob").GetInt32(),
             b.GetProperty("level").GetInt32(),

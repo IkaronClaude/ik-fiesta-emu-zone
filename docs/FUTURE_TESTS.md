@@ -34,25 +34,18 @@ are where 0x1035's params 16 and 17 pick up their free-stat halves. What remains
       supplied by hand because nothing can compute them. Meanwhile the wire gives the SUM — 0x1035's `Aim`
       is `roe_TH + THRate` and `Evasion` is `roe_TB + TBRate` — so a captured character can be reconstructed
       without them, but a synthetic one cannot.
-      **A cheap check is already available:** Ikaron has 25 free-stat Men and crits 13 times in 671 landed
-      swings, so `FreeStatMen[25].CriRate` should come out near 19.
+      **The Men table has a calibration waiting for it:** the operator puts 25 points of MEN at about
+      +5%, so `FreeStatMen[25].CriRate` should read near 50. The capture cannot confirm that on its own —
+      13 outgoing criticals in 234 landed swings fit the weapon term alone — so the table read is what
+      would settle it. See "The critical rate, measured" below.
 
 ## Untested paths in the damage engine
 
-- [x] **Criticals.** The `2*dmg + dmg*PassiveCriDamageRatePlus/1000` term is ported. The DAMAGE is still
-      untested against a capture — every hit checked so far is `flagWord == 0` — so a crit-heavy capture
-      filtered on `iscritical` is still wanted, and it would also exercise the crit RATE.
-- [x] **Misses, blocks and shield block** are modelled (`ShineMobileObject.SwingDamage`). Counted on the
-      capture's 750 swing frames: 658 clean, 64 missed, 15 missed+blocked, 13 critical — 10.5% miss,
-      2.0% block, 19 permille crit among the 671 that landed. **Blocked-without-missed never occurs**,
-      which is what the code forces. Still to do: bucket those by state, the way clean hits are, so the
-      RATES are checked per bucket rather than in aggregate.
-- [ ] **⚠️ An eraser-fresh container crits on every swing.** `roe_CriticalRate` sums Item.Rate,
-      WeaponTitle.Rate and AbnormalState.Rate at `CriDamRate`, and `ParameterCluster.Rate()` seeds that
-      slot with 1000 — so a bare container comes to 3000 against a measured 19. Either the running
-      process's rate eraser holds 0 at slot 32, or something zeroes those three slots before combat. The
-      offsets are not in doubt (`roe_ShieldBlock` lands on the same layer map), so **do not resolve this by
-      reading a different slot**. Read a live player's container at +0x218 / +0x6E0 / +0xA10.
+- [x] **Criticals, misses and blocks are modelled** (`ShineMobileObject.SwingDamage`) and counted on the
+      wire. The numbers, the bug they found and the input still unresolved are below under
+      "The critical rate, measured". Still open as a TEST: crit DAMAGE has never been checked against a
+      capture -- every hit validated so far is `flagWord == 0` -- so a crit-heavy capture filtered on
+      `iscritical` is still wanted.
 - [ ] **Magical damage.** `roe_magical` / `roe_normalMA` never exercised — no caster has attacked in any
       capture. Needs a Mage/Cleric capture.
 - [ ] **Skills.** `FighterDamageLvl60.pcapng` contains **633** `NC_BAT_SKILLBASH_HIT_DAMAGE_CMD` frames,
@@ -156,3 +149,68 @@ are where 0x1035's params 16 and 17 pick up their free-stat halves. What remains
       project one unanswerable question.
 - [ ] **Read the chat first.** One line (`"Forward-facing only now"`) eliminated a hypothesis three
       sessions had been circling, and two more named the residual.
+
+### The critical rate, measured — and the one input still unresolved
+
+**Corrected from the first pass:** the flag counts were pooled across both directions, which is the wrong
+denominator for every rate in them. Split by side, `damage_buckets.py` now reports:
+
+```
+OUT  234 swings:   0 missed (0.0%),  0 blocked (0.0%),  13 critical of 234 landed (55.6 permille)
+IN   516 swings:  79 missed (15.3%), 15 blocked (2.9%),  0 critical of 437 landed ( 0.0 permille)
+```
+
+The player never misses this mob tier and is never blocked (mobs carry no shield, so
+`roe_ShieldBlock` returns 0 for them); the mobs miss 15.3% of the time and **never crit once in 516
+swings**. Pooling those gave "10.5% miss, 19 permille crit", which describes neither side.
+
+**`ItemInfo.CriRate` is already permille on the roll's own scale** — it runs 10..90 across the file, and the
+capture's three weapons are Splitter 30, Kaineneceflight 70, Kainenecefury 90. Operator calibration, from
+play: a level-50 blue is around 80 (8%), and 25 points of MEN are worth about +50 (5%).
+
+Outgoing criticals per weapon, against those two candidate models:
+
+| weapon | CriRate | landed | crits | measured | `CriRate` | `CriRate + 50` |
+| --- | --- | --- | --- | --- | --- | --- |
+| 257 Splitter, lv59 | 30 | 79 | 6 | 75.9‰ | | |
+| 257 Splitter, lv60 | 30 | 43 | 2 | 46.5‰ | | |
+| 40001 Kaineneceflight | 70 | 90 | 2 | 22.2‰ | | |
+| 40101 Kainenecefury | 90 | 22 | 3 | 136.4‰ | | |
+| **all** | | **234** | **13** | **55.6‰** | **11.9 expected** | **23.6 expected** |
+
+13 observed against 11.9 expected fits the weapon term alone; against 23.6 it does not (Poisson
+P(≤13 | 23.6) ≈ 1.4%). **13 events is thin** — the per-weapon column is far too noisy to rank the models on
+its own, and the Kaineneceflight window is the one that disagrees with both. So this points at the weapon
+term carrying the rate, and it does not settle where the operator's MEN contribution goes.
+
+**What is now fixed.** `CharacterParameters.Equip` was filing `CriRate` into `Item.Plus[Critical]` and
+`CrlTB` into `Item.Plus[CriticalTB]`. `roe_CriticalRate` reads neither: it reads `Item.Rate[CriDamRate]`
+(+0x218) and `Item.Rate[CriticalTB]` (+0x240), confirmed both by reading the function and independently by
+`tools/cluster_xref.py --sym roe_CriticalRate`. A weapon's crit rate did nothing at all. Those Plus writes
+stay, because `Total[Critical]` has its own readers and is where the client's displayed figure comes from.
+
+- [ ] **⚠️ THE SEED IS THE OPEN INPUT, and it makes every swing a critical.** `roe_CriticalRate` ADDS three
+      rate-half slots (`Item.Rate`, `WeaponTitle.Rate`, `AbnormalState.Rate`, all at `CriDamRate`), and
+      `ParameterCluster.Rate()` seeds `CriDamRate` with 1000 — so a container built by
+      `CharacterParameters.Build` comes to 3000 before any gear. 234 outgoing swings say the real figure is
+      55.6. Two measurements disagree and neither is weak:
+      * the rate eraser was read out of a LIVE zone at 0x0DA3FA78 and had 1000 at slot 32;
+      * the wire says a level-60 warrior crits 5.6% of the time.
+
+      `c_clear`'s alternation is not in doubt — it is a literal sequence of `rep movsd` from 0x0DA3FB48
+      (plus, 51 zeros) and 0x0DA3FA78 (rate), and Item.Rate / WeaponTitle.Rate / AbnormalState.Rate all
+      take the rate one. **Corroboration for the wire side:** the rate eraser's zero run starts at
+      `CriticalTB` — which is exactly the slot `roe_CriticalRate` SUBTRACTS. A rate slot used additively
+      needs a 0 identity, so the zero run looks like it marks "additive rate slots", and `CriDamRate` is
+      used additively too.
+
+      **The experiment that settles it:** re-read the 51 dwords at 0x0DA3FA78 out of a running zone
+      (`/proc/<pid>/mem`, the technique that settled `FreeStatStr`) and print them against slot NAMES
+      rather than indices. If slot 32 really is 1000, the zeroing happens in whatever rebuilds the
+      clusters per recalculation, and that is the next thing to read.
+      **Do not resolve this by having `roe_CriticalRate` read a different slot** — the offsets are
+      confirmed twice and `roe_ShieldBlock` lands on the same layer map.
+- [ ] **Then re-check the MEN term.** If the seed turns out to be 0, the weapon term alone predicts the
+      capture and the operator's +5% from 25 MEN has to arrive somewhere this port has not modelled —
+      `roe_FreeStatCriRate` reads `FreeStatMen.CriRate`, so the table read (see above) would give it
+      directly.
