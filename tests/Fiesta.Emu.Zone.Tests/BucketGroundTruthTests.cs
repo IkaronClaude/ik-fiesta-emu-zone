@@ -35,8 +35,15 @@ namespace Fiesta.Emu.Zone.Tests;
 /// </code></summary>
 public class BucketGroundTruthTests
 {
-    private sealed record Bucket(string Side, int Mob, int Level, IReadOnlyList<int> SelfAbstates,
-                                 IReadOnlyList<int> EnemyAbstates, IReadOnlyDictionary<string, int> Params,
+    /// <summary>An abnormal state as the wire carries it. `ABSTATE_INFORMATION` is
+    /// <c>{abstateID, restKeeptime, strength}</c>, and STRENGTH is not decoration: `SubAbState` rows are
+    /// keyed by (name, Strength), so `StaMoraleDecreaseWC` alone spans an argument of 1490..2148 across
+    /// ranks 17-20. A rank is a different effect, not a different label.</summary>
+    private sealed record Abstate(int Id, int Strength);
+
+    private sealed record Bucket(string Side, int Mob, int Level, IReadOnlyList<Abstate> SelfAbstates,
+                                 IReadOnlyList<Abstate> EnemyAbstates,
+                                 IReadOnlyDictionary<string, int> Params,
                                  IReadOnlyList<int> Passives, int? Weapon, int N, int Min, int Max);
 
     private sealed record Fixture(IReadOnlyList<Bucket> Buckets, IReadOnlyDictionary<string, int> FreeStat,
@@ -64,6 +71,9 @@ public class BucketGroundTruthTests
         return File.Exists(Path.Combine(root, "MobWeapon.shn")) ? root : null;
     }
 
+    private static Abstate Pair(JsonElement e)
+        => new(e[0].GetInt32(), e[1].GetInt32());
+
     private static Fixture Load(string path)
     {
         var root = JsonDocument.Parse(File.ReadAllText(path)).RootElement;
@@ -71,8 +81,8 @@ public class BucketGroundTruthTests
             b.GetProperty("side").GetString()!,
             b.GetProperty("mob").GetInt32(),
             b.GetProperty("level").GetInt32(),
-            b.GetProperty("selfAbstates").EnumerateArray().Select(x => x.GetInt32()).ToList(),
-            b.GetProperty("enemyAbstates").EnumerateArray().Select(x => x.GetInt32()).ToList(),
+            b.GetProperty("selfAbstates").EnumerateArray().Select(Pair).ToList(),
+            b.GetProperty("enemyAbstates").EnumerateArray().Select(Pair).ToList(),
             b.GetProperty("params").EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetInt32()),
             b.GetProperty("passives").EnumerateArray().Select(x => x.GetInt32()).ToList(),
             b.GetProperty("weapon").ValueKind == JsonValueKind.Number
@@ -166,6 +176,9 @@ public class BucketGroundTruthTests
                 value = ShnFile.Int(row, column);                // `mov`, not `add`: last non-zero wins
         return 1000 + value;
     }
+
+    private static string Show(IReadOnlyList<Abstate> a)
+        => string.Join(",", a.Select(x => $"{x.Id}@{x.Strength}"));
 
     private readonly record struct Band(int Floor, int Ceiling);
 
@@ -316,8 +329,8 @@ public class BucketGroundTruthTests
             if (b.N >= 5)
                 report.Add($"  {b.Side,-4} mob {b.Mob,-4} lv{b.Level} n={b.N,-3}"
                            + $" observed {b.Min}..{b.Max}  predicted {p.Floor}..{p.Ceiling}"
-                           + (over > 0 ? $"  OVER BY {over}  enemy=[{string.Join(",", b.EnemyAbstates)}]"
-                              : under > 0 ? $"  under by {under}  enemy=[{string.Join(",", b.EnemyAbstates)}]"
+                           + (over > 0 ? $"  OVER BY {over}  enemy=[{Show(b.EnemyAbstates)}]"
+                              : under > 0 ? $"  under by {under}  enemy=[{Show(b.EnemyAbstates)}]"
                               : "  inside"));
         }
 
