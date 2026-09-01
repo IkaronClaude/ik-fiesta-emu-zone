@@ -4,6 +4,7 @@
     python tools/abstate_actions.py                 # all 120, with their container writes
     python tools/abstate_actions.py --csharp        # emit the port's table
     python tools/abstate_actions.py --action 94     # one action, with its disassembly
+    python tools/abstate_actions.py --markdown > docs/SUBABSTATE_ACTIONS.md
 
 WHY THIS AND NOT MORE HAND-READING. Nine of these were read one at a time, by eye, because they were the
 nine a particular capture happened to exercise. That is fine for nine and hopeless for a hundred and
@@ -47,6 +48,87 @@ sys.path.insert(0, HERE)
 from disasm import Code
 from cluster_xref import decode as decode_offset
 
+MARKDOWN_HEADER = """# `SubAbstateAction` — what every abnormal-state action does
+
+Every buff, debuff, poison and stun in Fiesta reaches a character's stats through one function:
+`AbnormalStateContainer::AbstateElementInObject::aeo_ParameterEnchant` at **0x004079F0** in `Zone.exe`.
+`SubAbState.shn` gives a sub-state up to four `(ActionIndex, ActionArg)` pairs, and each `ActionIndex` is a
+`SubAbstateAction` — one case of the switch below. This table is that switch, read out of the binary.
+
+**{ACTIONS} actions, {HANDLERS} distinct handler bodies, {WITH} with a container effect, {NONE} with none.**
+
+## Where this comes from
+
+The dispatch is an ordinary compiler switch, so it can be walked rather than guessed at:
+
+```
+action = element[0x10 + i * 0x24]          ; i = 0..3, the four action slots
+arg    = element[0x14 + i * 0x24]
+ebx    = action - 1
+if (ebx > 0x77) goto done                  ; so the valid range is 1..120
+ebx    = byte [ebx + 0x408320]             ; 0x78 one-byte case indices
+jmp    [ebx * 4 + 0x408200]                ; the 72 distinct handler bodies
+```
+
+Each handler is straight-line and does one of three things: add or subtract into a stat slot of the
+container's **AbnormalState** cluster, write one of the container's named second-tier fields, or set a bit
+in `Parameter::Container::flag`. The names in the table are the PDB's own `SubAbstateAction` enum — nothing
+here is a nickname.
+
+Regenerate with `python tools/abstate_actions.py --markdown`.
+
+## How to read the Effect column
+
+| Notation | Meaning |
+| --- | --- |
+| `+ WCmin plus` | adds the action's argument to `AbnormalState.Plus[WCmin]` — a flat bonus |
+| `- AC rate` | subtracts it from `AbnormalState.Rate[AC]` — a permille scale, identity 1000 |
+| `MissPercentFix +` | adds to a named field past the clusters, not to a stat |
+| `flag cannotattack` | sets a bit in `Parameter::Container::flag` (+0xCCE) — behaviour, not a number |
+| `_none_` | the handler IS the shared epilogue: no container effect at all |
+
+Two things worth knowing before using the numbers:
+
+- **`plus` and `rate` are different halves and combine differently.** `Parameter::Container` keeps a flat
+  half and a permille half per source; `c_MakeTotal` adds the plus halves and multiplies the rate ones, and
+  the rate halves' identity is 1000, not 0. A `rate` action of 200 is +20%, not +200 points.
+- **Weapon and magic actions touch BOTH bounds.** `SAA_WCPLUS` writes `WCmin` and `WCmax` together, which is
+  why a weapon debuff shifts the whole damage range instead of squashing it.
+
+"""
+
+MARKDOWN_FOOTER = """
+## Caveats
+
+- **`_none_` means no *container* effect, not no effect.** 49 actions resolve to the shared epilogue and
+  write nothing into `Parameter::Container` — but several of them clearly do something elsewhere.
+  `SAA_DOTDAMAGE`, `SAA_FEAR`, `SAA_SILIENCE`, `SAA_SETABSTATE*` and the targeting family are implemented in
+  `SubAbnormalStateActor` subclasses, in the tactic state machine, or in packet handlers. This table says
+  where they do *not* act, which is still worth knowing precisely.
+- **Handlers are shared.** 120 actions map onto 72 bodies, so two differently-named actions can be literally
+  the same code. That is the server's doing, not a collapsing of the table here.
+- **`SAA_NOMOVE` has two outcomes.** It sets `cannotmove_entangle`, unless the sub-state's type at +0x26 is
+  `0x15` or `0x60`, in which case it branches into `SAA_AWAY`'s body and sets `cannotmove_stun` instead. The
+  PDB names those two bits separately, so the distinction is deliberate: entangle and stun are not the same
+  immobilisation.
+- **`SAA_CRITICALRATE` writes `CriDamRate`.** That slot's name says "critical damage rate", but it is the
+  slot `roe_CriticalRate` reads to decide whether a swing crits at all — an action the developers named
+  CRITICALRATE writing it is the clearest evidence of what the slot really carries.
+- **`SAA_HEALRATE` assigns where its neighbours accumulate** (`mov`, not `add`), so it overwrites rather
+  than stacking. It is the only one in the table that does.
+- The stat slot names are `Parameter::Cluster`'s own field names from the PDB, including the misspellings
+  (`ResistDeaseas`, `PhisycalWeaponMastery`, `ACAbsoulte`). They are kept verbatim so they match the symbols.
+
+## Cross-references
+
+- `AbState.shn` maps the `abstateID` on the wire to a `SubAbState` name.
+- `SubAbState.shn` maps `(InxName, Strength)` to up to four `(ActionIndexA..D, ActionArgA..D)` pairs — the
+  ids in this table.
+- The wire carries `ABSTATE_INFORMATION = { abstateID u32, restKeeptime u32, strength u32 }` in
+  `NC_BRIEFINFO_ABSTATE_CHANGE_CMD` (0x1C18) and `..._LIST` (0x1C19); `strength` selects the `SubAbState`
+  row, and is not a boolean.
+"""
+
 INDEX_TABLE = 0x408320          # aeo_ParameterEnchant+0x8AB: movzx ebx, byte [ebx + 0x408320]
 JUMP_TABLE = 0x408200           # aeo_ParameterEnchant+0x8B2: jmp [ebx*4 + 0x408200]
 CASES = 0x78                    # the `cmp ebx, 0x77; ja` bound, so actions 1..120
@@ -75,9 +157,18 @@ def container_fields():
     from pdb_types import Types
     t = Types()
     out = {}
-    for off, name, _type, _size in t.fields(t.by_name["Parameter::Container"]):
-        if off is not None and off >= TOTAL_END:
-            out[off] = name
+    for off, name, type_name, _size in t.fields(t.by_name["Parameter::Container"]):
+        if off is None or off < TOTAL_END:
+            continue
+        out[off] = name
+        # A nested unnamed struct -- `DotDamagePlus` is one, ten bytes of named shorts. Expanding it is
+        # what turns "DotDamagePlus+2" into "DotDamagePlus.Poison", and the member names are the reason
+        # SAA_ADDPOISONDMG can be confirmed rather than assumed.
+        nested = t.by_name.get((type_name or "").strip())
+        if nested:
+            for sub_off, sub_name, _t, _s in t.fields(nested):
+                if sub_off is not None:
+                    out[off + sub_off] = "%s.%s" % (name, sub_name)
     return out
 
 
@@ -150,9 +241,17 @@ def read_handler(code, va, fields, limit=64):
 
 
 def main():
+    # Windows consoles default to a codepage that cannot encode the em dashes in the generated doc, and a
+    # redirect inherits it -- so the file would come out with replacement characters.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except AttributeError:
+        pass
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--action", type=int, help="show one action with its disassembly")
     ap.add_argument("--csharp", action="store_true", help="emit the port's table")
+    ap.add_argument("--markdown", action="store_true", help="emit docs/SUBABSTATE_ACTIONS.md")
     a = ap.parse_args()
 
     code = Code()
@@ -194,16 +293,61 @@ def main():
             print("\n".join(lines))
         return
 
+    if a.markdown:
+        effect = [r for r in rows if r[4] or r[5]]
+        print(MARKDOWN_HEADER
+              .replace("{ACTIONS}", str(len(rows)))
+              .replace("{HANDLERS}", str(len({r[2] for r in rows})))
+              .replace("{WITH}", str(len(effect)))
+              .replace("{NONE}", str(len(rows) - len(effect))))
+        print("| # | `SubAbstateAction` | Effect | Handler |")
+        print("| ---: | --- | --- | --- |")
+        for action, name, case, va, writes, flags, truncated, _, _ in rows:
+            bits = []
+            for m, cluster, slot in writes:
+                sign = "+" if m == "add" else "-" if m == "sub" else "="
+                if cluster == "Container":
+                    bits.append("%s `%s`" % (sign, slot.replace(" (alt)", "")))
+                else:
+                    half = "rate" if cluster.endswith("Rate") else "plus"
+                    bits.append("%s `%s` %s" % (sign, slot.replace(" (alt)", ""), half))
+            for f in flags:
+                bits.append("flag `%s`" % f)
+            print("| %d | `%s` | %s | `0x%08X` |"
+                  % (action, name, ", ".join(bits) or "_none_", va))
+        print(MARKDOWN_FOOTER)
+        return
+
     if a.csharp:
-        print("// generated by tools/abstate_actions.py -- do not hand-edit")
+        # Emitted, not transcribed: 120 rows of (sign, half, slot) is exactly the shape of thing that
+        # acquires a typo when a human copies it, and the typo would be a silently wrong stat.
+        print("// GENERATED by tools/abstate_actions.py --csharp. Do not hand-edit.")
+        print("// Source: AbstateElementInObject::aeo_ParameterEnchant (0x004079F0), case table 0x408320,")
+        print("//         jump table 0x408200. Names from the PDB's SubAbstateAction enum.")
+        print()
+        print("public enum SubAbstateAction")
+        print("{")
+        for value in sorted(names):
+            print("    %s = %d," % (names[value], value))
+        print("}")
+        print()
+        print("// action -> what it writes. Absent means the handler is the shared epilogue: no container")
+        print("// effect at all, which is a READ RESULT and not an unexamined action.")
         for action, name, case, va, writes, flags, truncated, _, _ in rows:
             if not writes and not flags:
                 continue
-            terms = ", ".join('new(%s, %s, Stat.%s)' % ("true" if "Rate" in c else "false",
-                                                        "+1" if m == "add" else "-1", s)
-                              for m, c, s in writes)
-            print("        [%d] = new(SubAbstateAction.%s, [%s]),   // %s"
-                  % (action, name, terms, ", ".join(flags) or "-"))
+            parts = []
+            for m, cluster, slot in writes:
+                if cluster == "Container":
+                    parts.append('/* field %s %s */' % (m, slot))
+                else:
+                    half = "Rate" if cluster.endswith("Rate") else "Plus"
+                    parts.append('new(StatHalf.%s, %s, Stat.%s)'
+                                 % (half, "+1" if m == "add" else "-1", slot.replace(" (alt)", "")))
+            print("        [SubAbstateAction.%s] = new([%s]%s),"
+                  % (name, ", ".join(parts),
+                     (", " + " | ".join("ContainerFlag." + f.replace(" (alt)", "") for f in flags))
+                     if flags else ""))
         return
 
     effect = [r for r in rows if r[4] or r[5]]
