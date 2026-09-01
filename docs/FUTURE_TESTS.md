@@ -195,11 +195,11 @@ Outgoing criticals per weapon, against those two candidate models:
 
 | weapon | CriRate | landed | crits | measured | `CriRate` | `CriRate + 50` |
 | --- | --- | --- | --- | --- | --- | --- |
-| 257 Splitter, lv59 | 30 | 79 | 6 | 75.9‰ | | |
-| 257 Splitter, lv60 | 30 | 43 | 2 | 46.5‰ | | |
-| 40001 Kaineneceflight | 70 | 90 | 2 | 22.2‰ | | |
-| 40101 Kainenecefury | 90 | 22 | 3 | 136.4‰ | | |
-| **all** | | **234** | **13** | **55.6‰** | **11.9 expected** | **23.6 expected** |
+| 257 Splitter, lv59 | 30 | 79 | 6 | 75.9/1000 | | |
+| 257 Splitter, lv60 | 30 | 43 | 2 | 46.5/1000 | | |
+| 40001 Kaineneceflight | 70 | 90 | 2 | 22.2/1000 | | |
+| 40101 Kainenecefury | 90 | 22 | 3 | 136.4/1000 | | |
+| **all** | | **234** | **13** | **55.6/1000** | **11.9 expected** | **23.6 expected** |
 
 13 observed against 11.9 expected fits the weapon term alone; against 23.6 it does not (Poisson
 P(≤13 | 23.6) ≈ 1.4%). **13 events is thin** — the per-weapon column is far too noisy to rank the models on
