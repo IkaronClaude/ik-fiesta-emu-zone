@@ -28,24 +28,37 @@ Every swing the simulator already makes is affected. Today swings never miss, ne
 
 ### Started 2026-09-01 — where the rolls actually live
 
-Read so far, before writing any code:
+**The `RulesOfEngagement` vtable, resolved** (from `??_7RulesOfEngagementNormalPY@@6B@` at 0x006D009C):
 
-* **`smo_SwingDamage` does the rolling, not `roe_CalcDamage`.** At `+0x155` it calls rule vtable slot
-  **0x18** (the hit rate), draws `well512_GetRandom(1000)` and compares; at `+0x193` it calls slot **0x2C**
-  (shield block) and draws again. Both happen BEFORE `roe_CalcDamage` is reached, which is why a missed or
-  blocked swing never enters the damage pipeline at all.
-* **`roe_HitRate@NormalPY` (0x005011F0) is not a plain accessor.** It computes a rate via vtable slot 0x14,
-  draws its own `well512_GetRandom(1000)`, compares, and on failure writes the OUTCOME back into the
-  `EngageArgument` before returning `fldz`:
-  - `mov byte [arg+0x13], 1` -> `isshieldblock`
-  - the sibling path at 0x005013FF consults the defender's `so_GetItemActionObserves` first — an item
-    action can influence a miss.
-  `EngageArgument`'s flag bytes are `iscritical@0x10, ismiss@0x11, isdead@0x12, isshieldblock@0x13`, and
-  they are the same bits the wire reports in `NC_BAT_SWING_DAMAGE_CMD.flag` — so the capture's flag word is
-  a direct check on this code.
+```
++0x00 roe_CriticalStunRate  +0x14 roe_ShieldBlock       +0x28 roe_ShieldBlockByGlobalAction
++0x04 roe_CriticalRate      +0x18 roe_HitRate           +0x2C roe_HitRateByGlobalAction
++0x08 roe_AttackPower       +0x1C roe_CalcDamage        +0x30 roe_FreeStateAttackPower
++0x0C roe_DefendPower       +0x20 roe_IsDamageSkill     +0x34 roe_FreeStateDefendPower
++0x10 roe_Damage            +0x24 roe_CriticalRateByGlobalAction   +0x38 roe_IsDamageImmune
+```
 
-⚠️ Two RNG draws in two functions means the port cannot model "hit chance" as one number. Resolve what slot
-0x14 is and whether its internal roll is a separate effect before porting anything.
+⚠️ Written down because a first pass through `smo_SwingDamage` guessed slot 0x2C was shield block. It is
+`roe_HitRateByGlobalAction`. Resolve slots against the vtable, never against what the neighbouring code
+looks like it is doing.
+
+**Where the rolls are:**
+
+* **`smo_SwingDamage` rolls, `roe_CalcDamage` does not.** It calls slot **0x18** `roe_HitRate` at `+0x15F`,
+  draws `well512_GetRandom(1000)` and compares; then slot **0x2C** `roe_HitRateByGlobalAction` at `+0x1B1`
+  with a second draw. Both happen BEFORE `roe_CalcDamage`, which is why a missed or blocked swing never
+  enters the damage pipeline — and why filtering the captures to `flagWord == 0` was sound.
+* **`roe_HitRate@NormalPY` (0x005011F0) does the BLOCK check first.** It calls slot 0x14
+  `roe_ShieldBlock`, draws its own `well512_GetRandom(1000)`, and if the draw comes in under the block
+  rate it writes `mov byte [arg+0x13], 1` — `isshieldblock` — and returns `fldz`. Only if the swing is not
+  blocked does it go on (via 0x005013FF, which first consults the defender's `so_GetItemActionObserves`,
+  so an item action can influence the outcome) to produce the hit rate.
+* **`EngageArgument`'s outcome bytes** are `iscritical@0x10, ismiss@0x11, isdead@0x12,
+  isshieldblock@0x13` — the same bits the wire reports in `NC_BAT_SWING_DAMAGE_CMD.flag`, so the capture's
+  flag word checks this code directly.
+
+**So a swing resolves in this order**, and the port models none of it: shield block → hit → global-action
+hit → (damage pipeline) → critical. Three independent WELL512 draws before any damage is computed.
 
 **Proof:** the captures already carry it. `flagWord` bit 2 is `ismissed` and bit 3 `isshieldblock`; the
 bucket tool currently discards every non-zero flag. Extend it to bucket MISSES and BLOCKS as counts, and
