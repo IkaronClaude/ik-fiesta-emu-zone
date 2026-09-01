@@ -54,7 +54,7 @@ REGENMOB_RECORD = 149
 PCAP_DECODE = r"C:/Projects/fiesta-proxy/tools/pcap_decode.py"
 XOR_TABLE = os.environ.get("XOR_TABLE_PATH", r"C:/Projects/ik-fiesta-bots/xor-table.hex")
 
-FRAME = re.compile(r"^\s+(S<-|C->)\s+@\s*(\d+)\s+\[0x([0-9A-Fa-f]{4})\]\s+(\S+)")
+FRAME = re.compile(r"^\s+(S<-|C->)\s+@\s*(\d+)(?:\s+t=([0-9.]+))?\s+\[0x([0-9A-Fa-f]{4})\]\s+(\S+)")
 CONV = re.compile(r"^==== server (\S+) <-> client (\S+) ====")
 HEXROW = re.compile(r"^\s+([0-9a-f]{4})\s+((?:[0-9a-f]{2} )+)")
 
@@ -75,7 +75,10 @@ def decode(pcap, port, cache):
     if cache and os.path.exists(cache):
         return open(cache, encoding="utf-8", errors="replace").read().splitlines()
     env = dict(os.environ, XOR_TABLE_PATH=XOR_TABLE, PYTHONIOENCODING="utf-8")
-    cmd = [sys.executable, PCAP_DECODE, pcap, "--hide-movement"]
+    # --timestamps is what makes a DURATION checkable. Without it the dump carries per-direction byte
+    # offsets and nothing else, so an abstate's restKeeptime cannot be expired and frame ORDER gets
+    # mistaken for a clock.
+    cmd = [sys.executable, PCAP_DECODE, pcap, "--hide-movement", "--timestamps"]
     if port:
         cmd += ["--port", str(port)]
     out = subprocess.run(cmd, capture_output=True, env=env,
@@ -86,15 +89,20 @@ def decode(pcap, port, cache):
 
 
 def frames(lines):
-    """(conv, order, name, payload) for every frame, in file order.
+    """(conv, order, ts, name, payload) for every frame, in file order.
+
+    `ts` is SECONDS from the conversation's first frame, or None when the dump was made without
+    --timestamps. It is None rather than 0.0 on purpose: 0.0 is a real time and callers that need a
+    duration have to be able to tell "the capture did not carry one" from "this happened at the start".
+
 
     The hex rows are the wire. The struct printer renders `flag` as a type name rather than a value and a
     PDB field order is not always the serialised order, so nothing here reads a decoded field."""
-    conv, order, pending, buf = -1, 0, None, bytearray()
+    conv, order, pending, buf, ts = -1, 0, None, bytearray(), None
 
     def done():
         if pending is not None:
-            yield conv, order, pending, bytes(buf)
+            yield conv, order, ts, pending, bytes(buf)
 
     for line in lines:
         if CONV.match(line):
@@ -107,7 +115,8 @@ def frames(lines):
         if m:
             for f in done():
                 yield f
-            pending, buf = m.group(4), bytearray()
+            pending, buf = m.group(5), bytearray()
+            ts = float(m.group(3)) if m.group(3) else None
             order += 1
             continue
         h = HEXROW.match(line)
@@ -128,7 +137,7 @@ def u32(b, o):
 def collect(lines):
     """Walk the stream once, maintaining state, and tag each swing with the state prevailing at it."""
     params = {}                                   # paramType -> value, the player's whole vector
-    abstates = collections.defaultdict(dict)      # (conv, handle) -> {abstate id: strength}
+    abstates = collections.defaultdict(dict)      # (conv, handle) -> {abstate id: (strength, expiresAt)}
     mob_of = {}                                   # (conv, handle) -> mob id, from REGENMOB
     levelups = 0
     level = None
@@ -136,17 +145,37 @@ def collect(lines):
     weapon = None                                 # item id in the weapon slot, or None if unknown
     swings, chat, hit_counts = [], [], collections.Counter()
 
-    def set_abstate(conv, handle, ident, strength):
+    def set_abstate(conv, handle, ident, strength, keeptime_ms=None, now=None):
         # STRENGTH, not a flag. `ABSTATE_INFORMATION` is {abstateID, restKeeptime, strength} -- the third
         # word was read here as an on/off bit for a while, which silently discarded the one field that
         # decides an abstate's magnitude: `SubAbState` rows are keyed by (InxName, Strength) and
         # StaMoraleDecreaseWC alone spans 1490..2148 across ranks 17-20.
-        abstates[(conv, handle)][ident] = strength
+        #
+        # The SECOND word is restKeeptime, and it is why this needs a clock. Without one, a state is only
+        # ever removed by an explicit ABSTATERESET, so anything that lapses on its own timer is held for
+        # the rest of the capture -- harmless for StaImmortal, which carries no actions, and wrong for
+        # SubStaMoraleDecreaseWC, which has 15 s and a real weapon-damage effect.
+        expires = None
+        if keeptime_ms and now is not None:
+            expires = now + keeptime_ms / 1000.0
+        abstates[(conv, handle)][ident] = (strength, expires)
 
     def clear_abstate(conv, handle, ident):
         abstates[(conv, handle)].pop(ident, None)
 
-    for conv, order, name, raw in frames(lines):
+    def live(conv, handle, now):
+        """The states still active at `now`, dropping any whose restKeeptime has run out.
+
+        A state with no expiry (keeptime 0, or a dump without timestamps) is kept: "we do not know when
+        this ends" must not be silently turned into "it already ended"."""
+        out = {}
+        for ident, (strength, expires) in abstates[(conv, handle)].items():
+            if expires is not None and now is not None and now >= expires:
+                continue
+            out[ident] = strength
+        return out
+
+    for conv, order, ts, name, raw in frames(lines):
         if name == "NC_BRIEFINFO_REGENMOB_CMD" and len(raw) >= 5:
             # handle u16@0, mode u8@2, mobid u16@3. This is the roster, and it is PER CONVERSATION, which
             # is what makes it trustworthy: a handle->mob map merged across relogs is the documented way
@@ -188,14 +217,16 @@ def collect(lines):
         elif name == "NC_BAT_ABSTATESET_CMD" and len(raw) >= 6:
             # {handle u16, abstate u32} only -- no strength, so a set with no CHANGE alongside it
             # records the abstate at strength 0 = "present, magnitude unknown".
-            set_abstate(conv, u16(raw, 0), u32(raw, 2),
-                        abstates[(conv, u16(raw, 0))].get(u32(raw, 2), 0))
+            # ABSTATESET carries no strength or keeptime -- keep whatever the last full announcement
+            # said rather than resetting either to zero.
+            prev = abstates[(conv, u16(raw, 0))].get(u32(raw, 2), (0, None))
+            abstates[(conv, u16(raw, 0))][u32(raw, 2)] = prev
         elif name == "NC_BAT_ABSTATERESET_CMD" and len(raw) >= 6:
             clear_abstate(conv, u16(raw, 0), u32(raw, 2))
         elif name == "NC_BRIEFINFO_ABSTATE_CHANGE_CMD" and len(raw) >= 14:
             # handle u16@0, then ABSTATE_INFORMATION: abstateID u32@2, restKeeptime u32@6,
             # STRENGTH u32@10.
-            set_abstate(conv, u16(raw, 0), u32(raw, 2), u32(raw, 10))
+            set_abstate(conv, u16(raw, 0), u32(raw, 2), u32(raw, 10), u32(raw, 6), ts)
         elif name == "NC_BRIEFINFO_ABSTATE_CHANGE_LIST_CMD" and len(raw) >= 3:
             # handle u16@0, count u8@2, then count * ABSTATE_INFORMATION (12 bytes each). Ignoring this
             # leaves per-mob state wrong wherever the server sends it in bulk rather than one at a time.
@@ -204,7 +235,8 @@ def collect(lines):
                 off = 3 + i * 12
                 if off + 12 > len(raw):
                     break
-                set_abstate(conv, handle, u32(raw, off), u32(raw, off + 8))
+                set_abstate(conv, handle, u32(raw, off), u32(raw, off + 8),
+                            u32(raw, off + 4), ts)
         elif name == "NC_CHAR_CLIENT_BASE_CMD" and len(raw) >= 0x5D:
             # CHARSTATDISTSTR at +0x57 -- the free-stat ALLOCATION, one byte per stat. It is the input to
             # `roe_Damage`'s per-rule override and to the term the server adds on top of every displayed
@@ -268,8 +300,8 @@ def collect(lines):
                 # AT THE SWING.
                 "params": tuple(sorted(params.items())),
                 # (id, strength) pairs -- strength is part of the state, not decoration.
-                "attackerAbstates": tuple(sorted(abstates[(conv, att)].items())),
-                "defenderAbstates": tuple(sorted(abstates[(conv, dfn)].items())),
+                "attackerAbstates": tuple(sorted(live(conv, att, ts).items())),
+                "defenderAbstates": tuple(sorted(live(conv, dfn, ts).items())),
             })
     return swings, chat, hit_counts, free_stat, chrclass
 

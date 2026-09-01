@@ -346,8 +346,18 @@ damage callbacks (also task 2). Each needs a capture that actually triggers it.
 
 ## 6. Instrument work these depend on
 
-- [ ] **Timestamps.** `damage_buckets.py` cannot expire anything because the decoded dump carries per-
-      direction byte offsets, not a clock. Needed for abstate expiry, cast/hit timing and swing cadence.
+- [x] **Timestamps.** `pcap_decode.py --timestamps` now prints each frame's capture time, in seconds from
+      the CONVERSATION's first frame (a relog opens a new conversation and the two decode independently).
+      Opt-in, so the default output and the decode-the-whole-thing workflow are unchanged.
+
+      `damage_buckets.py` passes it and expires an abstate when its `restKeeptime` runs out instead of
+      holding it until an explicit `ABSTATERESET`. That closed a real correctness hole: 6 of 248 state
+      buckets were being split by a debuff that had already lapsed. **The 556/556 damage check still
+      passes on the corrected state**, which is the useful result — the hole was real but had not been
+      changing any prediction.
+
+      A state with no expiry (keeptime 0, or a dump made without the flag) is KEPT. "We do not know when
+      this ends" must not quietly become "it already ended".
 - [ ] **Bucket misses and blocks**, not just clean hits — the rates are the ground truth for task 1.
 - [ ] **Bucket skill hits** by skill and rank — the ground truth for task 4.
 - [ ] **Free-stat tables for Dex / Int / Men**, read in full the way Str was (0x0DA50BC4) and Con should be
