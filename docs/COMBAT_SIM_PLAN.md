@@ -164,10 +164,46 @@ and applies their parameter effects; nothing can apply, tick or expire one.
       server's only two readers are `so_ReinforceMove@ShineMobileObject` (entangle) and
       `sp_Schedule_SwingStart@ShinePlayer` (attack). Not the tactic states. And `cannotmove_stun` has no
       reader at all.
-- [ ] **`SubAbnormalStateActor` subclasses** — poison/DoT (`sasa_GetDamage`, `sasa_Routine`), shields and
-      absorbs (`sasa_Act_DamegeAbsorpt`), damage-minus (`sasa_Act_DamageMinusRate`), heal-over-time. The
-      container side of these is already decoded — `SAA_ADDPOISONDMG` and friends write
-      `DotDamagePlus.Poison` etc. — but nothing ticks them.
+- [x] **The `SubAbnormalStateActor` family is MAPPED.** 31 subclasses over a 27-slot vtable of which the
+      base implements four and stubs the rest; each subclass overrides one or two. The slots that matter:
+
+      ```
+       3 +0x0C sasa_Routine                       Poison Disease HPHeal SPHeal HPSPHeal AreaDamage MagicField DmgState
+       4 +0x10 sasa_Act_DamegeAbsorpt             Shield ManaShield
+       5 +0x14 sasa_Act_Killed                    PartyRecharge SelfRevive
+      10 +0x28 sasa_Act_DamegeIntercept           RangeIntercept
+      11 +0x2C sasa_Act_LastDamegeInterceptByAtk  LastDmgRatio HideDamage
+      12 +0x30 sasa_Act_LastDamegeInterceptByDef  LastDmgRatio_DefSide
+      21 +0x54 sasa_Act_AllDamageAbsorb           ShieldHPRate
+      22 +0x58 sasa_Act_NormalDamageDown          DamageDownRate
+      25 +0x64 sasa_Act_MinHP                     MinHP
+      ```
+
+- [x] **Damage over time is ported** (`DotDamage`), which is `sasa_Routine@Poison` (0x0040D4C0) plus
+      `sasa_GetDamage@Poison` (0x0040B360) and `smo_DotDamageAppend` (0x00408A60):
+
+      ```
+      if (target holds abstate 291 or 499) return;        // 291 is StaImmortal
+      if (!subState has SAA_DOTDAMAGE) return 0;
+      damage = SAA_DOTDAMAGE arg + DotDamagePlus[member for subState.Type]
+      if (damage < 1) damage = 1                          // AFTER the append
+      damage = min(damage, current HP)                    // a DoT does not overkill
+      ```
+
+      The type byte at +0x26 selects the member, off `smo_DotDamageAppend`'s jump table:
+      `0x16 Blooding, 0x21 Poison, 0x22 Desease, 0x53 Burn, 0x54 PitBlooding`, everything else nothing.
+      **The action names and the member names then agree** — `SAA_ADDPOISONDMG` writes `Poison` and a
+      type-0x21 state reads it back — which is the cross-check on both readings.
+
+      The append comes off the **TARGET's** container, so a `SAA_SUBTRACTPOISONDMG` buff on the victim
+      softens their own poison and the floor of 1 stops it reaching zero.
+
+      The same type byte is what picks `cannotmove_stun` over `cannotmove_entangle`, so it is now a field
+      on `AbstateElementInObject` and the alt-branch rule is the list's own rather than a caller's delegate.
+
+- [ ] **The remaining actors.** Shields and absorbs (`sasa_Act_DamegeAbsorpt`, `sasa_Act_AllDamageAbsorb`),
+      damage-down (`sasa_Act_NormalDamageDown`, `sasa_Act_DotDamageDown`), `sasa_Act_MinHP`, the heals, and
+      `sasa_Act_Killed`. All are one-subclass slots, so each is a small read.
 - [x] **The three abstate damage callbacks** in `roe_CalcDamage`'s tail are READ. Each walks one side's
       `so_mobile_AbstateList` (object vtable +0x52C) and calls one `SubAbnormalStateActor` slot on every
       element:

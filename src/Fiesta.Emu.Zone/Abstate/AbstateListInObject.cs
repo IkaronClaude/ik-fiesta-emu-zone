@@ -15,6 +15,18 @@ namespace Fiesta.Emu.Zone.Abstate;
 /// <param name="AppliedAtMs">When it was applied, on the simulation's clock.</param>
 public sealed record AbstateElementInObject(int AbstateId, int Strength, int RestKeeptime, long AppliedAtMs)
 {
+    /// <summary>The sub-state's TYPE byte, at +0x26 of the `SubAbState` row the strength selected.
+    ///
+    /// <para>Two things in the engine read it, and neither is obvious from the name: it picks
+    /// `cannotmove_stun` over `cannotmove_entangle` in `SAA_NOMOVE` (types 0x15 and 0x60), and it selects
+    /// which `DotDamagePlus` member a poison tick draws from (see <see cref="DotDamage"/>). Zero is a real
+    /// type, so it is not a marker for "unknown".</para></summary>
+    public int SubStateType { get; init; }
+
+    /// <summary>Whether this state takes `SAA_NOMOVE`'s alternative branch — a stun rather than an
+    /// entangle. `aeo_ParameterEnchant`'s handler compares the type against 0x15 and 0x60.</summary>
+    public bool IsStunType => SubStateType is 0x15 or 0x60;
+
     /// <summary>`aeo_GetRestTime` — how long is left, never negative.</summary>
     public int RestTimeMs(long nowMs) => (int)Math.Max(0, RestKeeptime - (nowMs - AppliedAtMs));
 
@@ -69,10 +81,13 @@ public sealed class AbstateListInObject
     /// <para>Re-applying an id REPLACES the existing element rather than stacking a second one, which is
     /// what the wire shows: the server re-sends a combat debuff constantly and the client does not
     /// accumulate them.</para></summary>
-    public void Set(int abstateId, int strength, int restKeeptimeMs, long nowMs)
+    public void Set(int abstateId, int strength, int restKeeptimeMs, long nowMs, int subStateType = 0)
     {
         _active.RemoveAll(e => e.AbstateId == abstateId);
-        _active.Add(new AbstateElementInObject(abstateId, strength, restKeeptimeMs, nowMs));
+        _active.Add(new AbstateElementInObject(abstateId, strength, restKeeptimeMs, nowMs)
+        {
+            SubStateType = subStateType,
+        });
     }
 
     /// <summary>Remove a state, as `NC_BRIEFINFO_ABSTATERESET_CMD` (0x2428) announces it.</summary>
@@ -134,8 +149,9 @@ public sealed class AbstateListInObject
     /// they are read results.</para></summary>
     /// <param name="resolve">The state -> actions lookup: `AbState.shn` maps the id to a sub-state name,
     /// `SubAbState.shn` maps (name, strength) to up to four (ActionIndex, ActionArg) pairs.</param>
-    /// <param name="altCondition">Whether a state takes `SAA_NOMOVE`'s alternative branch — the sub-state
-    /// type at +0x26 being 0x15 or 0x60. Stun rather than entangle.</param>
+    /// <param name="altCondition">Whether a state takes `SAA_NOMOVE`'s alternative branch. Defaults to
+    /// <see cref="AbstateElementInObject.IsStunType"/>, which is the server's own rule; the parameter
+    /// exists for callers reconstructing from a capture that has not resolved the type byte.</param>
     public bool ParameterEnchant(ParameterContainer container,
                                  Func<AbstateElementInObject, IReadOnlyList<(SubAbstateAction Action, int Arg)>> resolve,
                                  Func<AbstateElementInObject, bool>? altCondition = null)
@@ -170,7 +186,8 @@ public sealed class AbstateListInObject
                 foreach (var f in effect.Fields)
                     container.WriteField(f.Field, f.Sign, arg);
 
-                var flags = effect.AltFlags != ContainerFlag.None && (altCondition?.Invoke(element) ?? false)
+                var flags = effect.AltFlags != ContainerFlag.None
+                            && (altCondition?.Invoke(element) ?? element.IsStunType)
                     ? effect.AltFlags
                     : effect.Flags;
                 container.Flags |= flags;

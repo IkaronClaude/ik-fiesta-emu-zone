@@ -354,3 +354,118 @@ public class ContainerFlagEnforcementTests
         container.Flags.ShouldBe(ContainerFlag.None);
     }
 }
+
+/// <summary>Damage over time — `SubAbnormalStateActorPoison::sasa_Routine` and the two functions under it.
+///
+/// <para>The tick is small, and every part of it was already half-read elsewhere in this project: the
+/// `SAA_DOTDAMAGE` argument comes from the same `SubAbState` row the parameter actions do, the append
+/// comes from the `DotDamagePlus` members the `SAA_ADD*DMG` family writes, and the suppression check is
+/// `StaImmortal` again.</para></summary>
+public class DotDamageTests
+{
+    /// <summary>The type byte selects the member, and the five that map were read off
+    /// `smo_DotDamageAppend`'s jump table rather than guessed from the names.
+    ///
+    /// <para>That the names then AGREE — `SAA_ADDPOISONDMG` writes `Poison`, and type 0x21 reads it back —
+    /// is the cross-check, not the derivation.</para></summary>
+    [Theory]
+    [InlineData(0x16, ContainerField.DotDamagePlusBlooding)]
+    [InlineData(0x21, ContainerField.DotDamagePlusPoison)]
+    [InlineData(0x22, ContainerField.DotDamagePlusDesease)]
+    [InlineData(0x53, ContainerField.DotDamagePlusBurn)]
+    [InlineData(0x54, ContainerField.DotDamagePlusPitBlooding)]
+    public void EachDotTypeDrawsFromItsOwnMember(int type, ContainerField field)
+        => DotDamage.MemberForSubStateType(type).ShouldBe(field);
+
+    /// <summary>The other fifty-two types in the table's range fall through to no member at all — which is
+    /// a read result, since they are enumerated in the case table.</summary>
+    [Theory]
+    [InlineData(0x17)]
+    [InlineData(0x20)]
+    [InlineData(0x3F)]
+    [InlineData(0x52)]
+    [InlineData(0x99)]
+    public void ATypeWithNoMemberAppendsNothing(int type)
+    {
+        DotDamage.MemberForSubStateType(type).ShouldBeNull();
+        DotDamage.Append(new ParameterContainer(), type).ShouldBe(0);
+    }
+
+    /// <summary>`damage = SAA_DOTDAMAGE arg + append`, and the append comes off the TARGET's container —
+    /// so a debuff on the victim makes their own poison hit harder.</summary>
+    [Fact]
+    public void TheTargetsOwnDotBonusIsAddedToTheCastersDamage()
+    {
+        var target = new ParameterContainer();
+        DotDamage.Tick(target, 0x21, dotDamageArg: 40, currentHp: 1000).ShouldBe(40);
+
+        target[ContainerField.DotDamagePlusPoison] = 15;      // SAA_ADDPOISONDMG on the victim
+        DotDamage.Tick(target, 0x21, dotDamageArg: 40, currentHp: 1000).ShouldBe(55);
+
+        target[ContainerField.DotDamagePlusPoison] = -15;     // SAA_SUBTRACTPOISONDMG
+        DotDamage.Tick(target, 0x21, dotDamageArg: 40, currentHp: 1000).ShouldBe(25);
+    }
+
+    /// <summary>The floor of 1 is applied AFTER the append, so a resistance that more than cancels the
+    /// poison still leaves a tick of 1 rather than 0. `sasa_GetDamage+0xA5`.</summary>
+    [Fact]
+    public void TheFloorOfOneIsAppliedAfterTheAppendNotBefore()
+    {
+        var target = new ParameterContainer();
+        target[ContainerField.DotDamagePlusPoison] = -500;
+
+        DotDamage.Tick(target, 0x21, dotDamageArg: 40, currentHp: 1000).ShouldBe(1);
+    }
+
+    /// <summary>A DoT does not overkill — it is capped at the target's current HP.</summary>
+    [Fact]
+    public void ADotTickIsCappedAtCurrentHp()
+    {
+        var target = new ParameterContainer();
+        DotDamage.Tick(target, 0x21, dotDamageArg: 400, currentHp: 37).ShouldBe(37);
+        DotDamage.Tick(target, 0x21, dotDamageArg: 400, currentHp: 0).ShouldBe(0);
+    }
+
+    /// <summary>A sub-state row with no `SAA_DOTDAMAGE` deals nothing. Null is "the row has no such
+    /// action", which is a different thing from an argument of 0 — that would still tick for the floor
+    /// of 1.</summary>
+    [Fact]
+    public void NoDotActionMeansNoTickWhereasAZeroArgumentStillTicksForOne()
+    {
+        var target = new ParameterContainer();
+        DotDamage.Tick(target, 0x21, dotDamageArg: null, currentHp: 1000).ShouldBe(0);
+        DotDamage.Tick(target, 0x21, dotDamageArg: 0, currentHp: 1000).ShouldBe(1);
+    }
+
+    /// <summary>`StaImmortal` blocks the tick outright — `sasa_Routine@Poison` tests abstate 291 and 499
+    /// before computing anything. Spawn invulnerability turns out to mean invulnerable to poison too.</summary>
+    [Fact]
+    public void SpawnInvulnerabilitySuppressesTheTickEntirely()
+    {
+        var states = new AbstateListInObject();
+        DotDamage.IsSuppressed(states).ShouldBeFalse();
+
+        states.Set(DotDamage.StaImmortal, strength: 1, restKeeptimeMs: 5_000, nowMs: 0);
+        DotDamage.IsSuppressed(states).ShouldBeTrue();
+
+        states.Tick(5_000);
+        DotDamage.IsSuppressed(states).ShouldBeFalse();
+    }
+
+    /// <summary>The sub-state type also picks stun over entangle, which is now the list's own rule rather
+    /// than a delegate the caller has to supply.</summary>
+    [Theory]
+    [InlineData(0x15, ContainerFlag.CannotMoveStun)]
+    [InlineData(0x60, ContainerFlag.CannotMoveStun)]
+    [InlineData(0x21, ContainerFlag.CannotMoveEntangle)]
+    [InlineData(0x00, ContainerFlag.CannotMoveEntangle)]
+    public void TheTypeByteAlsoDecidesStunVersusEntangle(int type, ContainerFlag expected)
+    {
+        var container = new ParameterContainer();
+        var list = new AbstateListInObject();
+        list.Set(2, strength: 1, restKeeptimeMs: 3_000, nowMs: 0, subStateType: type);
+
+        list.ParameterEnchant(container, _ => [(SubAbstateAction.SAA_NOMOVE, 0)]).ShouldBeTrue();
+        container.Flags.ShouldBe(expected);
+    }
+}
