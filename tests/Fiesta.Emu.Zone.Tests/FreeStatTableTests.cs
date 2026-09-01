@@ -125,4 +125,32 @@ public class FreeStatTableTests
         FreeStatTables.DexTbRate(33).ShouldBe(66);
         FreeStatTables.MenCriRate(25).ShouldBe(50);
     }
+
+    /// <summary>The tables ARE the implementation; these closed forms are the readable description of each
+    /// shape. Holding the two together means a future table edit that breaks a stated shape shows up as a
+    /// finding instead of a silent divergence — and a shape that is simply wrong gets caught here rather
+    /// than in a damage number.</summary>
+    [Fact]
+    public void EveryTableMatchesTheShapeItsCommentClaims()
+    {
+        for (var n = 0; n <= FreeStatTables.MaxPoints; n++)
+        {
+            FreeStatTables.StrWcAbsolute(n).ShouldBe(n + n / 5, $"Str at {n}");
+            FreeStatTables.IntMaAbsolute(n).ShouldBe(n + n / 5, $"Int at {n}");
+            FreeStatTables.ConAcAbsolute(n).ShouldBe((n + 1) / 2, $"Con.AC at {n}");
+            FreeStatTables.MenMrAbsolute(n).ShouldBe((n + 1) / 2, $"Men.MR at {n}");
+            FreeStatTables.ConMaxHp(n).ShouldBe(5 * n, $"Con.MaxHP at {n}");
+            FreeStatTables.MenMaxSp(n).ShouldBe(5 * n, $"Men.MaxSP at {n}");
+
+            FreeStatTables.DexThRate(n).ShouldBe(
+                n <= 33 ? 3 * n : n <= 67 ? 99 + 2 * (n - 33) : 167 + (n - 67), $"Dex.TH at {n}");
+            FreeStatTables.DexTbRate(n).ShouldBe(
+                n <= 50 ? 2 * n : 100 + (n - 50), $"Dex.TB at {n}");
+            FreeStatTables.ConBlockRate(n).ShouldBe(
+                n <= 50 ? n : n <= 150 ? 50 + (n - 50) / 2 : 100, $"Con.Block at {n}");
+            FreeStatTables.MenCriRate(n).ShouldBe(
+                n <= 25 ? 2 * n : n <= 61 ? 50 + (n - 25) : Math.Min(86 + (n - 61) / 2, 130),
+                $"Men.CriRate at {n}");
+        }
+    }
 }

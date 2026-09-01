@@ -44,7 +44,11 @@ are where 0x1035's params 16 and 17 pick up their free-stat halves. What remains
       **`FreeStatMen.CriRate[25] = 50`** — exactly the "+5% from 25 MEN" the operator gave from play,
       before the table was read.
 
-      Ported as `FreeStatTables`, formulas rather than embedded data.
+      Ported as `FreeStatTables` — **the tables themselves**, all 181 entries of each, not the curves.
+      Operator's call and the right one: a closed form is a claim ABOUT the data, and one that is exact
+      today becomes a silent bug the day a server tweaks an entry. The curves stay in the comments as the
+      readable description of each shape, with `EveryTableMatchesTheShapeItsCommentClaims` holding the two
+      together so a divergence is a finding rather than a drift.
 
 ## Untested paths in the damage engine
 
