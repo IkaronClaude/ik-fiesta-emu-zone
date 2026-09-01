@@ -190,22 +190,47 @@ public class SwingRollTests
         }
     }
 
-    /// <summary>The payoff: a weapon's `ItemInfo.CriRate` now IS the character's crit chance, which is
-    /// what the operator's play numbers and the capture both say.
+    /// <summary>Whatever sits in those three rate slots IS the crit chance, in PERMILLE — the result is
+    /// compared against <c>well512_GetRandom(1000)</c>, so 50 is 5% and the floor of 1 is a literal
+    /// 1-in-1000.
     ///
-    /// <para>`FighterDamageLvl60.pcapng` weapons are Splitter 30, Kaineneceflight 70, Kainenecefury 90,
-    /// and 13 of 234 landed outgoing swings crit — 55.6 permille against 51.0 predicted by the weapon term
-    /// alone.</para></summary>
+    /// <para>⚠️ <b>What PUTS a number there is an open question, and this test no longer claims it is a
+    /// weapon's `ItemInfo.CriRate`.</b> An earlier version asserted exactly that, because the capture's
+    /// weapons (Splitter 30, Kaineneceflight 70, Kainenecefury 90) predicted close to the measured 55.6
+    /// permille. The numbers do fit — and so does a model with no weapon term at all: over 234 landed
+    /// swings the MEN-only prediction is 11.7 criticals and the weapon-only prediction 11.9, against 13
+    /// observed. 234 swings cannot separate them, and a scan for direct writes to those displacements
+    /// finds only `c_clear` — no equipment code at all.</para>
+    ///
+    /// <para>Operator's play figures, for whoever settles it: weapons carry roughly 3–9% (30–90 permille,
+    /// which is exactly the range `ItemInfo.CriRate` holds), 25 MEN adds 5%, and a normal player without
+    /// high-level jewellery or premium items is <b>5–10% in TOTAL</b> — which a straight sum of a weapon
+    /// and 25 MEN would already exceed. So the two terms are probably not both feeding this
+    /// function.</para></summary>
     [Theory]
     [InlineData(30)]
     [InlineData(70)]
     [InlineData(90)]
-    public void AWeaponsCriRateIsTheCritChance(int criRate)
+    public void WhateverIsInTheCritSlotsIsTheChanceInPermille(int permille)
     {
         var attacker = new Fighter();
-        attacker.Parameters.Rate(StatModifier.Item)[Stat.CriDamRate] = criRate;
+        attacker.Parameters.Rate(StatModifier.Item)[Stat.CriDamRate] = permille;
 
-        DamageCalculator.CriticalRate(attacker, new Fighter()).ShouldBe(criRate);
+        DamageCalculator.CriticalRate(attacker, new Fighter()).ShouldBe(permille);
+    }
+
+    /// <summary>The one crit term pinned end to end: `roe_FreeStatCriRate` adds `FreeStatMen.CriRate`, and
+    /// the live table gives 25 points exactly 50 permille — the operator's 5%, to the point.
+    ///
+    /// <para>On its own that predicts 11.7 criticals over the capture's 234 landed swings against 13
+    /// observed, so MEN alone already accounts for what was measured.</para></summary>
+    [Fact]
+    public void TheMenTermIsPinnedEndToEnd()
+    {
+        FreeStatTables.MenCriRate(25).ShouldBe(50);
+
+        var attacker = new Fighter { FreeStatMenCriRate = FreeStatTables.MenCriRate(25) };
+        DamageCalculator.CriticalRate(attacker, new Fighter()).ShouldBe(50);
     }
 
     /// <summary>Three attacker layers add at <see cref="Stat.CriDamRate"/>, two defender layers subtract at

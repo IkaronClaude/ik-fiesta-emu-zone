@@ -176,20 +176,23 @@ public static class CharacterParameters
         plus[Stat.CriDam] += item.CriDamPlus;
         plus[Stat.MagCriDam] += item.MagCriDamPlus;
 
-        // THE CRITICAL TERMS GO IN THE RATE HALF, NOT THE PLUS HALF. `roe_CriticalRate` reads
-        // Item.Rate[CriDamRate] (+0x218) and Item.Rate[CriticalTB] (+0x240) -- confirmed twice over, by
-        // reading the function and by `tools/cluster_xref.py --sym roe_CriticalRate`. The Plus writes
-        // above reach `Total`, which is what the client's displayed figure comes from; they are read by
-        // nothing in the roll, so before this line a weapon's crit rate did nothing at all.
+        // ⚠️ WHERE A WEAPON'S `CriRate` GOES IS NOT KNOWN, and this port does not pretend otherwise.
         //
-        // `ItemInfo.CriRate` is already permille on the same scale as the roll: it runs 10..90 across the
-        // file, and this capture's three weapons are Splitter 30, Kaineneceflight 70, Kainenecefury 90.
+        // `roe_CriticalRate` reads Item.Rate[CriDamRate] (+0x218) and Item.Rate[CriticalTB] (+0x240) --
+        // confirmed twice, by reading the function and by running it under emulation. What is NOT
+        // confirmed is that `ItemInfo.CriRate` is what lands there. A scan for direct writes to those
+        // displacements finds only `c_clear`; no equipment code writes them.
         //
-        // ⚠️ See `FUTURE_TESTS.md`: the container these land in is seeded with 1000 at CriDamRate, which
-        // would make every swing a critical. The gear terms are correct; the SEED is the open question.
-        var itemRate = container.Rate(StatModifier.Item);
-        itemRate[Stat.CriDamRate] += item.CriRate;
-        itemRate[Stat.CriticalTB] += item.CrlTB;
+        // That scan is a WEAK negative -- a generic loop writing `cluster[slot]` with a computed index
+        // would not appear in it -- so this is an open question, not a settled one. An earlier version of
+        // this file routed `CriRate` into Item.Rate[CriDamRate] on the strength of the numbers looking
+        // close. They do look close, and that is not evidence: for this capture the MEN-only model
+        // predicts 11.7 criticals and the weapon-only model 11.9, against 13 observed, so 234 swings
+        // cannot separate them. The routing was removed rather than left in as a plausible guess.
+        //
+        // The Plus writes below reach `Total`, which is where the client's displayed figure comes from.
+        // Settling this needs a live EQUIPPED player's container read at +0x218 -- the containers found so
+        // far were idle pool entries.
 
         var rate = container.Rate(StatModifier.ItemPowerRate);
         Compound(rate, Stat.WCmin, item.WCRate);

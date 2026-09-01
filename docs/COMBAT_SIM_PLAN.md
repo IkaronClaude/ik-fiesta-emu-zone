@@ -399,10 +399,29 @@ LastTune.Rate        slots not 1000:         42..48
 ```
 
 **The crit slots are cleared AFTER the erase, and only in the three clusters the crit formula adds.**
-Every other rate cluster keeps the eraser's 1000 at slot 32. So a live character's crit rate starts at 0,
-is floored at 1, and a weapon's `ItemInfo.CriRate` IS the chance — which is what the operator's play
-numbers said and what the capture measured: Splitter 30, Kaineneceflight 70, Kainenecefury 90, and 13
-criticals in 234 landed outgoing swings (55.6 permille against 51.0 predicted by the weapon term alone).
+Every other rate cluster keeps the eraser's 1000 at slot 32. So a live character's crit rate starts at 0
+and is floored at 1 — the 3000 was the bug, and it is gone.
+
+⚠️ **CORRECTED: what then PUTS a number in those slots is NOT known.** This section first claimed a
+weapon's `ItemInfo.CriRate` is the chance, because the capture's weapons (Splitter 30, Kaineneceflight 70,
+Kainenecefury 90) predicted 51.0 permille against 55.6 measured. That was an inference dressed as a
+finding. Two things undercut it:
+
+* a scan for writes to those displacements finds only `c_clear` — no equipment code. (A weak negative on
+  its own: a generic loop with a computed slot index would not show up.)
+* the capture cannot separate the models. Over 234 landed swings, MEN-only predicts **11.7** criticals and
+  weapon-only **11.9**, against **13** observed. Both fit; their SUM (23.6) does not.
+
+The operator's play figures point the same way: weapons carry roughly 3–9% (30–90 permille, exactly
+`ItemInfo.CriRate`'s range), 25 MEN adds 5%, and a normal player is **5–10% in total** — which a straight
+sum of the two would already exceed. So the two terms are probably not both feeding this function, and the
+`CharacterParameters.Equip` routing that assumed they were has been removed.
+
+The one term pinned end to end is `roe_FreeStatCriRate`: `FreeStatMen.CriRate[25] = 50` permille from the
+live table, which alone accounts for the 13 criticals observed.
+
+**Settling it** needs a live EQUIPPED player's container read at +0x218. The containers found so far were
+idle pool entries; a scan filtered on populated `Total` slots produced only false positives.
 
 Modelled as `ParameterCluster.RateFor(source)`, which is the eraser plus the per-cluster clearing. The
 556/556 damage check is unaffected — no damage accessor reads those slots.

@@ -348,7 +348,8 @@ public static class DamageCalculator
     /// floors on the bounds do not rescue it.</para></summary>
     public static double AttackPower(ICombatant attacker, int rollPermille,
                                     EngagementRule rule = EngagementRule.NormalPhysical,
-                                    int hpMissingPermille = 0)
+                                    int hpMissingPermille = 0,
+                                    int itemActionRatePermille = 1000)
     {
         var s = attacker.Parameters;
         var magical = rule.School() == DamageSchool.Magical;
@@ -370,6 +371,10 @@ public static class DamageCalculator
         var draw = range * rollPermille / 1000;
 
         var value = low + draw;
+        // `EventRun_IncDmgRate`'s chain, roe_AttackPower+0x129/+0x155: the attacker's item-action manager
+        // AND the defender's, folded into one permille and applied to the rolled figure. Verified by
+        // oracle to sit before the mastery rate below.
+        value = ApplyRate(value, itemActionRatePermille);
         if (!rule.AppliesWeaponMastery())
             return value;
         return ApplyRate(value, s.Rate(StatModifier.PassiveSkill)[
@@ -430,7 +435,8 @@ public static class DamageCalculator
         var isCritical = rule.AlwaysCriticals()
                          || (mods.ForceCritical ?? rng.Next(0, 1000) < mods.CriticalChancePermille);
 
-        var attackPower = AttackPower(attacker, rollPermille, rule, mods.AttackerHpMissingPermille);
+        var attackPower = AttackPower(attacker, rollPermille, rule, mods.AttackerHpMissingPermille,
+                                      mods.ItemActionDamageRatePermille);
         var defendPower = DefendPower(defender, rule, mods.DefenderHpMissingPermille);
 
         var damage = CoreDamage(attackPower, defendPower, attacker.Level, mods.BaseDamageRatePermille);
@@ -450,6 +456,10 @@ public static class DamageCalculator
         //     damage = 2*damage + damage * plus / 1000
         // The port doubled and stopped for a long time, which is invisible at the default 0 and wrong by
         // exactly that passive's permille for anyone who has it.
+        // `ChargedEffectContainer`, roe_CalcDamage+0x466. The two rates cancel when equal, and only the
+        // LARGER one acts -- in opposite directions, so this is one term and not two.
+        damage = ApplyChargedEffect(damage, mods.AttackForceRate1024, mods.DefendForceRate1024);
+
         if (isCritical)
         {
             var critPlus = attacker.Parameters.PassiveCriDamageRatePlus;
@@ -471,10 +481,33 @@ public static class DamageCalculator
         // damage of 8.5e12 comes back as its low 32 bits, which is negative and so floors to 1. A plain
         // (int)Math.Floor gave 2147483647 -- "maximum possible hit" where the server deals the minimum.
         var final = (int)Ftol32(damage);
+        // `so_ply_DecreaseDmgPassiveSkill`, roe_CalcDamage+0x59E -- on the DEFENDER, and the only hook in
+        // the pipeline that can reduce incoming damage. Identity for a mob defender and for any player
+        // who does not satisfy all four of its gates; see AttackModifiers.
+        final = ApplyRateToInteger(final, mods.DecreaseDamagePassivePermille);
         final = ApplyJobChangeDamageUp(final, mods.JobChangeDamageUpPermille, rng);
         final = ApplyLevelGap(final, mods.LevelGapRatePermille);
         return new AttackOutcome(final > 0 ? final : 1, isCritical, rollPermille, attackPower, defendPower);
     }
+
+    /// <summary>`ChargedEffectContainer`'s contribution, in 1024ths — `roe_CalcDamage+0x466`.
+    ///
+    /// <para>Only the larger of the two rates acts, and the two directions are NOT symmetric: an attacker
+    /// ahead multiplies by <c>(1024 + diff)/1024</c>, a defender ahead divides by <c>(1024 + diff)/1024</c>.
+    /// Equal rates cancel exactly, which is why the neutral value is 0/0 rather than 1024/1024.</para></summary>
+    public static double ApplyChargedEffect(double damage, int attackForce1024, int defendForce1024)
+    {
+        if (attackForce1024 > defendForce1024)
+            return damage * (1024 + (attackForce1024 - defendForce1024)) / 1024.0;
+        if (defendForce1024 > attackForce1024)
+            return damage * 1024.0 / (1024 + (defendForce1024 - attackForce1024));
+        return damage;
+    }
+
+    /// <summary>A permille rate on an already-integer damage, the way the server's integer hooks do it —
+    /// a wrapping 32-bit multiply and a truncating divide, not a double round-trip.</summary>
+    private static int ApplyRateToInteger(int damage, int ratePermille)
+        => ratePermille == 1000 ? damage : unchecked(ratePermille * damage) / 1000;
 
     /// <summary>`ShinePlayer::so_ply_JobChangeDamageUp` (0x00560E80) — the job-change catch-up multiplier,
     /// run at `roe_CalcDamage+0x5B2` on the ATTACKER, one call before the level gap.

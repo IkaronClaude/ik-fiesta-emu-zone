@@ -92,6 +92,52 @@ public sealed record AttackModifiers
     /// not make a swing deterministic here — pass a seeded RNG.</para></summary>
     public int? JobChangeDamageUpPermille { get; init; }
 
+    /// <summary>`ChargedEffectContainer` — the premium/charged-effect term, in 1024ths.
+    ///
+    /// <para>`roe_CalcDamage+0x466` compares the ATTACKER's `cec_AttackForceRate1024` with the DEFENDER's
+    /// `cec_DefendForceRate1024` and applies whichever is larger, in opposite directions:</para>
+    /// <code>
+    /// if (attack &gt; defend) dmg = dmg * (1024 + (attack - defend)) / 1024;
+    /// if (defend &gt; attack) dmg = dmg * 1024 / (1024 + (defend - attack));
+    /// </code>
+    ///
+    /// <para>Equal values cancel, which is why 0/0 is the neutral default. Mobs share one static container
+    /// (`so_ply_ChargedEffectContainer` returns a fixed global), so this is a player-side term in BOTH
+    /// directions — a charged player takes less from mobs as well as dealing more.</para></summary>
+    public int AttackForceRate1024 { get; init; }
+
+    /// <inheritdoc cref="AttackForceRate1024"/>
+    public int DefendForceRate1024 { get; init; }
+
+    /// <summary>`ItemActionObserveManager::EventRun_IncDmgRate` — the item-action rate chain, in permille,
+    /// applied to BOTH weapon bounds before the min..max roll.
+    ///
+    /// <para>`roe_AttackPower+0x129/+0x155` runs it on the ATTACKER's manager and then the DEFENDER's, and
+    /// `GetRateAppliValue` folds the results into one rate. The defender's manager being consulted is the
+    /// surprise: a player's own gear can scale the damage they RECEIVE.</para>
+    ///
+    /// <para>1000 is neutral. Verified by oracle to sit BEFORE the roll and before the mastery rate — the
+    /// same place the skill-empower term lands.</para></summary>
+    public int ItemActionDamageRatePermille { get; init; } = 1000;
+
+    /// <summary>`ShinePlayer::so_ply_DecreaseDmgPassiveSkill` (0x005651E0) — the one hook that can REDUCE
+    /// incoming damage, run on the DEFENDER at `roe_CalcDamage+0x59E`.
+    ///
+    /// <para>It is identity unless every one of these holds, which is why a clean capture never reaches
+    /// it:</para>
+    /// <list type="number">
+    ///   <item>the attacker is a MONSTER (`so_ObjectType() == 5`)</item>
+    ///   <item>the defender's `Parameter::Container::DMGMinusRate` (+0x0DAC) is non-zero</item>
+    ///   <item>the attacker is within <c>DMG_MinusArea</c> — a `CSingleDataMap` config value, read once
+    ///         and cached, compared as squared distance</item>
+    ///   <item>a FACING test: the direction from defender to attacker (`ddt_DirectSR`) against the
+    ///         attacker's own facing byte, folded at 0x5A (90 direction units = 180 degrees)</item>
+    /// </list>
+    ///
+    /// <para>⚠️ The four gates are read; the final arithmetic past the facing fold is NOT, so this is an
+    /// explicit permille input rather than a computed one. 1000 is identity.</para></summary>
+    public int DecreaseDamagePassivePermille { get; init; } = 1000;
+
     /// <summary>The server's <c>EngageArgument.nBMPDamageRate</c>, applied to attack power inside the core
     /// damage step rather than to the final figure.</summary>
     public int BaseDamageRatePermille { get; init; } = 1000;
