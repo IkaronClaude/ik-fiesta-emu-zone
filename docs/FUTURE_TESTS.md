@@ -60,12 +60,33 @@ fields agree; it is actually `points + points/5`. Read the whole table, or say o
       already contains the ground truth — `StaBattleBlowStun` (2) and `StaCommonStun02` (307) are applied
       to mobs, and their movement and swings during those windows are on the wire.
 
-- [ ] **`StaImmortal` (291) on a mob — what does it actually do?** It appears in
-      `FighterDamageLvl60.pcapng` on a mob that then takes normal damage from two swings. Its sub-state
-      `SubStaKeepTime_Eternal` carries no actions at all, so whatever "immortal" means it is not
-      implemented through `aeo_ParameterEnchant`. Find the code that reads it before assuming it is
-      cosmetic. It also arrives at **strength 1** while its only table row is at **Strength 999**, so the
-      server's row-selection rule when the strength does not match is itself unread.
+- [ ] **`StaImmortal` (291) is SPAWN INVULNERABILITY, and the state machine has to implement it.**
+      Confirmed on the wire in `FighterDamageLvl60.pcapng`: **82 mob handles** carry it, always applied
+      exactly one frame after the spawn and released a short time later, and every player login gets it too
+      (handles 8214 / 8215 / 8217 at orders 74→113, 289→316, 624→649).
+
+      ```
+      handle 7057 (Pinky)  1919 SPAWN -> 1920 LIST ab=291 -> 1978 RESET -> ... 3792 first swing
+      handle 6880 (Orc)    2079 SPAWN -> 2080 LIST ab=291 -> 2140 RESET -> ... 4750 first swing
+      ```
+
+      Operator's description, to test against: for a PLAYER it blocks being targeted or damaged and blocks
+      attacking or casting, but movement is allowed; for a MOB it blocks attacking and casting and ends as
+      soon as it takes damage.
+
+      Its sub-state `SubStaKeepTime_Eternal` carries **no actions**, so none of that is implemented through
+      `aeo_ParameterEnchant` — it is enforced elsewhere, and that is precisely the code the mob tactic
+      state machine needs to mirror. Find it.
+
+      ⚠️ **Invariant with two counterexamples.** If a mob cannot attack while immortal, no swing should ever
+      have an attacker holding 291 — yet two do (`IN` mob 68 and mob 84, one hit each). Either the release
+      is not what this tool models, or a mob really can swing during the window. Resolve it before trusting
+      abstate timing anywhere else; it is the only place the capture disagrees with the operator's account.
+
+      It also arrives at **strength 1** while its only table row is **Strength 999**, so the server's
+      row-selection rule when the strength does not match is unread. `BucketGroundTruthTests` sidesteps that
+      by checking whether ANY row for the sub-state carries an action, which is sound only because none
+      does.
 
 - [ ] **Every other non-parameter `SubAbstateAction`.** The eight read so far were chosen because they
       moved damage. The behavioural half of that enum is unexplored and is where mob AI fidelity lives.
