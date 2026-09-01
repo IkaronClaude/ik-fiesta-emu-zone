@@ -284,9 +284,47 @@ Nothing exists. `SkillDataBox` reads `CastTime`/`DlyTime` for attack intervals o
 - [ ] **`SkillDataIndex::sdi_DamageRule`** (+0x70) — a skill brings its own `RulesOfEngagement`, which is
       where `roe_magical` / `roe_physical` enter and therefore where all caster damage lives.
       `sdi_Activ` (+0x04) is the `ActiveSkillInfo` row, `sdi_AttackDist` (+0x74) the range.
-- [ ] **`MiscDataTable::mdt_ArgumentLoad`** (0x004A6110) — the ONLY writer of `EngageArgument.damagerate`
-      (+0x1C) and `crirateadd` (+0x20); a normal attack leaves them at 1000/0. Keyed by skill id via
-      `bsearch` over a table at `this+0x3460`.
+- [x] **`MiscDataTable::mdt_ArgumentLoad`** (0x004A6110) — read and ported, and it is **CONDITIONAL**,
+      which the plan did not anticipate. The row is keyed by skill id (`bsearch` over 20-byte
+      `MiscData_VarifyByAbstate` rows at `this+0x3460`) but it only fires when the DEFENDER currently
+      satisfies the row's `mdvba_Condition`:
+
+      ```
+      mdvba_Skill u16 @0 | mdvba_Condition @4 | mdvba_DamageRate s16 @8
+      mdvba_NewState ABSTATEINDEX @0xC (applied only below 0x318) | mdvba_Crirate s16 @0x10
+      ```
+
+      So a skill's damage rate is **not a property of the skill**: it is a "hits harder against a stunned /
+      slowed / armour-broken target" bonus, and against an unafflicted target a skill leaves the argument
+      at the same 1000/0 a normal swing does.
+
+      `so_smo_AbnormalStateAttribute@ShineMobileObject` (0x004A8010) is the gate, and each of its three
+      attributes is a specific test rather than a name:
+
+      | attribute | satisfied by |
+      | --- | --- |
+      | `STUN` | a sub-state whose TYPE byte at +0x26 is **0x15** — the same value that makes `SAA_NOMOVE` set `cannotmove_stun` |
+      | `SLOW` | any state carrying `SAA_SPEEDDOWNRATE` (88) |
+      | `ACMRMINUS` | `SAA_ACMINUS` (73), `SAA_ACDOWNRATE` (74), `SAA_MRMINUS` (86) or `SAA_MRDOWNRATE` (87) |
+
+- [x] **Skill empower.** `EngageArgument.empower` (+0x0C) is a `SKILL_EMPOWER`: two bytes holding FOUR
+      4-bit fields — `damage`, `sp`, `keeptime`, `cooltime` — allocated per cast and requested by the
+      client through `PROTO_NC_SKILL_EMPOWALLOC_REQ`. `roe_AttackPower` reads it in all three physical
+      variants (NormalPY +0x658, PhisycalSkill and MagicalSkill +0x178):
+
+      ```
+      level = empower.damage;                       // 0 short-circuits to no term at all
+      term  = *(u32*)(sdi_Activ + level*4 + 0x1BB); // = nT0[level-1]
+      ```
+
+      `nT0`..`nT3` are four contiguous `unsigned long[5]` from +0x1BF, and the engine walks them as **ONE
+      flat run of twenty** — level 6 reads `nT1[0]`, not `nT0[5]`. Reading them as four separate tables
+      would be wrong for every level above 5.
+
+- [ ] **Where the empower term lands in the attack-power chain.** The lookup is exact; what
+      `roe_AttackPower` then does with it — added before or after which rate, inside or outside which
+      truncation — is unread, and the port deliberately stops at the lookup rather than guessing.
+
 - [ ] **`ActiveSkillInfoServer`** — `DmgIncRate` / `DmgIncValue`, `SkillHitType`, `SkilPyHitRate` /
       `SkilMaHitRate`, `AggroPerDamage` / `AbsoluteAggro`, `SwingTime` / `HitTime`.
 - [ ] **`smo_SkillBlast`** (0x00581452 constructs the EngageArgument) and the multi-hit path
