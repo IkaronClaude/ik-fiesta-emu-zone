@@ -78,9 +78,15 @@ public sealed class AbstateListInObject
 
     /// <summary>Apply a state, as `NC_BRIEFINFO_ABSTATE_CHANGE_CMD` (0x1C18) announces it.
     ///
-    /// <para>Re-applying an id REPLACES the existing element rather than stacking a second one, which is
-    /// what the wire shows: the server re-sends a combat debuff constantly and the client does not
-    /// accumulate them.</para></summary>
+    /// <para>Re-applying an id replaces the existing element rather than stacking a second one, which is
+    /// what the wire shows: the server re-sends a combat debuff constantly and nothing accumulates.</para>
+    ///
+    /// <para>⚠️ <b>That is the CLIENT's view, and the server's rule is richer</b> — see
+    /// <see cref="SubAbstatePriority"/>. `asl_AbstateSet` asks `bp_AbStateChange` first, and a WEAKER or
+    /// EQUAL re-application returns `SAP_SUBSCRIPT`, meaning the existing element stays and keeps its
+    /// remaining keeptime. Only a stronger one makes the old state vanish. The wire could not distinguish
+    /// the two because the case the server declines to act on is precisely the one it re-sends constantly.
+    /// Use <see cref="SetWithPriority"/> when the resolved actions are available.</para></summary>
     public void Set(int abstateId, int strength, int restKeeptimeMs, long nowMs, int subStateType = 0)
     {
         _active.RemoveAll(e => e.AbstateId == abstateId);
@@ -88,6 +94,47 @@ public sealed class AbstateListInObject
         {
             SubStateType = subStateType,
         });
+    }
+
+    /// <summary>Apply a state the way the SERVER does — `asl_AbstateSet` consulting
+    /// <see cref="SubAbstatePriority.AbStateChange"/> against every state already present.
+    ///
+    /// <para>The verdict is per EXISTING state, not per id, because the rule compares resolved ACTIONS:
+    /// two different abstate ids with the same actions do relate.</para>
+    ///
+    /// <list type="bullet">
+    ///   <item><c>SAP_SUBSCRIPT</c> against ANY existing state — the incoming one is subordinate and is
+    ///         not applied at all. The existing element keeps its remaining keeptime.</item>
+    ///   <item><c>SAP_VANISH</c> — that existing state is removed and the incoming one lands.</item>
+    ///   <item><c>SAP_NORELATION</c> — unrelated; both coexist.</item>
+    /// </list>
+    ///
+    /// <para>Returns the states this displaced, which are `ABSTATERESET`s the server owes every client,
+    /// and an empty list when the incoming state was itself declined.</para></summary>
+    public IReadOnlyList<AbstateElementInObject> SetWithPriority(
+        int abstateId, int strength, int restKeeptimeMs, long nowMs,
+        IReadOnlyList<(SubAbstateAction Action, int Arg)> actions,
+        Func<AbstateElementInObject, IReadOnlyList<(SubAbstateAction Action, int Arg)>> resolve,
+        int subStateType = 0)
+    {
+        var displaced = new List<AbstateElementInObject>();
+        foreach (var existing in _active.ToList())
+        {
+            switch (SubAbstatePriority.AbStateChange(actions, resolve(existing)))
+            {
+                case StateExchange.SAP_SUBSCRIPT:
+                    return [];                       // declined: nothing changes, nothing to broadcast
+                case StateExchange.SAP_VANISH:
+                    _active.Remove(existing);
+                    displaced.Add(existing);
+                    break;
+            }
+        }
+        _active.Add(new AbstateElementInObject(abstateId, strength, restKeeptimeMs, nowMs)
+        {
+            SubStateType = subStateType,
+        });
+        return displaced;
     }
 
     /// <summary>Remove a state, as `NC_BRIEFINFO_ABSTATERESET_CMD` (0x2428) announces it.</summary>

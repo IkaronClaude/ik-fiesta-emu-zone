@@ -190,33 +190,41 @@ public class SwingRollTests
         }
     }
 
-    /// <summary>Whatever sits in those three rate slots IS the crit chance, in PERMILLE — the result is
-    /// compared against <c>well512_GetRandom(1000)</c>, so 50 is 5% and the floor of 1 is a literal
-    /// 1-in-1000.
+    /// <summary>Crit chance is the SUM of every equipped source plus the MEN free-stat term, in PERMILLE
+    /// — the result is compared against <c>well512_GetRandom(1000)</c>, so 50 is 5% and the floor of 1 is
+    /// a literal 1-in-1000.
     ///
-    /// <para>⚠️ <b>What PUTS a number there is an open question, and this test no longer claims it is a
-    /// weapon's `ItemInfo.CriRate`.</b> An earlier version asserted exactly that, because the capture's
-    /// weapons (Splitter 30, Kaineneceflight 70, Kainenecefury 90) predicted close to the measured 55.6
-    /// permille. The numbers do fit — and so does a model with no weapon term at all: over 234 landed
-    /// swings the MEN-only prediction is 11.7 criticals and the weapon-only prediction 11.9, against 13
-    /// observed. 234 swings cannot separate them, and a scan for direct writes to those displacements
-    /// finds only `c_clear` — no equipment code at all.</para>
+    /// <para><b>Verified on a live character.</b> ArcherZero's container was located in zone02 by matching
+    /// its entire displayed stat block against the container's Total — WC 89-103, MA 27, AC 83, MR 70, Aim
+    /// 137, Evasion 123, primaries 54/40/79/26/36, all matching — and it holds
+    /// <c>Item.Rate[CriDamRate] = 40</c>, with <c>Item.Plus[Critical]</c> and <c>Total[Critical]</c> both
+    /// zero. So the equipped sources sum into this slot and the `Critical` slot is dead.</para>
     ///
-    /// <para>Operator's play figures, for whoever settles it: weapons carry roughly 3–9% (30–90 permille,
-    /// which is exactly the range `ItemInfo.CriRate` holds), 25 MEN adds 5%, and a normal player without
-    /// high-level jewellery or premium items is <b>5–10% in TOTAL</b> — which a straight sum of a weapon
-    /// and 25 MEN would already exceed. So the two terms are probably not both feeding this
-    /// function.</para></summary>
+    /// <para>⚠️ An earlier version of this test tried to ADJUDICATE the model from the capture, comparing a
+    /// "MEN only" prediction against a "weapon only" one over 234 swings. That was unsound twice over: it
+    /// ignored the capture's 633 `SKILLBASH_HIT_DAMAGE` frames, and it had no accounting for jewellery,
+    /// armour or costume crit at all. The model is not something 234 swings can decide, and it did not
+    /// need deciding.</para></summary>
     [Theory]
     [InlineData(30)]
-    [InlineData(70)]
+    [InlineData(40)]
     [InlineData(90)]
-    public void WhateverIsInTheCritSlotsIsTheChanceInPermille(int permille)
+    public void EquippedCritRatesSumIntoTheCritChance(int permille)
     {
         var attacker = new Fighter();
         attacker.Parameters.Rate(StatModifier.Item)[Stat.CriDamRate] = permille;
 
         DamageCalculator.CriticalRate(attacker, new Fighter()).ShouldBe(permille);
+    }
+
+    /// <summary>Gear and the MEN term ADD — the in-game figure is their sum, not either alone.</summary>
+    [Fact]
+    public void GearAndTheMenTermAddTogether()
+    {
+        var attacker = new Fighter { FreeStatMenCriRate = FreeStatTables.MenCriRate(25) };
+        attacker.Parameters.Rate(StatModifier.Item)[Stat.CriDamRate] = 40;
+
+        DamageCalculator.CriticalRate(attacker, new Fighter()).ShouldBe(90);   // 4% gear + 5% MEN
     }
 
     /// <summary>The one crit term pinned end to end: `roe_FreeStatCriRate` adds `FreeStatMen.CriRate`, and

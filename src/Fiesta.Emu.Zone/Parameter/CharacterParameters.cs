@@ -176,24 +176,23 @@ public static class CharacterParameters
         plus[Stat.CriDam] += item.CriDamPlus;
         plus[Stat.MagCriDam] += item.MagCriDamPlus;
 
-        // ⚠️ WHERE A WEAPON'S `CriRate` GOES IS NOT KNOWN, and this port does not pretend otherwise.
+        // CRIT RATE IS A SUM OF EVERY EQUIPPED SOURCE, PLUS THE MEN FREE-STAT TERM.
+        // VERIFIED on a live character, 2026-09-01.
         //
-        // `roe_CriticalRate` reads Item.Rate[CriDamRate] (+0x218) and Item.Rate[CriticalTB] (+0x240) --
-        // confirmed twice, by reading the function and by running it under emulation. What is NOT
-        // confirmed is that `ItemInfo.CriRate` is what lands there. A scan for direct writes to those
-        // displacements finds only `c_clear`; no equipment code writes them.
+        // `roe_CriticalRate` reads exactly one slot from the Item layer -- Item.Rate[CriDamRate] (+0x218)
+        // -- and a live player's container was read out of zone02 to check what is in it. The character
+        // (ArcherZero, Forest of Tides) was identified by matching its whole displayed stat block against
+        // the container's Total: WC 89-103, MA 27, AC 83, MR 70, Aim 137, Evasion 123, primaries
+        // 54/40/79/26/36. Every one matched. In that container:
         //
-        // That scan is a WEAK negative -- a generic loop writing `cluster[slot]` with a computed index
-        // would not appear in it -- so this is an open question, not a settled one. An earlier version of
-        // this file routed `CriRate` into Item.Rate[CriDamRate] on the strength of the numbers looking
-        // close. They do look close, and that is not evidence: for this capture the MEN-only model
-        // predicts 11.7 criticals and the weapon-only model 11.9, against 13 observed, so 234 swings
-        // cannot separate them. The routing was removed rather than left in as a plausible guess.
+        //     Item.Rate[CriDamRate] = 40        <- 4%, the sum of the equipped crit sources
+        //     Item.Plus[Critical]   = 0
+        //     Total[Critical]       = 0         <- slot 23 is NOT the crit path at all
         //
-        // The Plus writes below reach `Total`, which is where the client's displayed figure comes from.
-        // Settling this needs a live EQUIPPED player's container read at +0x218 -- the containers found so
-        // far were idle pool entries.
-
+        // So the equipped sources (weapon, jewellery, armour, costumes) all sum into CriDamRate's Item
+        // rate half, `roe_FreeStatCriRate` adds the MEN term, and the `Critical` slot this port used to
+        // write is dead. A displacement scan does not find the WRITER -- a loop with a computed slot index
+        // does not show up in one -- but what lands there is now measured rather than inferred.
         var rate = container.Rate(StatModifier.ItemPowerRate);
         Compound(rate, Stat.WCmin, item.WCRate);
         Compound(rate, Stat.WCmax, item.WCRate);
