@@ -180,6 +180,75 @@ public class BucketGroundTruthTests
     private static string Show(IReadOnlyList<Abstate> a)
         => string.Join(",", a.Select(x => $"{x.Id}@{x.Strength}"));
 
+    /// <summary>What one `SubAbstateAction` does to a `Parameter::Container`, read out of
+    /// `AbstateElementInObject::aeo_ParameterEnchant` (0x004079F0) -- a jump table on the action index
+    /// whose handlers write straight into the AbnormalState cluster (plus half at +0x8C4, rate half at
+    /// +0x990, four bytes per <see cref="Stat"/> slot).
+    ///
+    /// <code>
+    ///    4 SAA_WCRATE          add rate[0x9A4],[0x9A8]  -> Rate WCmin,WCmax += arg
+    ///   94 SAA_WCMINUS         sub plus[0x8D8],[0x8DC]  -> Plus WCmin,WCmax -= arg
+    ///   73 SAA_ACMINUS         sub plus[0x8E0]          -> Plus AC          -= arg
+    ///   74 SAA_ACDOWNRATE      sub rate[0x9AC]          -> Rate AC          -= arg
+    ///   81 SAA_DEXMINUS        sub plus[0x8CC]          -> Plus Dex         -= arg
+    ///   18 SAA_SHIELDACRATE    add rate[0x9F8]          -> Rate ShieldAC    += arg
+    ///   21 SAA_ATTACKSPEEDRATE add rate[0xA18]          -> Rate AttSpeed    += arg
+    /// </code>
+    ///
+    /// <para>Note WC actions touch BOTH bounds, which is why a debuff shifts the whole range rather than
+    /// squashing it.</para></summary>
+    private sealed record AbstateAction(bool Rate, int Sign, params Stat[] Stats);
+
+    private static readonly Dictionary<int, AbstateAction> AbstateActions = new()
+    {
+        [4] = new(true, +1, Stat.WCmin, Stat.WCmax),
+        [94] = new(false, -1, Stat.WCmin, Stat.WCmax),
+        [73] = new(false, -1, Stat.AC),
+        [74] = new(true, -1, Stat.AC),
+        [81] = new(false, -1, Stat.Dex),
+        [18] = new(true, +1, Stat.ShieldAC),
+        [21] = new(true, +1, Stat.AttSpeed),
+    };
+
+    /// <summary>Apply a mob's abnormal states to its own container.
+    ///
+    /// <para><b>Only the MOB's.</b> The character's are already inside the numbers this test feeds in: the
+    /// server recomputes and re-sends 0x1035 when a buff lands, so the wire's Dmg and DEF have them baked
+    /// in. Applying them again would double-count — and the buckets prove the wire tracks them, because
+    /// the parameter vector changes exactly when a self-buff appears.</para>
+    ///
+    /// <para>Returns false on an action this port has not read, so an unmodelled effect makes the bucket
+    /// unpredictable instead of silently predicted wrong.</para></summary>
+    private static bool ApplyAbstates(ParameterContainer p, IReadOnlyList<Abstate> abstates,
+                                      ShnFile abState, ShnFile subAbState)
+    {
+        foreach (var ab in abstates)
+        {
+            var def = abState.Rows.FirstOrDefault(r => ShnFile.Int(r, "AbStataIndex") == ab.Id);
+            var name = def is null ? null : ShnFile.Str(def, "SubAbState");
+            if (string.IsNullOrEmpty(name) || name == "-") continue;   // no sub-state: no parameter effect
+
+            var row = subAbState.Rows.FirstOrDefault(
+                r => ShnFile.Str(r, "InxName") == name && ShnFile.Int(r, "Strength") == ab.Strength);
+            if (row is null) return false;
+
+            foreach (var slot in new[] { "A", "B", "C", "D" })
+            {
+                var index = ShnFile.Int(row, "ActionIndex" + slot);
+                var arg = ShnFile.Int(row, "ActionArg" + slot);
+                if (index == 0) continue;
+                if (!AbstateActions.TryGetValue(index, out var action)) return false;
+                foreach (var stat in action.Stats)
+                {
+                    var cluster = action.Rate ? p.Rate(StatModifier.AbnormalState)
+                                              : p.Plus(StatModifier.AbnormalState);
+                    cluster[stat] += action.Sign * arg;
+                }
+            }
+        }
+        return true;
+    }
+
     private readonly record struct Band(int Floor, int Ceiling);
 
     /// <summary>A combatant that reproduces known ACCESSOR OUTPUTS exactly.
@@ -224,11 +293,12 @@ public class BucketGroundTruthTests
 
     private static Band? Predict(Fixture f, Bucket b, MobDataBox box, LevelGapTable gaps,
                                  IReadOnlyDictionary<int, string> mobNames, int? jobChange,
-                                 int? masteryRate)
+                                 int? masteryRate, ShnFile abState, ShnFile subAbState)
     {
         if (!mobNames.TryGetValue(b.Mob, out var name)) return null;
         var mob = MobCombatant.Build(box, name);
         if (mob is null) return null;
+        if (!ApplyAbstates(mob.Parameters, b.EnemyAbstates, abState, subAbState)) return null;
 
         var freeStr = FreeStatStr(f.FreeStat.GetValueOrDefault("Strength"));
         var freeCon = FreeStatCon(f.FreeStat.GetValueOrDefault("Constitute"));
@@ -267,11 +337,21 @@ public class BucketGroundTruthTests
         });
     }
 
-    /// <summary>Predict every bucket and require that no clean hit exceeds what a maximum roll can produce.
+    /// <summary>⛔ KNOWN RED, by 3 points. Predict every bucket and require that no clean hit exceeds what
+    /// a maximum roll can produce.
     ///
-    /// <para>Asserted on OVERSHOOT only. Buckets below the floor are reported but do not fail: that is what
-    /// an unmodelled damage REDUCTION looks like, and in this capture every one of them carries an enemy
-    /// abstate.</para></summary>
+    /// <para>With mastery and the mob's abnormal states modelled, `FighterDamageLvl60.pcapng` sits at
+    /// <b>500 of 510 hits fully inside 175 buckets</b>, <b>none below the floor</b>, and three buckets
+    /// overshooting by at most <b>3 points</b> — down from 51 buckets and 145 points before abstates. The
+    /// 46 unpredictable hits are buckets carrying a `SubAbstateAction` this port has not read; they are
+    /// REFUSED rather than predicted, so an unmodelled effect can never masquerade as agreement.</para>
+    ///
+    /// <para>Asserted on overshoot with no tolerance, so this test is red until the last three points are
+    /// found. Undershoot does not fail — a bucket may simply never roll its maximum.</para>
+    ///
+    /// <para>The survivor to chase: <c>OUT mob 334 lv59</c>, observed 164..187 against a predicted
+    /// 155..185 with <c>enemy=[0@5,1@6,7@4]</c>. Three abstates at once, so the suspect is an interaction
+    /// or an action argument read at the wrong rank, not the damage engine.</para></summary>
     [SkippableFact]
     public void NoBucketExceedsWhatAMaximumRollCanProduce()
     {
@@ -291,6 +371,8 @@ public class BucketGroundTruthTests
                                   .ToDictionary(l => l, l => JobChangeRate(f, shine!, l));
         var passiveTable = ShnFile.Load(Path.Combine(shine!, "PassiveSkill.shn"));
         var items = ShnFile.Load(Path.Combine(shine!, "ItemInfo.shn"));
+        var abState = ShnFile.Load(Path.Combine(shine!, "AbState.shn"));
+        var subAbState = ShnFile.Load(Path.Combine(shine!, "SubAbState.shn"));
 
         int hits = 0, inside = 0, predicted = 0, unpredictable = 0;
         int worstOver = 0, overHits = 0, underHits = 0, overBuckets = 0;
@@ -301,7 +383,8 @@ public class BucketGroundTruthTests
                            .ThenByDescending(b => b.N))
         {
             var band = Predict(f, b, box, gaps, mobNames, jobByLevel[b.Level],
-                               MasteryRate(passiveTable, items, b.Passives, b.Weapon));
+                               MasteryRate(passiveTable, items, b.Passives, b.Weapon),
+                               abState, subAbState);
             if (band is not { } p)
             {
                 unpredictable += b.N;
@@ -351,6 +434,6 @@ public class BucketGroundTruthTests
         //
         // Asserted on OVERSHOOT only, and only where nothing unmodelled was acting: that is the case where
         // the server produced damage this port says is impossible.
-        overWithNoEnemyAbstate.ShouldBe(0, summary);
+        overBuckets.ShouldBe(0, summary);
     }
 }
