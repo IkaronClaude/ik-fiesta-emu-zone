@@ -23,21 +23,28 @@ FreeStatMen  8  { Stat u8, MRAbsolute u16, CriRate u16, MaxSP u16, checksum u8 }
 `roe_HitRate` reads Dex's THRate AND TBRate; `roe_FreeStatCriRate` reads Men's CriRate. `MaxHP` / `MaxSP`
 are where 0x1035's params 16 and 17 pick up their free-stat halves. What remains unread is the TABLES.
 
-- [ ] **`FreeStatCon` — the same trap, unsprung.** Currently `ceil(n/2)`, sampled at four points
-      (Con[19]=10, Con[20]=10, Con[21]=11, Con[50]=25) and never exercised: `FighterDamageLvl60.pcapng`'s
-      character has **zero** Con allocated, so the term is 0 whatever the table says. Read all 181 entries
-      out of the live table at **0x0DA50BD0** the way `FreeStatStr` was read at 0x0DA50BC4 — pointer array,
-      and note it is an **8-byte** record, so `BlockRate` and `MaxHP` come out of the same read for free.
-      Then capture a character that HAS spent Con points.
-- [ ] **`FreeStatDex` / `FreeStatInt` / `FreeStatMen` tables.** Never read at all, and now they have
-      callers: `ICombatant.FreeStatDexTHRate` / `FreeStatDexTBRate` / `FreeStatMenCriRate` have to be
-      supplied by hand because nothing can compute them. Meanwhile the wire gives the SUM — 0x1035's `Aim`
-      is `roe_TH + THRate` and `Evasion` is `roe_TB + TBRate` — so a captured character can be reconstructed
-      without them, but a synthetic one cannot.
-      **The Men table has a calibration waiting for it:** the operator puts 25 points of MEN at about
-      +5%, so `FreeStatMen[25].CriRate` should read near 50. The capture cannot confirm that on its own —
-      13 outgoing criticals in 234 landed swings fit the weapon term alone — so the table read is what
-      would settle it. See "The critical rate, measured" below.
+- [x] **All five tables are READ, in full, from a running zone** — 181 entries each, through the pointer
+      arrays at 0x0DA50BC4 (Str), BC8 (Int), BCC (Dex), BD0 (Con), BD4 (Men). Every curve below is exact
+      across all 181, not fitted to samples:
+
+      | field | curve |
+      | --- | --- |
+      | `FreeStatStr.WCAbsolute`, `FreeStatInt.MAAbsolute` | `n + n/5` |
+      | `FreeStatCon.ACAbsoulte`, `FreeStatMen.MRAbsolute` | `ceil(n/2)` |
+      | `FreeStatCon.MaxHP`, `FreeStatMen.MaxSP` | `5n` |
+      | `FreeStatDex.THRate` | +3/point to 33, +2 to 67, +1 after |
+      | `FreeStatDex.TBRate` | +2/point to 50, +1 after |
+      | `FreeStatCon.BlockRate` | +1/point to 50, then 1 per 2 points, FLAT at 100 from 150 |
+      | `FreeStatMen.CriRate` | +2/point to 25, +1 to 61, then 1 per 2, FLAT at 130 from 149 |
+
+      **`FreeStatCon.ACAbsoulte` was the entry this file called "the same trap, unsprung"** — guessed
+      `ceil(n/2)` from four samples, unexercisable because the capture's character has zero Con. Read in
+      full, **the guess was right.** Worth recording as much as a correction would have been.
+
+      **`FreeStatMen.CriRate[25] = 50`** — exactly the "+5% from 25 MEN" the operator gave from play,
+      before the table was read.
+
+      Ported as `FreeStatTables`, formulas rather than embedded data.
 
 ## Untested paths in the damage engine
 
