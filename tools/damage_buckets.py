@@ -119,7 +119,7 @@ def u32(b, o):
 def collect(lines):
     """Walk the stream once, maintaining state, and tag each swing with the state prevailing at it."""
     params = {}                                   # paramType -> value, the player's whole vector
-    abstates = collections.defaultdict(set)       # (conv, handle) -> active abstate ids
+    abstates = collections.defaultdict(dict)      # (conv, handle) -> {abstate id: strength}
     mob_of = {}                                   # (conv, handle) -> mob id, from REGENMOB
     levelups = 0
     level = None
@@ -127,12 +127,15 @@ def collect(lines):
     weapon = None                                 # item id in the weapon slot, or None if unknown
     swings, chat, hit_counts = [], [], collections.Counter()
 
-    def apply_abstate(conv, handle, ident, active):
-        key = (conv, handle)
-        if active:
-            abstates[key].add(ident)
-        else:
-            abstates[key].discard(ident)
+    def set_abstate(conv, handle, ident, strength):
+        # STRENGTH, not a flag. `ABSTATE_INFORMATION` is {abstateID, restKeeptime, strength} -- the third
+        # word was read here as an on/off bit for a while, which silently discarded the one field that
+        # decides an abstate's magnitude: `SubAbState` rows are keyed by (InxName, Strength) and
+        # StaMoraleDecreaseWC alone spans 1490..2148 across ranks 17-20.
+        abstates[(conv, handle)][ident] = strength
+
+    def clear_abstate(conv, handle, ident):
+        abstates[(conv, handle)].pop(ident, None)
 
     for conv, order, name, raw in frames(lines):
         if name == "NC_BRIEFINFO_REGENMOB_CMD" and len(raw) >= 5:
@@ -157,12 +160,16 @@ def collect(lines):
                 params[raw[off]] = u32(raw, off + 1)
                 off += 5
         elif name == "NC_BAT_ABSTATESET_CMD" and len(raw) >= 6:
-            apply_abstate(conv, u16(raw, 0), u32(raw, 2), True)
+            # {handle u16, abstate u32} only -- no strength, so a set with no CHANGE alongside it
+            # records the abstate at strength 0 = "present, magnitude unknown".
+            set_abstate(conv, u16(raw, 0), u32(raw, 2),
+                        abstates[(conv, u16(raw, 0))].get(u32(raw, 2), 0))
         elif name == "NC_BAT_ABSTATERESET_CMD" and len(raw) >= 6:
-            apply_abstate(conv, u16(raw, 0), u32(raw, 2), False)
+            clear_abstate(conv, u16(raw, 0), u32(raw, 2))
         elif name == "NC_BRIEFINFO_ABSTATE_CHANGE_CMD" and len(raw) >= 14:
-            # handle u16@0, then ABSTATE_INFORMATION: id u32@2, tick u32@6, active u32@10.
-            apply_abstate(conv, u16(raw, 0), u32(raw, 2), u32(raw, 10))
+            # handle u16@0, then ABSTATE_INFORMATION: abstateID u32@2, restKeeptime u32@6,
+            # STRENGTH u32@10.
+            set_abstate(conv, u16(raw, 0), u32(raw, 2), u32(raw, 10))
         elif name == "NC_BRIEFINFO_ABSTATE_CHANGE_LIST_CMD" and len(raw) >= 3:
             # handle u16@0, count u8@2, then count * ABSTATE_INFORMATION (12 bytes each). Ignoring this
             # leaves per-mob state wrong wherever the server sends it in bulk rather than one at a time.
@@ -171,7 +178,7 @@ def collect(lines):
                 off = 3 + i * 12
                 if off + 12 > len(raw):
                     break
-                apply_abstate(conv, handle, u32(raw, off), u32(raw, off + 8))
+                set_abstate(conv, handle, u32(raw, off), u32(raw, off + 8))
         elif name == "NC_CHAR_CLIENT_BASE_CMD" and len(raw) >= 0x5D:
             # CHARSTATDISTSTR at +0x57 -- the free-stat ALLOCATION, one byte per stat. It is the input to
             # `roe_Damage`'s per-rule override and to the term the server adds on top of every displayed
@@ -234,8 +241,9 @@ def collect(lines):
                 # Snapshots, not references: the state moves on and a bucket must remember what was true
                 # AT THE SWING.
                 "params": tuple(sorted(params.items())),
-                "attackerAbstates": tuple(sorted(abstates[(conv, att)])),
-                "defenderAbstates": tuple(sorted(abstates[(conv, dfn)])),
+                # (id, strength) pairs -- strength is part of the state, not decoration.
+                "attackerAbstates": tuple(sorted(abstates[(conv, att)].items())),
+                "defenderAbstates": tuple(sorted(abstates[(conv, dfn)].items())),
             })
     return swings, chat, hit_counts, free_stat, chrclass
 
@@ -289,7 +297,8 @@ def main():
     for (side, mob, level, params, own_ab, foe_ab, passives, own_weapon), dmg in buckets.items():
         rows.append({"side": side, "mob": mob, "level": level, "passives": list(passives),
                      "weapon": own_weapon,
-                     "selfAbstates": list(own_ab), "enemyAbstates": list(foe_ab),
+                     "selfAbstates": [list(p) for p in own_ab],
+                     "enemyAbstates": [list(p) for p in foe_ab],
                      "params": dict(params), "n": len(dmg),
                      "min": min(dmg), "max": max(dmg),
                      "mean": round(sum(dmg) / len(dmg), 1), "damage": sorted(dmg)})
@@ -305,8 +314,8 @@ def main():
     for r in kept:
         print("  %-4s %-5s %-4s %-4d %-5d %-5d %-6.1f %-26s %s"
               % (r["side"], r["mob"], r["level"], r["n"], r["min"], r["max"], r["mean"],
-                 ",".join(map(str, r["selfAbstates"])) or "-",
-                 ",".join(map(str, r["enemyAbstates"])) or "-"))
+                 ",".join("%d@%d" % (i, st) for i, st in r["selfAbstates"]) or "-",
+                 ",".join("%d@%d" % (i, st) for i, st in r["enemyAbstates"]) or "-"))
     print("\nwrote %s" % a.out)
 
 
