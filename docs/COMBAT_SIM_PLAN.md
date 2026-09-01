@@ -271,9 +271,40 @@ order is not a clock (see task 6).
       rate slots have a zero identity, which makes that seed an anomaly with evidence against it rather
       than a lone puzzle. See `FUTURE_TESTS.md`.
 
-- [ ] **The application path itself** — `cpl_SetAbstate` (0x00446A10), `so_ply_PassiveSetAbstate`
-      (0x005798E0), `sasa_ApplyAbstate`, `PSkillSetAbstate.shn` and `PassiveDataBox::sdb_GetSetAbstate`.
-      `so_AbnormalState_Set` is object vtable **+0x638** and `so_AbnormalState_IsSet` is **+0x3E4**.
+- [x] **The application path is READ and its decision rule ported.** `so_AbnormalState_Set` is object
+      vtable **+0x638** (`so_AbnormalState_IsSet` is **+0x3E4**) and it does two things:
+
+      ```
+      map = so_CurMap();
+      if (map && map->fm_IsRefuseAbstate(index)) return FALSE;   // A MAP CAN REFUSE AN ABSTATE OUTRIGHT
+      return this->abstateList /* object+0x1CC */ ->asl_AbstateSet(...);
+      ```
+
+      `asl_AbstateSet` (0x0040D020) then walks: `asl_Abstate_IsSet` → **`bp_AbStateChange`** → `aeo_Set` →
+      `ase_AfterEnchant` → `sasa_AttachObject`, and calls `sbec_SkillCancel` on the way — **applying a
+      state can cancel a cast in progress.**
+
+      **`SubAbstatePriority::PriorityBase::bp_AbStateChange` (0x00591CE0) is the interesting part**, and it
+      is richer than the "re-applying replaces" the wire suggests. It compares the two `SubAbState` rows'
+      four (ActionIndex, ActionArg) pairs and returns a `StateExchange`:
+
+      ```
+      for i in 0..3:
+          if incoming.action[i] != existing.action[i]  return SAP_NORELATION;  // unrelated, both stay
+          if incoming.arg[i]    <  existing.arg[i]     return SAP_SUBSCRIPT;   // weaker: declined
+          if incoming.arg[i]    >  existing.arg[i]     return SAP_VANISH;      // stronger: existing goes
+          if incoming.arg[i]    >  0                   sawPositive = true;
+      return sawPositive ? SAP_SUBSCRIPT : SAP_VANISH;                         // identical rows
+      ```
+
+      ⚠️ **Identical rows are SUBSCRIPT** — re-casting the same buff does NOT refresh its keeptime. That is
+      the one case the wire could never show, because it is exactly what the server re-sends constantly and
+      declines to act on. Ported as `SubAbstatePriority` + `AbstateListInObject.SetWithPriority`, which
+      returns the displaced states because each is an `ABSTATERESET` the server owes its clients.
+
+- [ ] **The passive-skill half** — `cpl_SetAbstate` (0x00446A10), `so_ply_PassiveSetAbstate` (0x005798E0),
+      `PSkillSetAbstate.shn` and `PassiveDataBox::sdb_GetSetAbstate`: which passives apply an abstate, and
+      on what condition.
 - [ ] **`mdt_ArgumentLoad`'s abstate half** — a skill row also carries an `ABSTATEINDEX` to apply
       (row +0x0C), alongside the `damagerate` and `crirateadd` it writes.
 

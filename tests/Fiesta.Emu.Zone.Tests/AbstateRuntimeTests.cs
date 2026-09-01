@@ -537,3 +537,122 @@ public class AbstateResistanceTests
         }
     }
 }
+
+/// <summary>`SubAbstatePriority::bp_AbStateChange` — what happens when a state meets one already applied.
+///
+/// <para>This is the rule `asl_AbstateSet` consults before touching the list, and it is richer than the
+/// "re-applying replaces" the wire suggests: a WEAKER or EQUAL re-application is declined outright, so the
+/// existing element keeps its remaining keeptime.</para></summary>
+public class SubAbstatePriorityTests
+{
+    private static (SubAbstateAction, int)[] Row(params (SubAbstateAction, int)[] a) => a;
+
+    /// <summary>Any difference in the ACTION indices means the two are unrelated and both stay — checked
+    /// before any argument comparison.</summary>
+    [Fact]
+    public void DifferentActionsAreUnrelated()
+        => SubAbstatePriority.AbStateChange(
+               Row((SubAbstateAction.SAA_WCRATE, 200)),
+               Row((SubAbstateAction.SAA_ACRATE, 200)))
+           .ShouldBe(StateExchange.SAP_NORELATION);
+
+    /// <summary>Same actions, bigger argument — the existing state VANISHES and the new one lands. This is
+    /// a higher rank of the same buff replacing a lower one.</summary>
+    [Fact]
+    public void AStrongerRankMakesTheExistingStateVanish()
+        => SubAbstatePriority.AbStateChange(
+               Row((SubAbstateAction.SAA_WCRATE, 251)),
+               Row((SubAbstateAction.SAA_WCRATE, 203)))
+           .ShouldBe(StateExchange.SAP_VANISH);
+
+    /// <summary>Same actions, smaller argument — SUBSCRIPT: the incoming one is subordinate and does not
+    /// displace what is there.</summary>
+    [Fact]
+    public void AWeakerRankIsSubordinate()
+        => SubAbstatePriority.AbStateChange(
+               Row((SubAbstateAction.SAA_WCRATE, 203)),
+               Row((SubAbstateAction.SAA_WCRATE, 251)))
+           .ShouldBe(StateExchange.SAP_SUBSCRIPT);
+
+    /// <summary>⚠️ IDENTICAL rows are SUBSCRIPT, not VANISH — re-casting the same buff does NOT refresh it.
+    ///
+    /// <para>This is the case the wire could never show, because it is precisely the one the server
+    /// re-sends constantly and declines to act on. Only an all-zero row falls through to VANISH.</para></summary>
+    [Fact]
+    public void RecastingTheSameRankDoesNotRefreshIt()
+    {
+        SubAbstatePriority.AbStateChange(
+            Row((SubAbstateAction.SAA_WCRATE, 203)),
+            Row((SubAbstateAction.SAA_WCRATE, 203)))
+        .ShouldBe(StateExchange.SAP_SUBSCRIPT);
+
+        SubAbstatePriority.AbStateChange(
+            Row((SubAbstateAction.SAA_NOMOVE, 0)),
+            Row((SubAbstateAction.SAA_NOMOVE, 0)))
+        .ShouldBe(StateExchange.SAP_VANISH);
+    }
+
+    /// <summary>Rows are compared slot by slot over all four, and a row with fewer actions is padded with
+    /// `SAA_NONE`/0 — which is how the server stores it.</summary>
+    [Fact]
+    public void ShorterRowsArePaddedNotTruncated()
+        => SubAbstatePriority.AbStateChange(
+               Row((SubAbstateAction.SAA_WCRATE, 200)),
+               Row((SubAbstateAction.SAA_WCRATE, 200), (SubAbstateAction.SAA_ACRATE, 50)))
+           .ShouldBe(StateExchange.SAP_NORELATION);
+
+    // ---- and the list applying it ------------------------------------------------------------------
+
+    private static AbstateListInObject ListWith(int id, params (SubAbstateAction, int)[] actions)
+    {
+        var l = new AbstateListInObject();
+        l.SetWithPriority(id, 1, 60_000, 0, actions, _ => []);
+        return l;
+    }
+
+    /// <summary>A stronger application displaces the weaker one and REPORTS it — the returned elements are
+    /// `ABSTATERESET`s the server owes every client.</summary>
+    [Fact]
+    public void TheStrongerApplicationDisplacesAndReportsTheWeakerOne()
+    {
+        var weak = Row((SubAbstateAction.SAA_WCRATE, 203));
+        var list = ListWith(5, weak);
+
+        var displaced = list.SetWithPriority(5, 6, 60_000, 1_000,
+            Row((SubAbstateAction.SAA_WCRATE, 251)), _ => weak);
+
+        displaced.Count.ShouldBe(1);
+        displaced[0].Strength.ShouldBe(1);
+        list.Active.Single().Strength.ShouldBe(6);
+    }
+
+    /// <summary>A weaker application is DECLINED: nothing is added, nothing is displaced, and the existing
+    /// element keeps the keeptime it already had rather than being refreshed.</summary>
+    [Fact]
+    public void AWeakerApplicationIsDeclinedAndRefreshesNothing()
+    {
+        var strong = Row((SubAbstateAction.SAA_WCRATE, 251));
+        var list = ListWith(5, strong);
+
+        var displaced = list.SetWithPriority(5, 1, 60_000, 30_000,
+            Row((SubAbstateAction.SAA_WCRATE, 203)), _ => strong);
+
+        displaced.ShouldBeEmpty();
+        list.Active.Count.ShouldBe(1);
+        list.Active.Single().Strength.ShouldBe(1);           // the ORIGINAL element
+        list.Active.Single().RestTimeMs(30_000).ShouldBe(30_000);   // not refreshed
+    }
+
+    /// <summary>An unrelated state coexists — the verdict is per existing state, not per abstate id,
+    /// because the rule compares resolved ACTIONS.</summary>
+    [Fact]
+    public void AnUnrelatedStateCoexists()
+    {
+        var wc = Row((SubAbstateAction.SAA_WCRATE, 203));
+        var list = ListWith(5, wc);
+
+        list.SetWithPriority(7, 1, 60_000, 0, Row((SubAbstateAction.SAA_ACMINUS, 78)), _ => wc)
+            .ShouldBeEmpty();
+        list.Active.Count.ShouldBe(2);
+    }
+}
