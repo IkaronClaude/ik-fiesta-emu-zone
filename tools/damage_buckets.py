@@ -43,6 +43,10 @@ import re
 import subprocess
 import sys
 
+# `ItemInfo.Equip` / `tItem.nStorage` slot numbers, and the empty marker. 0 is a real item id, so
+# emptiness is 0xFFFF -- see NC_ITEM_EQUIPCHANGE_CMD setting slot 10 to 65535 when a shield comes off.
+WEAPON_EQUIP_SLOT, EMPTY_EQUIP_SLOT = 12, 0xFFFF
+
 PCAP_DECODE = r"C:/Projects/fiesta-proxy/tools/pcap_decode.py"
 XOR_TABLE = os.environ.get("XOR_TABLE_PATH", r"C:/Projects/ik-fiesta-bots/xor-table.hex")
 
@@ -120,7 +124,7 @@ def collect(lines):
     levelups = 0
     level = None
     free_stat, chrclass, passives = {}, None, ()
-    weapon = {}                                   # (conv, handle) -> equipped weapon item id
+    weapon = None                                 # item id in the weapon slot, or None if unknown
     swings, chat, hit_counts = [], [], collections.Counter()
 
     def apply_abstate(conv, handle, ident, active):
@@ -181,16 +185,16 @@ def collect(lines):
             if not free_stat:
                 free_stat = dict(zip(["Strength", "Constitute", "Dexterity", "Intelligence",
                                       "MentalPower", "RedistributePoint"], raw[0x57:0x5D]))
-        elif name == "NC_BRIEFINFO_CHANGEWEAPON_CMD" and len(raw) >= 4:
-            # handle u16@0, item u16@2 -- a real ItemInfo id (251 = LongSword, 257 = Splitter, 40101 =
-            # Kainenecefury here). The weapon decides which MstRt column `cpl_RecalcParam` reads, so the
-            # mastery RATE cannot be computed without it.
+        elif name == "NC_ITEM_EQUIPCHANGE_CMD" and len(raw) >= 5:
+            # location u8@2 is the EQUIP SLOT and item u16@3 the item id -- our own character's equipment,
+            # sent to us, unlike NC_BRIEFINFO_CHANGEWEAPON_CMD which broadcasts appearance to others and
+            # does NOT carry every swap (it misses this capture's Splitter -> Kaineneceflight entirely).
             #
-            # ⚠️ Not every swap is broadcast: this capture's Splitter -> Kaineneceflight change does not
-            # appear. Last-known-weapon is therefore carried forward, which is safe HERE only because both
-            # are WeaponType 1 / one-handed and so select the same column. A capture that swaps across
-            # weapon TYPES without a broadcast would need another source.
-            weapon[(conv, u16(raw, 0))] = u16(raw, 2)
+            # Slot numbering matches `ItemInfo.Equip` and `tItem.nStorage`: 12 weapon, 10 shield, 7 body.
+            # 0xFFFF is the EMPTY marker -- item id 0 is a real id, so emptiness cannot be signalled by 0.
+            if raw[2] == WEAPON_EQUIP_SLOT:
+                item = u16(raw, 3)
+                weapon = None if item == EMPTY_EQUIP_SLOT else item
         elif name == "NC_CHAR_CLIENT_PASSIVE_CMD" and len(raw) >= 2:
             # count u16, then count * u16 passive-skill ids, IN LIST ORDER. Order matters: cpl_RecalcParam
             # writes each non-zero mastery value with `mov`, not `add`, so ranks do not sum -- the last
@@ -224,8 +228,7 @@ def collect(lines):
                 "levelups": levelups,
                 "level": level,
                 "passives": passives,
-                "attackerWeapon": weapon.get((conv, att)),
-                "defenderWeapon": weapon.get((conv, dfn)),
+                "weapon": weapon,
                 "attackerMob": mob_of.get((conv, att)),
                 "defenderMob": mob_of.get((conv, dfn)),
                 # Snapshots, not references: the state moves on and a bucket must remember what was true
@@ -266,10 +269,10 @@ def main():
             continue
         me = player.get(s["conv"])
         if s["attacker"] == me:
-            side, mob, own_weapon = "OUT", s["defenderMob"], s["attackerWeapon"]
+            side, mob, own_weapon = "OUT", s["defenderMob"], s["weapon"]
             own_ab, foe_ab = s["attackerAbstates"], s["defenderAbstates"]
         elif s["defender"] == me:
-            side, mob, own_weapon = "IN", s["attackerMob"], s["defenderWeapon"]
+            side, mob, own_weapon = "IN", s["attackerMob"], s["weapon"]
             own_ab, foe_ab = s["defenderAbstates"], s["attackerAbstates"]
         else:
             unattributed += 1

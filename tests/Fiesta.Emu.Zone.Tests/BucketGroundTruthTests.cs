@@ -142,12 +142,10 @@ public class BucketGroundTruthTests
     /// Summing `BraveMastery01..06` would give 750 and a rate of 1750; last-wins gives 150 and 1150, and
     /// the capture says 1150.</para>
     ///
-    /// <para>⚠️ <b>The weapon is only as good as the capture's tracking.</b>
-    /// `NC_BRIEFINFO_CHANGEWEAPON_CMD` does not broadcast every one of our own swaps, so the fixture
-    /// carries last-known. In THIS capture every weapon held — Splitter and Kaineneceflight (WeaponType 1,
-    /// one-handed) and Kainenecefury (4, two-handed) — selects a column worth 150, so the rate is 1150
-    /// either way and the gap cannot change the answer. A capture that swapped across weapon TYPES without
-    /// a broadcast would need a better source, and this would be silently wrong.</para></summary>
+    /// <para>The weapon comes from `NC_ITEM_EQUIPCHANGE_CMD` (slot 12), which is our own character's
+    /// equipment sent to us and carries every swap. `NC_BRIEFINFO_CHANGEWEAPON_CMD` broadcasts appearance
+    /// to other players and does NOT — it misses this capture's Splitter → Kaineneceflight change
+    /// entirely, and relying on it left every bucket reading 257.</para></summary>
     private static int? MasteryRate(ShnFile passiveTable, ShnFile items, IReadOnlyList<int> passives,
                                     int? weaponId)
     {

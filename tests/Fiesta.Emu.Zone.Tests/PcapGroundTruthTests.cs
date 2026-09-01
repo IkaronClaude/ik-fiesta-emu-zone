@@ -197,38 +197,49 @@ public class PcapGroundTruthTests
     private static int FreeStatStr(int points) => points;
     private static int FreeStatCon(int points) => (points + 1) / 2;
 
-    /// <summary>The angle multiplier in force for the swings this test looks at: <b>none</b>. Settled two
-    /// independent ways, and the stronger one is the operator's own annotation.
+    /// <summary>The angle multiplier in force when `Damage.pcapng` was captured. <b>Open, and the stock
+    /// 1000-1200 curve is the leading candidate.</b> Override with <c>ANGLE_MAX=1200</c>.
     ///
-    /// <para><b>1. The capture says so.</b> The operator narrates the experiment in chat, and
-    /// <c>"Forward-facing only now"</c> falls INSIDE the analysed window — immediately after
-    /// <c>"At 20, let's go"</c>, the marker that opens it. `DamageByAngle` is indexed by
-    /// <c>defenderFacing - directionToAttacker</c>, so a frontal engagement sits at index 0, and index 0
-    /// is <b>1000 in every version of the table</b>, stock or flattened. Facing the target removes the
-    /// term whatever the server had loaded. The angle was engineered out of this experiment on
-    /// purpose.</para>
+    /// <para><b>⚠️ I concluded twice that this was settled and was wrong both times, in opposite
+    /// directions.</b> Read the whole comment before touching the value.</para>
     ///
-    /// <para><b>2. The deployed file says so too.</b> `tools/capture_state.py` reads it out of the running
-    /// zone pods: flat 1000 in both `DamageByAngle_Chr` and `DamageByAngle_Mob`, since its mtime of
-    /// 2026-07-30 10:51 — 67 minutes before the capture — with a `.orig-damagebyangle` sibling from
-    /// 2026-03-18 holding the stock curve that tops out at 1200. On its own this proves only what is on
-    /// disk TODAY, because the table is expanded at zone STARTUP and nobody recorded whether the zone
-    /// restarted in those 67 minutes. It does not have to carry the argument alone.</para>
+    /// <para><b>Attempt 1 — 1200, from `Z:/ServerSource`.</b> Scored 216/219 and was reported as "190 of
+    /// 190 incoming exact, nothing fitted". Retracted: the reference tree is not the deployed data, and
+    /// the number came from a file the server does not use.</para>
     ///
-    /// <para>⚠️ <b>Not <see cref="DamageByAngleTable"/> loaded from `Z:/ServerSource`.</b> That copy
-    /// expands to 1000-1200 and is not what runs. Using it once scored 216/219 and the number was
-    /// worthless — the 1.2x came from a file the server does not use and happened to cover the real,
-    /// still-unexplained spread.</para>
+    /// <para><b>Attempt 2 — 1000, "eliminated".</b> The deployed file IS flat 1000 (read out of the
+    /// running zone pods by `tools/capture_state.py`, mtime 2026-07-30 10:51, with a
+    /// `.orig-damagebyangle` from March holding the stock curve), and the operator's chat inside the
+    /// window reads <c>"Forward-facing only now"</c>, which indexes the table at 0 where every version is
+    /// 1000. I wrote that up as settled. <b>The operator overturned it and the reasoning is better than
+    /// mine:</b></para>
     ///
-    /// <para>⚠️ <b>And do not set it to 1200 because it makes the suite green.</b> It does: with the
-    /// job-change multiplier and the corrected reconstruction in place, 1200 gives <b>219 of 219</b> with
-    /// no margin anywhere. That configuration was reached and rejected on 2026-08-28. A residual that
-    /// happens to be bounded by a table's own maximum is not evidence that the table produced it, and here
-    /// the operator had removed the angle twice over. Reaching for it is the same mistake as the 216/219,
-    /// one level deeper — which is precisely how it would get made again.</para>
+    /// <list type="number">
+    ///   <item><b>Mentioning the angle at all is evidence the angle was LIVE.</b> Nobody positions to
+    ///         avoid a bonus that does not exist. The file was written at 10:51 but the table is expanded
+    ///         at zone STARTUP, and the pod had not rolled — written, not in force.</item>
+    ///   <item><b>"only now" marks a CHANGE, not the whole window.</b> The operator recalls roughly half
+    ///         the fight being fought from any angle. I read a mid-window transition as if it described
+    ///         everything before it, which is a plain misreading of the annotation.</item>
+    /// </list>
     ///
-    /// <para>So the ~1.16x by which all four cases exceed the ceiling is a real unmodelled mechanism.
-    /// See the test below and OPEN_QUESTIONS.md §2.</para></summary>
+    /// <para>That also fits the data better than the flat reading: every FLOOR holds (the angle term is
+    /// never below 1000) while ceilings run up to 1.176x — a mixture of frontal hits at 1000 and off-angle
+    /// hits approaching 1200, at about the 50/50 the operator remembers.</para>
+    ///
+    /// <para><b>What has changed since, and why this file's numbers are stale.</b> `FighterDamageLvl60.pcapng`
+    /// and <see cref="BucketGroundTruthTests"/> found two real terms this harness was missing —
+    /// the character reconstruction (every displayed stat is `ftol(roe_Xxx) + freeStat`, so the Str chain
+    /// must come OUT of the Dmg slot exactly as Con comes out of DEF) and weapon mastery. With the
+    /// corrected reconstruction, `JobChangeDmgUp`, and <c>ANGLE_MAX=1200</c>, this capture scores
+    /// <b>218/219</b>. Mastery cannot be the explanation here: `Bot2433`'s three
+    /// `NC_CHAR_CLIENT_PASSIVE_CMD` packets are `00 00`, so its mastery rate is 1000.</para>
+    ///
+    /// <para><b>Why it still sits at 1000.</b> 218/219 was reached by choosing an input, and choosing
+    /// inputs is how the first two attempts went wrong. What would settle it is a capture with deliberate
+    /// rear hits on a server whose angle table is known flat and in force — every zone runs one today, and
+    /// `tools/capture_state.py` records it. If rear and frontal hits do equal damage there, the term's
+    /// absence is confirmed on the wire rather than argued from a file or a memory.</para></summary>
     private const int DeployedAngleMax = 1000;
 
     /// <summary>`JobChangeDmgUp` for the captured character's own class at its own level, READ from the

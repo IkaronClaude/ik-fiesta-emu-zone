@@ -37,78 +37,37 @@ rest of what a skill needs — `AggroPerDamage`, `AbsoluteAggro`, `SkillHitType`
 
 ---
 
-## 2. The capture residual is ONE factor of ~1.16x, and it is not the angle table
+## 2. `Damage.pcapng`'s residual — two of three parts now explained elsewhere
 
-**Status:** open. `PcapGroundTruthTests` is the instrument; `Damage.pcapng` the capture.
+**Status:** open, but no longer the headline. `FighterDamageLvl60.pcapng` and `BucketGroundTruthTests`
+overtook it: that capture is bucketed by state, takes the character's attack and defence from the wire,
+and needs no reconstruction at all. Where nothing unmodelled is acting, the port is **exact in both
+directions** there. So the old capture's residual is now mostly a story about this harness, not the engine.
 
-Two things landed on 2026-08-27/28, both read out of the binary rather than fitted: the job-change
-multiplier (`roe_CalcDamage+0x5B2`, verified under emulation) and the character reconstruction (every
-displayed stat is `ftol(roe_Xxx) + freeStat`, read out of `so_mobile_NotifyParameterChange`). Together they
-turned an asymmetric residual into a symmetric one:
+**Part 1 — incoming was RECONSTRUCTION ERROR, closed.** This file inverted displayed totals to rebuild the
+character, backing Con out of DEF but leaving the Str chain inside Dmg. Every displayed stat is
+`ftol(roe_Xxx) + freeStat` (`so_mobile_NotifyParameterChange`), so both had to come out. Taking DEF
+straight off the wire in the new capture makes incoming match at both ends — `178..220` against a predicted
+`177..220`. There was never an incoming mechanism to find.
 
-```
-                       before                    after
-  IN  Orc     ceiling  x1.189                    x1.176
-  OUT Orc     ceiling  x0.959 (was x1.2 over)    x1.152
-  IN  Pinky   ceiling  x1.161                    x1.161
-  OUT Pinky   ceiling  x0.955                    x1.149
-```
+**Part 2 — outgoing was missing `JobChangeDmgUp`, closed.** Read from `roe_CalcDamage+0x5B2`, verified
+under emulation, and confirmed live: outgoing jumps ~1.6x across a single 59→60 level-up while incoming
+stays flat (see the Resolved entry).
 
-**All four cases exceed the ceiling by the same factor — 1.149 to 1.176 — for a MOB attacker and for the
-character alike.** One mechanism, not two.
+**Part 3 — what is left is the ANGLE, and it is open.** With the corrected reconstruction, the job-change
+multiplier and `ANGLE_MAX=1200`, this capture scores **218/219**. That is not proof: it was reached by
+choosing an input, which is exactly how two earlier readings of this same constant went wrong. See
+`PcapGroundTruthTests.DeployedAngleMax`, which carries the full history — including that the operator
+overturned my "eliminated" verdict, and why their reasoning is better: you do not position to avoid a bonus
+that is not live, and `"Forward-facing only now"` marks a change partway through, not the whole window.
 
-### The angle table is ruled out, and by the operator's own annotation
+**Weapon mastery cannot be the explanation here**, though it was for the new capture: `Bot2433`'s three
+`NC_CHAR_CLIENT_PASSIVE_CMD` packets are `00 00`, so its mastery rate is 1000.
 
-The obvious candidate was the stock `DamageByAngle` curve, which tops out at exactly 1200 at 180 degrees.
-It is wrong, and the capture says so itself: the operator's chat inside the analysed window reads
-**`"Forward-facing only now"`** — immediately after `"At 20, let's go"`, the marker that opens the window.
-`DamageByAngle` is indexed by `defenderFacing - directionToAttacker`, so a frontal engagement sits at
-index 0, and index 0 is **1000 in every version of the table**. The term was engineered out of the
-experiment on purpose, and the flatten of `DamageByAngle.txt` 67 minutes before the capture was very
-probably the same intent expressed twice.
-
-⚠️ Setting `DeployedAngleMax` to 1200 gives **219/219 with no margin anywhere**. It was reached, and
-rejected, on 2026-08-28. A residual bounded by a table's own maximum is not evidence that the table
-produced it. This is the third time on this capture that an input has been chosen because it made the
-score good — see the retractions below — and the first two are why the third was caught.
-
-### What the operator was chasing at the same time
-
-The chat AFTER the window is a second, independent observation of something wrong on the defence side,
-made from play:
-
-> *"Teleporting to reset my stats, it seems like END has not applied cleanly"* … *"Still looks bugged,
-> relogging."* … *"No, seems like END has no clean flat effect here"* … *"Okay unequipping some armor"* …
-> *"Unequipping some more (no end change this time)"* … *"magic damage appears unchanged (pinky)"*
-
-Per rule 2 of this file, that does not lose to the data — it is a lead. Constitution feeds `roe_AC`
-through `GoverningChain`, and armour changes that produce no DEF change are exactly the symptom of a
-term the port is not modelling.
-
-### Ruled out by measurement, not argument
-
-* the accessors (`tools/oracle_accessors.py` agrees with this port to the digit);
-* per-instance mob levels (every `NC_BAT_TARGETINFO_CMD` reports 61 for all 20 Orc and 4 Pinky handles);
-* the normal attack's `damagerate` and `nBMPDamageRate` (`smo_SwingDamage` writes the literal 1000 into
-  both);
-* the angle, above.
-
-### Retracted along the way, all three for the same reason — an input chosen rather than read
-
-1. **216/219 off `Z:/ServerSource`'s angle table.** The reference tree is not the deployed data.
-2. **"the outgoing residual is one gear WCRate and 1150 is a real one".** It existed only to explain a 5%
-   gap that was the difference between the Str chain (1.217x) standing in for the job-change multiplier
-   (1.28x) in a harness that left Str inside the displayed Dmg.
-3. **219/219 off a 1200 angle table.** Rejected before it was committed.
-
-### What would settle it
-
-A fresh capture with `tools/capture_state.py` run beside it — see `docs/CAPTURE_PROTOCOL.md`. Every zone
-now runs a flat, in-force 1000 table, so a new capture has no ambiguity, and the state dump records the
-character's class, level, free-stat allocation and worn gear with options rather than leaving them to be
-inverted out of displayed totals. (Today's dump of `Bot2433` already shows the weapon carrying no upgrade
-option, where the July analysis assumed a +10 worth +1197 — the gear has changed since, which is exactly
-why the snapshot has to be contemporaneous.)
+**What would settle it:** a capture with deliberate REAR hits, on a server whose angle table is known flat
+and in force. Every zone runs one today and `tools/capture_state.py` records it. If rear and frontal hits
+do equal damage there, the term's absence is established on the wire instead of argued from a file or a
+recollection — and this constant can stop being a judgement call.
 
 ---
 
