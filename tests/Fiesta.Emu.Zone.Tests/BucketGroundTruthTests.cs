@@ -96,11 +96,44 @@ public class BucketGroundTruthTests
             root.GetProperty("chrclass").GetInt32());
     }
 
-    /// <summary>The free-stat tables, read out of a live zone at 0x0DA50BC4 (Str) and 0x0DA50BD0 (Con):
-    /// Str is 1:1 and Con is <c>ceil(n/2)</c>. A MOB gets <c>table[0]</c> unconditionally, so it
-    /// contributes nothing on either side.</summary>
-    private static int FreeStatStr(int points) => points;
+    /// <summary>The free-stat Str term, <b>which is NOT the allocated point count.</b>
+    ///
+    /// <para>`so_ply_FreeStatStr` returns a <c>ShineCommonParameter::FreeStatStr</c> record and every
+    /// caller reads the <b>u16 at +1</b>. The PDB names the fields:</para>
+    ///
+    /// <code>
+    ///   +0x00  Stat        unsigned char     &lt;- the allocation
+    ///   +0x01  WCAbsolute  unsigned short    &lt;- what callers actually read
+    ///   +0x03  checksum    unsigned char
+    /// </code>
+    ///
+    /// <para><c>Stat</c> is identity and <c>WCAbsolute</c> is not, so reading the record as "the points"
+    /// is right for one field and wrong for the one that matters. Measured out of a live zone through the
+    /// pointer array at 0x0DA50BC4 — <b>all 181 entries</b>, zero mismatches against
+    /// <c>points + points/5</c>:</para>
+    ///
+    /// <code>
+    ///   points   0  1  2  3  5  10  15  16  17  18  20  25  33  50
+    ///   Stat     0  1  2  3  5  10  15  16  17  18  20  25  33  50
+    ///   WCAbs    0  1  2  3  6  12  18  19  20  21  24  30  39  60
+    /// </code>
+    ///
+    /// <para>This mattered by about 1%: the term enters TWICE, subtracted from the wire's Dmg pair and
+    /// added back as `roe_Damage`'s flat override, so at 17 points using 17 instead of 20 left three
+    /// outgoing buckets 2-3 points over the ceiling. It cannot touch incoming, because the defender's side
+    /// uses FreeStatCon and this character has no Con allocated — which is exactly why incoming was already
+    /// exact and only outgoing was short.</para>
+    ///
+    /// <para>⚠️ The earlier reading ("Str is 1:1") came from sampling two entries, 0 and 2, where the two
+    /// fields agree. Two points do not distinguish <c>n</c> from <c>n + n/5</c>.</para></summary>
+    private static int FreeStatStr(int points) => points + points / 5;
 
+    /// <summary>The Con equivalent, <c>ceil(n/2)</c> from the sibling table at 0x0DA50BD0 (Con[19]=10,
+    /// Con[20]=10, Con[21]=11, Con[50]=25).
+    ///
+    /// <para>⚠️ Sampled at four points, not read in full the way the Str table now has been. It is unused
+    /// by this capture — the character has zero Con allocated — so it has never been exercised here.
+    /// Verify it before trusting it on a character that has spent points in Con.</para></summary>
     private static int FreeStatCon(int points) => (points + 1) / 2;
 
     /// <summary>`JobChangeDmgUp` for the captured class at a level, read through the game's own tables —
@@ -175,6 +208,19 @@ public class BucketGroundTruthTests
             if (byId.TryGetValue(pid, out var row) && ShnFile.Int(row, column) != 0)
                 value = ShnFile.Int(row, column);                // `mov`, not `add`: last non-zero wins
         return 1000 + value;
+    }
+
+    /// <summary>Diagnostics for a failing bucket: the mob's level, the level-gap rate actually used, and
+    /// the mob's armour BEFORE abstates. Enough to hand-check the arithmetic without a debugger.</summary>
+    private static (int lv, int gap, double ac) Diag(Bucket b, MobDataBox box,
+                                                     IReadOnlyDictionary<int, string> mobNames,
+                                                     LevelGapTable gaps)
+    {
+        var mob = MobCombatant.Build(box, mobNames[b.Mob])!;
+        var gap = b.Side == "OUT"
+            ? gaps.Rate(CombatantKind.Player, b.Level, CombatantKind.Monster, mob.Level)
+            : gaps.Rate(CombatantKind.Monster, mob.Level, CombatantKind.Player, b.Level);
+        return (mob.Level, gap, DamageCalculator.ArmourClass(mob));
     }
 
     private static string Show(IReadOnlyList<Abstate> a)
@@ -337,21 +383,25 @@ public class BucketGroundTruthTests
         });
     }
 
-    /// <summary>⛔ KNOWN RED, by 3 points. Predict every bucket and require that no clean hit exceeds what
-    /// a maximum roll can produce.
+    /// <summary>Predict every bucket and require that no clean hit exceeds what a maximum roll can
+    /// produce. <b>510 of 510 hits inside 175 buckets. Nothing over a ceiling, nothing under a floor.</b>
     ///
-    /// <para>With mastery and the mob's abnormal states modelled, `FighterDamageLvl60.pcapng` sits at
-    /// <b>500 of 510 hits fully inside 175 buckets</b>, <b>none below the floor</b>, and three buckets
-    /// overshooting by at most <b>3 points</b> — down from 51 buckets and 145 points before abstates. The
-    /// 46 unpredictable hits are buckets carrying a `SubAbstateAction` this port has not read; they are
-    /// REFUSED rather than predicted, so an unmodelled effect can never masquerade as agreement.</para>
+    /// <para>Both directions, four mobs, two levels, three weapons, with buffs and debuffs live on both
+    /// sides. The 46 unpredictable hits are buckets carrying a `SubAbstateAction` this port has not read;
+    /// they are REFUSED rather than predicted, so an unmodelled effect can never masquerade as
+    /// agreement.</para>
     ///
-    /// <para>Asserted on overshoot with no tolerance, so this test is red until the last three points are
-    /// found. Undershoot does not fail — a bucket may simply never roll its maximum.</para>
+    /// <para>Asserted on OVERSHOOT with no tolerance — a single point over means the server produced
+    /// damage this port calls impossible. Undershoot does not fail: a bucket may simply never roll its
+    /// maximum, and with n=2 it usually will not.</para>
     ///
-    /// <para>The survivor to chase: <c>OUT mob 334 lv59</c>, observed 164..187 against a predicted
-    /// 155..185 with <c>enemy=[0@5,1@6,7@4]</c>. Three abstates at once, so the suspect is an interaction
-    /// or an action argument read at the wrong rank, not the damage engine.</para></summary>
+    /// <para><b>What it took, in the order the errors were found:</b> the character rebuilt the way
+    /// `so_mobile_NotifyParameterChange` fills the wire rather than by inverting displayed totals;
+    /// `JobChangeDmgUp`; the band computed through the real integer pipeline instead of scaled doubles;
+    /// weapon mastery (`cpl_RecalcParam`, rate = MstRt + 1000, ranks do not sum); the mob's abnormal
+    /// states (`aeo_ParameterEnchant`); and finally `FreeStatStr.WCAbsolute`, which is not the point
+    /// count — see <see cref="FreeStatStr"/>. Every one of those was a term read out of the binary or the
+    /// live server, and every one was found because a prediction disagreed with a capture.</para></summary>
     [SkippableFact]
     public void NoBucketExceedsWhatAMaximumRollCanProduce()
     {
@@ -409,10 +459,18 @@ public class BucketGroundTruthTests
                 if (b.EnemyAbstates.Count == 0) underWithNoEnemyAbstate++;
             }
 
-            if (b.N >= 5)
+            // Every overshooting bucket is reported whatever its size: a one-hit bucket that exceeds the
+            // band is exactly as much of a contradiction as a twenty-hit one.
+            if (b.N >= 5 || over > 0)
                 report.Add($"  {b.Side,-4} mob {b.Mob,-4} lv{b.Level} n={b.N,-3}"
                            + $" observed {b.Min}..{b.Max}  predicted {p.Floor}..{p.Ceiling}"
-                           + (over > 0 ? $"  OVER BY {over}  enemy=[{Show(b.EnemyAbstates)}]"
+                           + (over > 0 ? $"  OVER BY {over}  self=[{Show(b.SelfAbstates)}]"
+                                          + $" enemy=[{Show(b.EnemyAbstates)}]"
+                                          + $" wpn={b.Weapon} dmg={b.Params.GetValueOrDefault(DmgMin)}"
+                                          + $"..{b.Params.GetValueOrDefault(DmgMax)}"
+                                          + $" mobLv={Diag(b, box, mobNames, gaps).lv}"
+                                          + $" gap={Diag(b, box, mobNames, gaps).gap}"
+                                          + $" mobAC={Diag(b, box, mobNames, gaps).ac:F1}"
                               : under > 0 ? $"  under by {under}  enemy=[{Show(b.EnemyAbstates)}]"
                               : "  inside"));
         }
