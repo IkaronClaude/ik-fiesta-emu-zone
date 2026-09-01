@@ -9,23 +9,50 @@ fields agree; it is actually `points + points/5`. Read the whole table, or say o
 
 ## Known-shaky inputs
 
+**The record shapes are now READ, not inferred** (PDB, `ShineCommonParameter::FreeStat*`). Three of the
+five are bigger than this file assumed, and two of the extra fields are read by the roll phase:
+
+```
+FreeStatStr  4  { Stat u8, WCAbsolute u16, checksum u8 }
+FreeStatInt  4  { Stat u8, MAAbsolute u16, checksum u8 }
+FreeStatDex  6  { Stat u8, THRate u16, TBRate u16, checksum u8 }
+FreeStatCon  8  { Stat u8, ACAbsoulte u16, BlockRate u16, MaxHP u16, checksum u8 }
+FreeStatMen  8  { Stat u8, MRAbsolute u16, CriRate u16, MaxSP u16, checksum u8 }
+```
+
+`roe_HitRate` reads Dex's THRate AND TBRate; `roe_FreeStatCriRate` reads Men's CriRate. `MaxHP` / `MaxSP`
+are where 0x1035's params 16 and 17 pick up their free-stat halves. What remains unread is the TABLES.
+
 - [ ] **`FreeStatCon` — the same trap, unsprung.** Currently `ceil(n/2)`, sampled at four points
       (Con[19]=10, Con[20]=10, Con[21]=11, Con[50]=25) and never exercised: `FighterDamageLvl60.pcapng`'s
       character has **zero** Con allocated, so the term is 0 whatever the table says. Read all 181 entries
       out of the live table at **0x0DA50BD0** the way `FreeStatStr` was read at 0x0DA50BC4 — pointer array,
-      record is `{Stat u8, ACAbsolute u16, checksum u8}`, and the callers read the **u16 at +1**, not the
-      point count. Then capture a character that HAS spent Con points.
-- [ ] **`FreeStatDex` / `FreeStatInt` / `FreeStatMen`.** Never read at all. They feed the displayed
-      Aim / Evasion / MDef the same way (`so_mobile_NotifyParameterChange`), so any test that reconstructs
-      from those fields inherits the same error.
+      and note it is an **8-byte** record, so `BlockRate` and `MaxHP` come out of the same read for free.
+      Then capture a character that HAS spent Con points.
+- [ ] **`FreeStatDex` / `FreeStatInt` / `FreeStatMen` tables.** Never read at all, and now they have
+      callers: `ICombatant.FreeStatDexTHRate` / `FreeStatDexTBRate` / `FreeStatMenCriRate` have to be
+      supplied by hand because nothing can compute them. Meanwhile the wire gives the SUM — 0x1035's `Aim`
+      is `roe_TH + THRate` and `Evasion` is `roe_TB + TBRate` — so a captured character can be reconstructed
+      without them, but a synthetic one cannot.
+      **A cheap check is already available:** Ikaron has 25 free-stat Men and crits 13 times in 671 landed
+      swings, so `FreeStatMen[25].CriRate` should come out near 19.
 
 ## Untested paths in the damage engine
 
-- [ ] **Criticals.** Every hit checked so far is `flagWord == 0`. A crit is
-      `2*dmg + dmg*PassiveCriDamageRatePlus/1000` — the container field at +0xCDC, named in the PDB — and
-      the port doubles and stops. Capture with a crit-heavy build and filter on `iscritical`.
-- [ ] **Misses, blocks and shield block.** `roe_HitRate`, `roe_TB`, `roe_ShieldBlock` are unmodelled; the
-      captures' zero-damage swings are ground truth being discarded. The miss RATE is testable today.
+- [x] **Criticals.** The `2*dmg + dmg*PassiveCriDamageRatePlus/1000` term is ported. The DAMAGE is still
+      untested against a capture — every hit checked so far is `flagWord == 0` — so a crit-heavy capture
+      filtered on `iscritical` is still wanted, and it would also exercise the crit RATE.
+- [x] **Misses, blocks and shield block** are modelled (`ShineMobileObject.SwingDamage`). Counted on the
+      capture's 750 swing frames: 658 clean, 64 missed, 15 missed+blocked, 13 critical — 10.5% miss,
+      2.0% block, 19 permille crit among the 671 that landed. **Blocked-without-missed never occurs**,
+      which is what the code forces. Still to do: bucket those by state, the way clean hits are, so the
+      RATES are checked per bucket rather than in aggregate.
+- [ ] **⚠️ An eraser-fresh container crits on every swing.** `roe_CriticalRate` sums Item.Rate,
+      WeaponTitle.Rate and AbnormalState.Rate at `CriDamRate`, and `ParameterCluster.Rate()` seeds that
+      slot with 1000 — so a bare container comes to 3000 against a measured 19. Either the running
+      process's rate eraser holds 0 at slot 32, or something zeroes those three slots before combat. The
+      offsets are not in doubt (`roe_ShieldBlock` lands on the same layer map), so **do not resolve this by
+      reading a different slot**. Read a live player's container at +0x218 / +0x6E0 / +0xA10.
 - [ ] **Magical damage.** `roe_magical` / `roe_normalMA` never exercised — no caster has attacked in any
       capture. Needs a Mage/Cleric capture.
 - [ ] **Skills.** `FighterDamageLvl60.pcapng` contains **633** `NC_BAT_SKILLBASH_HIT_DAMAGE_CMD` frames,

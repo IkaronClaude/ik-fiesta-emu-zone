@@ -16,15 +16,24 @@ done when it disagrees with nothing.
 Every swing the simulator already makes is affected. Today swings never miss, never block and never crit;
 `AttackModifiers.CriticalChancePermille` is an *input* defaulting to 0 and nothing derives it from stats.
 
-- [ ] **`roe_HitRate`** (`NormalPY` 0x005011F0) and **`roe_HitRateByGlobalAction`** (0x005051C0).
-- [ ] **`roe_CriticalRate`** (`NormalPY` 0x00501700) and **`roe_CriticalRateByGlobalAction`** (0x00504B10).
-- [ ] **`roe_ShieldBlock`** (`NormalPY` 0x004FF860) and **`roe_ShieldBlockByGlobalAction`** (0x00505090).
-- [ ] **`roe_FreeStatHitRate`** (0x00500010) / **`roe_FreeStatCriRate`** (0x004FFDB0) — the free-stat halves,
-      and remember `FreeStatDex`'s record is `{Stat, <u16 the callers read>, checksum}` like Str's was.
-- [ ] **Critical damage is `2*dmg + dmg*PassiveCriDamageRatePlus/1000`** (container +0xCDC), not `2*dmg`.
-      `roe_CalcDamage+0x4C2`. The port doubles and stops.
-- [ ] **`roe_CriticalStun`** (0x00500070) and `roe_CriticalStunRate` — a crit can stun, which is a state
-      machine effect, not a damage one.
+- [x] **`roe_HitRate`** (`NormalPY` 0x005011F0) and **`roe_HitRateByGlobalAction`** (0x005051C0).
+- [x] **`roe_CriticalRate`** (`NormalPY` 0x00501700) and **`roe_CriticalRateByGlobalAction`** (0x00504B10).
+- [x] **`roe_ShieldBlock`** (`NormalPY` 0x004FF860) and **`roe_ShieldBlockByGlobalAction`** (0x00505090).
+- [x] **`roe_FreeStatHitRate`** (0x00500010) / **`roe_FreeStatCriRate`** (0x004FFDB0) — the free-stat halves.
+      The record shapes are now READ from the PDB rather than inferred, and Dex and Men carry a second
+      `u16` nobody had looked at: `FreeStatDex {Stat, THRate, TBRate}` (6 bytes),
+      `FreeStatMen {Stat, MRAbsolute, CriRate, MaxSP}` (8), `FreeStatCon {Stat, ACAbsoulte, BlockRate,
+      MaxHP}` (8), `FreeStatStr {Stat, WCAbsolute}` and `FreeStatInt {Stat, MAAbsolute}` (4 each).
+- [x] **Critical damage is `2*dmg + dmg*PassiveCriDamageRatePlus/1000`** (container +0xCDC), not `2*dmg`.
+      `roe_CalcDamage+0x4C2`.
+- [x] **`roe_CriticalStun`** (0x00500070) and `roe_CriticalStunRate` — a flat **200** permille, and the
+      abstate it applies is hard-coded `0x133` = **307** = `StaCommonStun02`.
+- [ ] **The tables behind the free-stat terms are still unread.** `FreeStatDex` and `FreeStatMen` have
+      never been dumped the way `FreeStatStr` was (181 entries, live, at 0x0DA50BC4), so
+      `ICombatant.FreeStatDexTHRate` and friends have to be supplied by the caller. See `FUTURE_TESTS.md`.
+- [ ] **Item actions.** `ItemActionObserveManager::EventRun` is not modelled; `ItemActionRates.None` keeps
+      the roll ORDER honest (the extra draws are skipped exactly where the server skips them) without
+      pretending to compute anything.
 
 ### Started 2026-09-01 — where the rolls actually live
 
@@ -74,6 +83,66 @@ offset, which checks both. A non-positive result branches out early (no block po
 Note the shape: gear contributes a PLUS and only the abnormal-state layer contributes a RATE. `ShieldAC`
 is also `ItemInfo.ShieldAC`, a column already loaded by `EquipmentCatalog` and currently unused —
 `Kaineneceshield` has 70.
+
+### Done 2026-09-01 — the rolls, ported
+
+**`roe_HitRate@NormalPY`, complete.** The tail past 0x501582 was the missing half:
+
+```
+if (defender.MissPercentFix != 0)                       // +0x0CD0, an unsigned short
+    return MissPercentFix > 1000 ? 0 : 1000 - MissPercentFix;   // no block flag on the >1000 path
+th  = roe_TH(attacker) + attacker.FreeStatDex.THRate
+tb  = roe_TB(defender) + defender.FreeStatDex.TBRate
+tb += defender.PassiveMovingTBPlus[0]      when so_mobile_IsInMoving   // +0x0D88, INDEX 0, not the HP key
+hit = (int)(th * 850.0 / tb)
+hit -= defender.RangeEvasion               when the attack's range > 300   // roe_FreeStatHitRate
+```
+
+**850, not 1000** (the constant at 0x006D03E0). Equal Aim and Evasion is an 85% chance, and hit rate only
+reaches certainty at about 18% above. `so_AttackRange@ShinePlayer` (0x00559930) is branchless and blunt —
+**450 for the Archer family, 100 for everyone else** — keyed on `cc_BaseClass` (Fighter 1, Cleric 6,
+Archer 11, Mage 16, Joker 21, Sentinel 26), so only archers ever pay `RangeEvasion`.
+
+**The three comparisons do not agree with each other**, and the asymmetry is real:
+
+| roll | passes when |
+| --- | --- |
+| shield block | `draw < rate` |
+| hit | `draw <= rate` — a rate of 500 hits on 501 of the 1000 outcomes |
+| `HitRateByGlobalAction` | `value >= draw`, and the value is `max(1000 - sum, 0)` |
+| critical | `draw < rate` |
+| critical stun | `draw < 200` |
+
+**`roe_CriticalRate@NormalPY`** sums three ATTACKER layers at `CriDamRate` (Item.Rate +0x218,
+WeaponTitle.Rate +0x6E0, AbnormalState.Rate +0xA10), subtracts two DEFENDER layers at `CriticalTB`
+(AbnormalState.Rate +0xA38, Item.Rate +0x240), adds `FreeStatMen.CriRate`, and floors at 1.
+
+⚠️ **OPEN, and it matters: an eraser-fresh container makes everything crit.** `ParameterCluster.Rate()`
+seeds `CriDamRate` (slot 32) with 1000, so the three attacker terms alone come to **3000** for a character
+with no gear at all. The capture says otherwise — of `FighterDamageLvl60.pcapng`'s 750 swing frames, 671
+landed and **13** carry `iscritical`, which is **19 permille**. Ikaron has 25 free-stat Men, so ~19
+permille is about what the `FreeStatMen.CriRate` term alone would contribute, and the three layer terms
+must be **0** in a live container rather than the eraser's 1000. Either the rate eraser's slot 32 is not
+1000 in the running process — the eraser was read out of live memory, but a static template is not a live
+character, which is the same trap `capture_state.py` exists for — or something zeroes those three slots
+before combat. **Do not "fix" this by reading a different slot**: the offsets are unambiguous and
+`roe_ShieldBlock` lands on the same layer map. Settle it by reading a live player's container at +0x218 /
++0x6E0 / +0xA10, the way `FreeStatStr` was settled.
+
+**Where the ground truth already is.** Flag byte of the capture's 750 `NC_BAT_SWING_DAMAGE_CMD` frames
+(bit0 `iscritical`, bit2 `ismissed`, bit3 `isshieldblock`):
+
+```
+0x00  658   clean hit
+0x04   64   missed                    -> 10.5% of all swings miss
+0x0C   15   missed AND shield-blocked ->  2.0% blocked
+0x01   13   critical                  -> 19 permille of the 671 that landed
+```
+
+**Not one frame is blocked without also being missed.** That is not a coincidence in the data, it is
+forced by the code: `roe_HitRate` sets `isshieldblock` and then returns `0.0`, and `smo_SwingDamage` rolls
+against that zero like any other rate — a block that still hit would need the draw to come up exactly 0.
+The port reproduces it, and this is the first prediction from the roll phase that the wire confirms.
 
 **Proof:** the captures already carry it. `flagWord` bit 2 is `ismissed` and bit 3 `isshieldblock`; the
 bucket tool currently discards every non-zero flag. Extend it to bucket MISSES and BLOCKS as counts, and
