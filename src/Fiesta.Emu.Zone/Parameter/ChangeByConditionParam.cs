@@ -45,6 +45,26 @@ public sealed record ChangeByConditionParam(int Condition, IReadOnlyList<int> Va
         return index >= (uint)BucketCount ? 0 : Values[(int)index];
     }
 
+    /// <summary>`cbcp_GetValue_Index` (0x004C9010) — the same block read by RAW INDEX, with no divide.
+    ///
+    /// <para>A second, simpler accessor the binary keeps alongside <see cref="Value"/>:</para>
+    /// <code>
+    /// int cbcp_GetValue_Index(int i) {
+    ///     if (cbcp_nMaxValueNum == 0) return 0;   // +0x3
+    ///     if (i >= cbcp_nMaxValueNum) return 0;   // +0x12  SIGNED compare
+    ///     return cbcp_pValue[i];                  // +0x17
+    /// }
+    /// </code>
+    ///
+    /// <para>Its only caller in the damage path is `roe_HitRate@NormalPY`, reading
+    /// <see cref="ParameterContainer.PassiveMovingTbPlus"/> at index 0.</para>
+    ///
+    /// <para>⚠️ The original's range check is a SIGNED <c>jge</c> with no lower bound, so a negative index
+    /// would read before the array. This port refuses it instead — no caller passes one, and reproducing
+    /// an out-of-bounds read is not fidelity.</para></summary>
+    public int ValueAtIndex(int index)
+        => index < 0 || index >= BucketCount ? 0 : Values[index];
+
     /// <summary>The key the damage functions pass: how much HP the owner is MISSING, in permille.
     ///
     /// <para>From `roe_AttackPower+0xA4`: <c>(maxHp - hp) * 1000 / maxHp</c>, an unsigned divide. At full

@@ -107,6 +107,145 @@ public static class DamageCalculator
         return FloorAtOne(GoverningChain(s, Stat.Dex) + Chain(s, Stat.TH));
     }
 
+    // ---- the swing rolls: block, hit, critical ---------------------------------------------------------
+
+    /// <summary>An ordinary melee `AttackRange` — 100. Anything at or below
+    /// <see cref="RangedAttackThreshold"/> skips the ranged-evasion subtraction.</summary>
+    public const int MeleeAttackRange = 100;
+
+    /// <summary>`roe_FreeStatHitRate+0x1E` compares the attack's range against <b>300</b>, STRICTLY
+    /// greater. An Archer's 450 is over it; every other class's 100 is not.</summary>
+    public const int RangedAttackThreshold = 300;
+
+    /// <summary>`RulesOfEngagement::roe_CriticalStunRate` (0x00500170) is a one-line
+    /// <c>fld 200.0</c> — a flat 20% chance that a critical also stuns, with no stat feeding it.
+    /// `NormalPY` does not override vtable slot 0, so this is the physical rule's value.</summary>
+    public const int CriticalStunRatePermille = 200;
+
+    /// <summary>The abstate a critical stun applies: <c>ABSTATEINDEX 0x133</c> = <b>307</b>, which
+    /// `AbState.shn` names `StaCommonStun02`.
+    ///
+    /// <para>`roe_CriticalStun` (0x00500070) hard-codes it — <c>push 0x133; call
+    /// AbState::as_FromIndex</c> — so it is not a table lookup that could vary. 307 is also one of the
+    /// abstates observed applied to mobs in `FighterDamageLvl60.pcapng`, which makes this the one part of
+    /// the roll phase with ground truth already on the wire.</para></summary>
+    public const int CriticalStunAbstateIndex = 307;
+
+    /// <summary>`roe_ShieldBlock@NormalPY` (0x004FF860) — the DEFENDER's chance to shield-block, in
+    /// permille.
+    ///
+    /// <code>
+    /// block = (Upgrade.Plus[ShieldAC] + Item.Plus[ShieldAC]) * AbnormalState.Rate[ShieldAC] / 1000
+    ///           +0x464                   +0x134                 +0x9F8
+    /// </code>
+    ///
+    /// <para>All three are <see cref="Stat.ShieldAC"/> (slot 26) in their own halves, and <c>+0x9F8</c> is
+    /// exactly the address `SAA_SHIELDACRATE` writes — the abstate decode and this formula meet at the
+    /// same offset, which checks both.</para>
+    ///
+    /// <para>Note the shape: gear contributes a PLUS and only the abnormal-state layer contributes a RATE.
+    /// A non-positive result returns 0 (the original branches out at +0x76), so a character with no shield
+    /// can never block.</para></summary>
+    public static double ShieldBlockRate(ICombatant defender)
+    {
+        var s = defender.Parameters;
+        var plus = (double)s.Plus(StatModifier.Upgrade)[Stat.ShieldAC] + s.Plus(StatModifier.Item)[Stat.ShieldAC];
+        var value = plus * s.Rate(StatModifier.AbnormalState)[Stat.ShieldAC] / 1000.0;
+        return value > 0 ? value : 0.0;
+    }
+
+    /// <summary>`roe_HitRate@NormalPY` (0x005011F0) MINUS its two shield-block rolls — the chance to hit,
+    /// in permille, given that nothing blocked.
+    ///
+    /// <para>The block rolls are deliberately not here. They consume random draws and they set
+    /// `EngageArgument.isshieldblock`, which makes them part of RESOLVING a swing rather than part of
+    /// computing a rate; <see cref="ShineMobileObject.SwingDamage"/> (`smo_SwingDamage`) does them in the original's order. What is left is:</para>
+    ///
+    /// <code>
+    /// if (MissPercentFix != 0)                       // defender, +0x0CD0
+    ///     return MissPercentFix &gt; 1000 ? 0 : 1000 - MissPercentFix;
+    /// th = roe_TH(attacker) + attacker.FreeStatDex.THRate
+    /// tb = roe_TB(defender) + defender.FreeStatDex.TBRate
+    /// if (defender.IsMoving) tb += defender.PassiveMovingTBPlus[0]
+    /// hit = (int)(th * 850.0 / tb)
+    /// if (attackRange &gt; 300) hit -= defender.RangeEvasion
+    /// return hit
+    /// </code>
+    ///
+    /// <para><b>850, not 1000.</b> `roe_HitRate+0x392` multiplies by the constant at 0x006D03E0, which is
+    /// 850.0 — so equal Aim and Evasion is an 85% chance, not a certainty, and hit rate only reaches 1000
+    /// when Aim is about 18% above Evasion.</para>
+    ///
+    /// <para>The truncation is a real <c>_ftol</c> and happens BEFORE the ranged-evasion subtraction,
+    /// because `roe_FreeStatHitRate` takes an <c>int</c>. The MissPercentFix path skips
+    /// `roe_FreeStatHitRate` entirely, so a fixed miss chance also ignores ranged evasion.</para></summary>
+    public static double HitRate(ICombatant attacker, ICombatant defender)
+    {
+        var d = defender.Parameters;
+
+        // The short-circuit is on the DEFENDER and replaces everything below it. Above 1000 the original
+        // returns zero rather than a negative rate -- and, unlike a real block, leaves `isshieldblock` unset.
+        if (d.MissPercentFix != 0)
+            return d.MissPercentFix > 1000 ? 0.0 : 1000.0 - d.MissPercentFix;
+
+        var th = ToHitRating(attacker) + attacker.FreeStatDexTHRate;
+        var tb = ToBlockRating(defender) + defender.FreeStatDexTBRate;
+
+        // `so_mobile_IsInMoving` gates the ONLY movement-dependent term in the whole damage engine. Note
+        // the index accessor: `cbcp_GetValue_Index(0)`, not the HP-keyed `cbcp_GetValue`.
+        if (defender.IsInMoving)
+            tb += d.PassiveMovingTbPlus.ValueAtIndex(0);
+
+        var hit = Ftol32(th * 850.0 / tb);
+
+        // `roe_FreeStatHitRate` (0x00500010). The threshold is on the ATTACK's range, so a bow's 450 pays
+        // the defender's RangeEvasion and a sword's 100 does not.
+        if (attacker.AttackRange > RangedAttackThreshold)
+            hit -= d.RangeEvasion;
+        return hit;
+    }
+
+    /// <summary>`roe_CriticalRate@NormalPY` (0x00501700) — the chance of a critical, in permille.
+    ///
+    /// <code>
+    /// crit = Item.Rate[CriDamRate](att)          +0x218
+    ///      + WeaponTitle.Rate[CriDamRate](att)   +0x6E0
+    ///      + AbnormalState.Rate[CriDamRate](att) +0xA10
+    ///      - AbnormalState.Rate[CriticalTB](def) +0xA38
+    ///      - Item.Rate[CriticalTB](def)          +0x240
+    /// crit += attacker.FreeStatMen.CriRate                  // roe_FreeStatCriRate
+    /// return max(crit, 1.0)
+    /// </code>
+    ///
+    /// <para>⚠️ <b>The slot the attacker's three terms read is <see cref="Stat.CriDamRate"/>, not
+    /// <see cref="Stat.Critical"/>.</b> That is what the offsets say — 0x218 is Item.Rate + 0x80 and
+    /// `Parameter::Cluster+0x80` is `CriDamRate` in the PDB — and the name is simply misleading: this slot
+    /// carries the crit CHANCE, and `Critical` (slot 23) is not read by this function at all. Renaming the
+    /// slot would be inventing a fact; reading a different slot because its name reads better would be
+    /// worse.</para>
+    ///
+    /// <para>The defender resists with <see cref="Stat.CriticalTB"/> out of two layers only — its own
+    /// buffs and its gear — with no base or upgrade term.</para>
+    ///
+    /// <para>The floor is 1.0, so there is always a 1-in-1000 critical. The rate is compared against a
+    /// draw with STRICT less-than, which is why the floor produces exactly one outcome in a thousand and
+    /// not two.</para></summary>
+    public static double CriticalRate(ICombatant attacker, ICombatant defender)
+    {
+        var a = attacker.Parameters;
+        var d = defender.Parameters;
+
+        // The original's association: ((WeaponTitle + Item + AbnormalState) - defenderAbnormal) - defenderItem.
+        var sum = (double)a.Rate(StatModifier.WeaponTitle)[Stat.CriDamRate];
+        sum += a.Rate(StatModifier.Item)[Stat.CriDamRate];
+        sum += a.Rate(StatModifier.AbnormalState)[Stat.CriDamRate];
+        sum -= d.Rate(StatModifier.AbnormalState)[Stat.CriticalTB];
+        sum -= d.Rate(StatModifier.Item)[Stat.CriticalTB];
+
+        var crit = Ftol32(sum) + attacker.FreeStatMenCriRate;
+        return crit >= 1.0 ? crit : 1.0;
+    }
+
     /// <summary>Bottom of the weapon damage range. The server's <c>roe_MinWC</c>.</summary>
     public static double MinWeaponDamage(ICombatant attacker) => WeaponDamage(attacker.Parameters, Stat.WCmin);
 
@@ -306,7 +445,16 @@ public static class DamageCalculator
         if (rule.FreeStatSchool() is not null)
             damage += mods.AttackerFreeStat - mods.DefenderFreeStat;
 
-        if (isCritical) damage *= 2.0;
+        // A CRITICAL IS NOT SIMPLY DOUBLE. `roe_CalcDamage+0x4C2` reads the ATTACKER's
+        // `PassiveCriDamageRatePlus` (container +0x0CDC, an unsigned short) and computes
+        //     damage = 2*damage + damage * plus / 1000
+        // The port doubled and stopped for a long time, which is invisible at the default 0 and wrong by
+        // exactly that passive's permille for anyone who has it.
+        if (isCritical)
+        {
+            var critPlus = attacker.Parameters.PassiveCriDamageRatePlus;
+            damage = damage * critPlus / 1000.0 + (damage + damage);
+        }
 
         // ANGLE FIRST, THEN DAMAGE RATE -- the order the binary uses at roe_CalcDamage+0x572..+0x585:
         //     fild angleRate; fmul damage; fdiv 1000; fild damagerate; fmulp; fdivp

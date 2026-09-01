@@ -100,6 +100,45 @@ public sealed class ParameterContainer
     public ChangeByConditionParam PassiveHpDownAc { get; set; } = ChangeByConditionParam.None;
     public ChangeByConditionParam PassiveHpDownMr { get; set; } = ChangeByConditionParam.None;
 
+    /// <summary>`PassiveMovingTBPlus` (+0x0D88) — extra block rating while the owner is MOVING.
+    ///
+    /// <para>Read by `roe_HitRate@NormalPY+0x8F`, and only when the DEFENDER's
+    /// `so_mobile_IsInMoving` (object vtable +0x610) returns true. It is looked up with
+    /// <see cref="ChangeByConditionParam.ValueAtIndex"/> at index <b>0</b> — the INDEX overload
+    /// `cbcp_GetValue_Index` (0x004C9010), not the divide-by-condition `cbcp_GetValue` the HP-down blocks
+    /// use — so the "condition" is not consulted at all here.</para>
+    ///
+    /// <para>The PDB name is what identifies it: a block bonus gated on movement, in the one place the
+    /// binary checks whether the defender is moving.</para></summary>
+    public ChangeByConditionParam PassiveMovingTbPlus { get; set; } = ChangeByConditionParam.None;
+
+    /// <summary>`MissPercentFix` (+0x0CD0), an `unsigned short` — a fixed miss chance in permille that
+    /// REPLACES the whole hit-rate computation.
+    ///
+    /// <para>`roe_HitRate@NormalPY+0x27B` reads it off the DEFENDER and short-circuits: zero falls through
+    /// to the normal Aim-versus-Evasion path; a value above 1000 returns a hit rate of 0 (and, notably,
+    /// does NOT set `isshieldblock`); anything else returns exactly <c>1000 - MissPercentFix</c>, skipping
+    /// `roe_FreeStatHitRate` and therefore also skipping the ranged-evasion subtraction.</para>
+    ///
+    /// <para>Zero is the ordinary state and means "no fixed miss chance", not "unset".</para></summary>
+    public int MissPercentFix { get; set; }
+
+    /// <summary>`RangeEvasion` (+0x0CCC), a SIGNED `short` — evasion that applies only to attacks made
+    /// from beyond <see cref="Combat.DamageCalculator.RangedAttackThreshold"/>.
+    ///
+    /// <para>Subtracted from the hit rating by `roe_FreeStatHitRate` (0x00500010) when the attack's range
+    /// exceeds 300. `so_smo_RangeEvation@ShineMobileObject` (0x004A6380) is a one-line
+    /// <c>movsx eax, word [this+0x1C8C]</c>, and `ShineObject`'s base version returns 0 — so a plain
+    /// object has none and only mobiles carry it.</para></summary>
+    public int RangeEvasion { get; set; }
+
+    /// <summary>`PassiveCriDamageRatePlus` (+0x0CDC), an `unsigned short` — the permille a critical adds
+    /// ON TOP of the doubling.
+    ///
+    /// <para>`roe_CalcDamage+0x4C2`: <c>damage = 2*damage + damage * this / 1000</c>. At the default 0 a
+    /// critical is exactly double, which is why this went unnoticed for so long.</para></summary>
+    public int PassiveCriDamageRatePlus { get; set; }
+
     public ParameterCluster MakeTotal()
     {
         var total = ParameterCluster.Plus();

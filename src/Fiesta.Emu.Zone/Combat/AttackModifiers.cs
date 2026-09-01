@@ -27,6 +27,13 @@ public sealed record AttackModifiers
     /// <c>null</c>. A critical doubles the damage before the situational rates are applied.</summary>
     public int CriticalChancePermille { get; init; }
 
+    /// <summary>`EngageArgument.crirateadd` (+0x20) — a skill's FLAT addition to the critical rate, added
+    /// to <see cref="DamageCalculator.CriticalRate"/> before the roll at `roe_CalcDamage+0x186`.
+    ///
+    /// <para>Written only by `MiscDataTable::mdt_ArgumentLoad`, the same function that writes
+    /// <see cref="DamageRatePermille"/>; a normal swing leaves it at 0.</para></summary>
+    public int CriticalRateAddPermille { get; init; }
+
     /// <summary>Skill / attack damage rate. The server's <c>EngageArgument.damagerate</c>.
     ///
     /// <para>Zero is a real value and produces a raw damage of 0, which the final floor turns into 1 — not
