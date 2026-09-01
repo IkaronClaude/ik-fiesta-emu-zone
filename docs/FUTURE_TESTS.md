@@ -78,10 +78,31 @@ fields agree; it is actually `points + points/5`. Read the whole table, or say o
       `aeo_ParameterEnchant` — it is enforced elsewhere, and that is precisely the code the mob tactic
       state machine needs to mirror. Find it.
 
-      ⚠️ **Invariant with two counterexamples.** If a mob cannot attack while immortal, no swing should ever
-      have an attacker holding 291 — yet two do (`IN` mob 68 and mob 84, one hit each). Either the release
-      is not what this tool models, or a mob really can swing during the window. Resolve it before trusting
-      abstate timing anywhere else; it is the only place the capture disagrees with the operator's account.
+      **How it ends — read, after an apparent contradiction turned out to be packet ordering.** Two swings
+      in this capture have an attacker still holding 291, which looks like a mob attacking while immortal.
+      It is not: the `ABSTATERESET` arrives **2 and 4 frames after the swing**, and two hooks explain why —
+
+      ```
+      aeo_Attack   (0x004A42A0)  test byte [element+0x70 -> def +2], 4   ; cancel when the owner ATTACKS
+      aeo_Attacked (0x004A4310)  test byte [element+0x70 -> def +2], 8   ; cancel when the owner IS HIT
+      ```
+
+      Both stamp the current tick into the element's timer at +0x20, ending the state. So the mob's own
+      attack is what ended its invulnerability, and the swing broadcast simply precedes the reset
+      broadcast. The operator's account holds; the tracker was reading an ordering artefact.
+
+      Independently, the state also expires on its own `restKeeptime` — 5000 ms in every LIST here — and
+      the reset lands ~57 frames after the LIST whether or not a swing happened, which is what a plain
+      timer looks like.
+
+      - [ ] **Which struct holds those cancel flags is NOT pinned.** `[element+0x70]` is not an
+            `AbnormalStateInfo` (its +2 is `InxName`), so bits 0x04/0x08 live in something else. Name it
+            before porting, or the cancel rules will be guesses.
+      - [ ] **`damage_buckets.py` never expires an abstate.** It only removes on an explicit
+            `ABSTATERESET`, so a state that lapses on `restKeeptime` is held forever. It happens not to
+            matter for StaImmortal (no actions) and rarely for combat debuffs (the server re-applies them
+            constantly), but `SubStaMoraleDecreaseWC` has a 15 s keeptime and a real WC effect. Frame
+            ORDER is not a clock — this needs pcap timestamps, which the decoded dump does not carry.
 
       It also arrives at **strength 1** while its only table row is **Strength 999**, so the server's
       row-selection rule when the strength does not match is unread. `BucketGroundTruthTests` sidesteps that
