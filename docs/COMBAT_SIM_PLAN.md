@@ -60,6 +60,21 @@ looks like it is doing.
 **So a swing resolves in this order**, and the port models none of it: shield block → hit → global-action
 hit → (damage pipeline) → critical. Three independent WELL512 draws before any damage is computed.
 
+**`roe_ShieldBlock@NormalPY` (0x004FF860), read.** Reads the DEFENDER's container (`arg+4`, vtable 0x430):
+
+```
+block = (Upgrade.Plus[ShieldAC] + Item.Plus[ShieldAC]) * AbnormalState.Rate[ShieldAC] / 1000
+          +0x464                   +0x134                 +0x9F8
+```
+
+All three are <see cref="Stat"/> slot **26** (`ShieldAC`) in their respective halves, and `+0x9F8` is
+exactly the address `SAA_SHIELDACRATE` writes — the abstate decode and the block formula meet at the same
+offset, which checks both. A non-positive result branches out early (no block possible).
+
+Note the shape: gear contributes a PLUS and only the abnormal-state layer contributes a RATE. `ShieldAC`
+is also `ItemInfo.ShieldAC`, a column already loaded by `EquipmentCatalog` and currently unused —
+`Kaineneceshield` has 70.
+
 **Proof:** the captures already carry it. `flagWord` bit 2 is `ismissed` and bit 3 `isshieldblock`; the
 bucket tool currently discards every non-zero flag. Extend it to bucket MISSES and BLOCKS as counts, and
 check the observed rate per bucket against the predicted probability. The crit branch is checkable the same
