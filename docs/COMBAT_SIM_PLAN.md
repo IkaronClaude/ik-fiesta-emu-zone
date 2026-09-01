@@ -168,8 +168,37 @@ and applies their parameter effects; nothing can apply, tick or expire one.
       absorbs (`sasa_Act_DamegeAbsorpt`), damage-minus (`sasa_Act_DamageMinusRate`), heal-over-time. The
       container side of these is already decoded — `SAA_ADDPOISONDMG` and friends write
       `DotDamagePlus.Poison` etc. — but nothing ticks them.
-- [ ] **The three abstate damage callbacks** in `roe_CalcDamage`'s tail (+0x60A..+0x801), one gated on the
-      attacker's `so_AttackRange > 300`.
+- [x] **The three abstate damage callbacks** in `roe_CalcDamage`'s tail are READ. Each walks one side's
+      `so_mobile_AbstateList` (object vtable +0x52C) and calls one `SubAbnormalStateActor` slot on every
+      element:
+
+      | at | list | actor slot | method | implemented by |
+      | --- | --- | --- | --- | --- |
+      | +0x60A | DEFENDER | 0x28 | `sasa_Act_DamegeIntercept` | `SubAbnormalStateActorRangeIntercept` |
+      | +0x76F | ATTACKER | 0x2C | `sasa_Act_LastDamegeInterceptByAtk` | `LastDmgRatio`, `HideDamage` (same body) |
+      | +0x8D0 | DEFENDER | 0x50 | — | **nobody** |
+
+      The first is gated on the SAME range test as `roe_FreeStatHitRate` — `so_AttackRange` (or the skill's
+      range at `sklinfo->[4]->[0xB4]`) strictly over **300** — so it only ever sees ranged hits, which is
+      what "RangeIntercept" means.
+
+      Its body (0x004074F0) is short enough to state in full:
+
+      ```
+      charges = element[0x54]
+      if (charges > 0) { element[0x54] = charges - 1; *damage = 0; }   // absorbs the hit ENTIRELY
+      else             { element[0x20] = clockwatch; }                 // out of charges: end the state
+      ```
+
+      So it is a counted absorb, not a percentage — N ranged hits taken to zero, and the state expires
+      itself on the first hit after the last charge.
+
+      ⚠️ **The third callback is dead in this build.** Actor slot 0x50 is `ret 0x10` on the base and no
+      subclass in the image overrides it, so that whole pass calls nothing. Worth knowing before anyone
+      spends time looking for its effect.
+- [ ] **Port them.** Only `sasa_Act_DamegeIntercept` is fully read; `sasa_Act_LastDamegeInterceptByAtk`
+      (0x00407570) is longer and its body is not read yet. Nothing can exercise either until the actor
+      subclasses exist, which is the item above.
 
 **Proof:** `damage_buckets.py` already reconstructs abstate state from the wire. Have the simulator
 reconstruct the same timeline from the same events and diff the two. Expiry needs real timestamps — frame
