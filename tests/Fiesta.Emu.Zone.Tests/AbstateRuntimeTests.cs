@@ -469,3 +469,71 @@ public class DotDamageTests
         container.Flags.ShouldBe(expected);
     }
 }
+
+/// <summary>`so_AbnormalState_Resist` — the roll that happens before a debuff is applied at all.
+///
+/// <para>Mobs and players resist by completely different means, which is the point: a mob's resistance is
+/// a property of the species and a player's is a property of their gear and buffs.</para></summary>
+public class AbstateResistanceTests
+{
+    /// <summary>Twelve permille values on the mob's own record, indexed by the abstate's resist type.
+    /// Strict less-than, so 0 never resists and 1000 always does.</summary>
+    [Fact]
+    public void AMobResistsFromItsOwnTwelveSlotTable()
+    {
+        int[] table = [0, 250, 500, 0, 0, 0, 0, 0, 0, 0, 0, 1000];
+
+        AbstateResistance.MobResists(table, resistType: 2, draw: 249).ShouldBeTrue();
+        AbstateResistance.MobResists(table, resistType: 2, draw: 250).ShouldBeFalse();
+        AbstateResistance.MobResists(table, resistType: 1, draw: 0).ShouldBeFalse();      // 0 never resists
+        AbstateResistance.MobResists(table, resistType: 12, draw: 999).ShouldBeTrue();    // 1000 always does
+    }
+
+    /// <summary>A type outside 1..12 resists nothing — including 0, which the `test edx,edx` rejects
+    /// before the range check ever runs. And a mob with no resist record (`0xFFFF`) resists nothing, which
+    /// is an empty table here rather than a magic number.</summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(13)]
+    [InlineData(-1)]
+    public void AnOutOfRangeResistTypeResistsNothing(int type)
+        => AbstateResistance.MobResists([1000, 1000, 1000], type, draw: 0).ShouldBeFalse();
+
+    [Fact]
+    public void AMobWithNoResistRecordResistsNothing()
+        => AbstateResistance.MobResists([], resistType: 2, draw: 0).ShouldBeFalse();
+
+    /// <summary>A player's resistance is `Item.Rate[slot] + AbnormalState.Rate[slot]` — SUMMED, not
+    /// multiplied, which is why those slots are seeded 0 rather than 1000.</summary>
+    [Fact]
+    public void APlayerSumsGearAndBuffResistance()
+    {
+        var p = new ParameterContainer();
+        AbstateResistance.PlayerResistPermille(p, Stat.ResistPoison).ShouldBe(0);
+
+        p.Rate(StatModifier.Item)[Stat.ResistPoison] = 120;            // gear
+        p.Rate(StatModifier.AbnormalState)[Stat.ResistPoison] = 200;   // a buff
+        AbstateResistance.PlayerResistPermille(p, Stat.ResistPoison).ShouldBe(320);
+
+        AbstateResistance.PlayerResists(p, Stat.ResistPoison, draw: 319).ShouldBeTrue();
+        AbstateResistance.PlayerResists(p, Stat.ResistPoison, draw: 320).ShouldBeFalse();
+    }
+
+    /// <summary>The property that makes the sum work: every slot `debuffresist` can point at is inside the
+    /// rate-eraser's zero run, so an unbuffed player really has 0 resistance rather than 1000.
+    ///
+    /// <para>This is the second independent case of "additive rate slot, zero identity", after
+    /// `CriticalTB` in `roe_CriticalRate` — and it is what makes `CriDamRate`'s 1000 seed an anomaly with
+    /// corroboration against it rather than a lone puzzle. See `FUTURE_TESTS.md`.</para></summary>
+    [Fact]
+    public void EveryResistSlotIsZeroSeededInTheRateHalf()
+    {
+        var p = new ParameterContainer();
+        foreach (var slot in AbstateResistance.ResistSlots)
+        {
+            ParameterCluster.RateErasedSlots.ShouldContain(slot);
+            p.Rate(StatModifier.Item)[slot].ShouldBe(0);
+            p.Rate(StatModifier.AbnormalState)[slot].ShouldBe(0);
+        }
+    }
+}

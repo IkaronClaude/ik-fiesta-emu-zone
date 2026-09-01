@@ -242,12 +242,36 @@ order is not a clock (see task 6).
 
 ## 3. Abstate application and resistance — who gets one, and how often
 
-- [ ] **`cpl_SetAbstate`** (0x00446A10), **`so_ply_PassiveSetAbstate`** (0x005798E0),
-      **`sasa_ApplyAbstate`**, **`PSkillSetAbstate.shn`**, and `PassiveDataBox::sdb_GetSetAbstate`.
-- [ ] **`AbStateStr.debuffresist`** (+0x08) and the four resistance stats already in the container
-      (`ResistPoison`, `ResistDeaseas`, `ResistCurse`, `ResistMoveSpdDown`) — plus `PainRes` /
-      `RestraintRes` / `CurseRes` / `ShockRes` from the class tables, which are loaded and unused.
-- [ ] **`mdt_ArgumentLoad`'s abstate half** — a skill's row also carries an `ABSTATEINDEX` to apply
+- [x] **The resistance roll is READ and ported** — `so_AbnormalState_Resist`, object vtable **+0x634**,
+      which `roe_CriticalStun` consults before applying its stun. Mobs and players do entirely different
+      things:
+
+      **`ShineMob` (0x00416660)** — twelve `u16` permille on the mob's own record at `+0x252D`, indexed by
+      the abstate's resist type (`AbnormalStateInfo+0xF8`, valid 1..12). No stats, no container, nothing
+      the mob is wearing: a mob's resistance is a property of the species. A record of `0xFFFF` or a type
+      outside 1..12 — 0 included — resists nothing.
+
+      **`ShinePlayer` (0x00416730)** — `Item.Rate[slot] + AbnormalState.Rate[slot]`, where the slot comes
+      from **`AbStateStr.debuffresist`**. That field is declared `int *` and is not a value at all: it is
+      the BYTE OFFSET of a stat slot, so the abstate definition names which resistance stat applies and
+      the player's own two rate halves supply the number. (`0x1158 - 0xFC0 = 0x198` is Item.Rate;
+      `0x1950 - 0xFC0 = 0x990` is AbnormalState.Rate.) A null definition returns RESISTED, so an unknown
+      abstate is refused rather than applied blind.
+
+      Both roll `well512_GetRandom(1000)` and resist on a STRICT less-than.
+
+      **This also corroborates the CriDamRate anomaly.** The player's two halves are SUMMED, and every slot
+      `debuffresist` can point at is in the rate-eraser's zero run (42..48: `CriticalTB`, `RegistNone`, the
+      four `Resist*`, `ResistGTI`). That is exactly the set of rate slots the engine reads ADDITIVELY —
+      `roe_CriticalRate` subtracts `CriticalTB`, this sums a `Resist*` — and they are all seeded 0.
+      `CriDamRate` is read additively too and is seeded **1000**. Two independent cases now say additive
+      rate slots have a zero identity, which makes that seed an anomaly with evidence against it rather
+      than a lone puzzle. See `FUTURE_TESTS.md`.
+
+- [ ] **The application path itself** — `cpl_SetAbstate` (0x00446A10), `so_ply_PassiveSetAbstate`
+      (0x005798E0), `sasa_ApplyAbstate`, `PSkillSetAbstate.shn` and `PassiveDataBox::sdb_GetSetAbstate`.
+      `so_AbnormalState_Set` is object vtable **+0x638** and `so_AbnormalState_IsSet` is **+0x3E4**.
+- [ ] **`mdt_ArgumentLoad`'s abstate half** — a skill row also carries an `ABSTATEINDEX` to apply
       (row +0x0C), alongside the `damagerate` and `crirateadd` it writes.
 
 **Proof:** count applications per attempt in a capture and compare to the predicted chance. Needs a capture
