@@ -1,3 +1,5 @@
+using Fiesta.Emu.Zone.Parameter;
+
 namespace Fiesta.Emu.Zone.Mob;
 
 /// <summary>Anything a mob can consider attacking. The simulator's stand-in for `ShineObject`.</summary>
@@ -7,6 +9,25 @@ public interface IShineObject
     int X { get; }
     int Y { get; }
     bool IsAlive { get; }
+
+    /// <summary>`Parameter::Container::flag`, the object's behaviour bits.
+    ///
+    /// <para>The container sits at +0xFC0 inside a `ShineMobileObject`, so the flag byte is +0x1C8E from
+    /// the object — which is how its readers were found. There are exactly two in the whole image, and
+    /// neither is where this project assumed:</para>
+    ///
+    /// <list type="bullet">
+    ///   <item><c>so_ReinforceMove@ShineMobileObject+0x90</c> — <c>test byte [edi+0x1C8E], 2</c>, and
+    ///         returns immediately. Movement is gated on the MOVE function, not on the tactic states.</item>
+    ///   <item><c>sp_Schedule_SwingStart@ShinePlayer+0xAF</c> — <c>test byte [eax+0xCCE], 4</c>. Attacking
+    ///         is gated in the PLAYER's swing scheduler.</item>
+    /// </list>
+    ///
+    /// <para>⚠️ <see cref="ContainerFlag.CannotMoveStun"/> has <b>no reader at all</b>. `SAA_NOMOVE`'s
+    /// alternative branch and `SAA_AWAY` both set it and nothing in the image tests it, at either
+    /// displacement. So the two immobilisations the PDB names separately are not both enforced here, and
+    /// how a stunned MOB is actually stopped is still unread — it is not this bit.</para></summary>
+    ContainerFlag Flags => ContainerFlag.None;
 }
 
 /// <summary>One entry in a mob's hate list. The server's `MobTargetStruct` is 12 bytes; the fields here

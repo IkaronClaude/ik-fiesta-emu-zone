@@ -151,18 +151,23 @@ way via bit 1, and its damage against the doubled band.
 The simulator has no abstate module. `BucketGroundTruthTests` reads which abstates the wire says are active
 and applies their parameter effects; nothing can apply, tick or expire one.
 
-- [ ] **An abstate list on a simulated object**, with `restKeeptime` expiry. `AbstateElementInObject`,
-      `AbstateListInObject::asl_Abstate_IsSet`, `aeo_GetRestTime`, `ASE_Tick`.
-- [ ] **`aeo_ParameterEnchant`** (0x004079F0) moved out of the test and into the parameter layer, so a
-      container reflects live buffs. The jump table and its `SAA_*` handlers are already read.
-- [ ] **The cancel hooks**: `aeo_Attack` (0x004A42A0) and `aeo_Attacked` (0x004A4310) end a state when the
-      owner attacks / is hit, gated on bits 0x04 / 0x08 of a definition byte at `[element+0x70]+2`.
-      ⚠️ **Name that struct first** — it is not `AbnormalStateInfo`.
-- [ ] **The behaviour flags gate the mob state machine.** `Parameter::Container::flag` (+0xCCE) —
-      `cannotmove_stun`, `cannotmove_entangle`, `cannotattack`. `MobActionAttack`, `MobActionChase` and
-      `MobActionTurning` must honour them; none does. This is what a stun IS.
+- [x] **An abstate list on a simulated object**, with `restKeeptime` expiry — `AbstateListInObject` /
+      `AbstateElementInObject`, with `IsSet` / `Set` / `Reset` / `SetAll` / `Tick` / `RestTimeMs`.
+- [x] **`aeo_ParameterEnchant`** moved out of the test and into `AbstateListInObject.ParameterEnchant`,
+      which REBUILDS the AbnormalState layer rather than adjusting it — the only way removing a state can
+      take its bonus with it. The effect table is now GENERATED from the binary for all 120 actions
+      (`tools/abstate_actions.py`), not the nine that one capture happened to exercise.
+- [x] **The cancel hooks** `aeo_Attack` / `aeo_Attacked` are wired, taking a PREDICATE — the definition
+      byte at `[element+0x70]+2` lives in a struct that is still not named, so the caller supplies the rule
+      rather than the port guessing at it.
+- [x] **The behaviour flags**, and the assumption in this list was wrong. See `FUTURE_TESTS.md`: the
+      server's only two readers are `so_ReinforceMove@ShineMobileObject` (entangle) and
+      `sp_Schedule_SwingStart@ShinePlayer` (attack). Not the tactic states. And `cannotmove_stun` has no
+      reader at all.
 - [ ] **`SubAbnormalStateActor` subclasses** — poison/DoT (`sasa_GetDamage`, `sasa_Routine`), shields and
-      absorbs (`sasa_Act_DamegeAbsorpt`), damage-minus (`sasa_Act_DamageMinusRate`), heal-over-time.
+      absorbs (`sasa_Act_DamegeAbsorpt`), damage-minus (`sasa_Act_DamageMinusRate`), heal-over-time. The
+      container side of these is already decoded — `SAA_ADDPOISONDMG` and friends write
+      `DotDamagePlus.Poison` etc. — but nothing ticks them.
 - [ ] **The three abstate damage callbacks** in `roe_CalcDamage`'s tail (+0x60A..+0x801), one gated on the
       attacker's `so_AttackRange > 300`.
 

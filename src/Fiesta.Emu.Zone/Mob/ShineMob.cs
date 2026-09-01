@@ -1,3 +1,5 @@
+using Fiesta.Emu.Zone.Parameter;
+
 namespace Fiesta.Emu.Zone.Mob;
 
 /// <summary>The mob itself — the parts of `ShineObjectClass::ShineMob` a combat simulation needs.
@@ -10,6 +12,11 @@ public sealed class ShineMob : IShineObject
     public int X { get; set; }
     public int Y { get; set; }
     public bool IsAlive { get; set; } = true;
+
+    /// <summary>`Parameter::Container::flag`, mirrored onto the object so the tactic machine can read it
+    /// without owning a whole container. Set it from
+    /// <see cref="Abstate.AbstateListInObject.ParameterEnchant"/>'s result.</summary>
+    public ContainerFlag Flags { get; set; }
 
     public MobTargetSelector Selector { get; } = new();
 

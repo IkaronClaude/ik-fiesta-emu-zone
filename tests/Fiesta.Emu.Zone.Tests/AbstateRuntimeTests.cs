@@ -1,5 +1,6 @@
 using Fiesta.Emu.Zone.Abstate;
 using Fiesta.Emu.Zone.Combat;
+using Fiesta.Emu.Zone.Mob;
 using Fiesta.Emu.Zone.Parameter;
 using Shouldly;
 using Xunit;
@@ -276,5 +277,80 @@ public class AbstateRuntimeTests
         Enumerable.Range(1, 120).ShouldAllBe(i => AbstateEffects.IsDispatched((SubAbstateAction)i));
         AbstateEffects.IsDispatched(SubAbstateAction.SAA_NONE).ShouldBeFalse();
         AbstateEffects.IsDispatched(SubAbstateAction.MAX_SUBABSTATEACTION).ShouldBeFalse();
+    }
+}
+
+/// <summary>Where the behaviour bits are actually ENFORCED.
+///
+/// <para>The readers were found by scanning the image for the flag byte at both displacements it can be
+/// reached through — <c>+0xCCE</c> from the container, and <c>+0x1C8E</c> from the object, since
+/// `so_parameter@ShineMobileObject` is <c>lea eax,[ecx+0xFC0]</c>. There are exactly two in the whole
+/// binary, and neither is in the tactic states this project expected them to be in.</para></summary>
+public class ContainerFlagEnforcementTests
+{
+    /// <summary>`so_ReinforceMove@ShineMobileObject+0x90`: <c>test byte [edi+0x1C8E], 2</c> then return.
+    /// The gate is on the MOVE function, so it applies to every caller at once — which is why porting it
+    /// into `MobActionChase` would have been both more work and wrong.</summary>
+    [Fact]
+    public void AnEntangledMobDoesNotMove()
+    {
+        var mob = new ShineMob { Handle = 1, X = 0, Y = 0 };
+        var target = new ShineMob { Handle = 2, X = 1000, Y = 0 };
+        var arg = new MobActionArgument { Actor = mob, Selector = new MobTargetSelector() };
+
+        arg.MoveToward(target, 100);
+        mob.X.ShouldBe(100);
+
+        mob.Flags = ContainerFlag.CannotMoveEntangle;
+        arg.MoveToward(target, 100);
+        mob.X.ShouldBe(100);
+
+        mob.Flags = ContainerFlag.None;
+        arg.MoveToward(target, 100);
+        mob.X.ShouldBe(200);
+    }
+
+    /// <summary>⚠️ <b>`cannotmove_stun` is written by two actions and read by nothing.</b>
+    ///
+    /// <para>`SAA_NOMOVE`'s alternative branch and `SAA_AWAY` both set bit 1, and no instruction in the
+    /// image tests it — at either displacement. So the two immobilisations the PDB names separately are
+    /// not both enforced server-side, and however a stunned MOB is stopped, it is not through this bit.
+    /// This test exists to pin that as a finding rather than leave it as an assumption; if a reader turns
+    /// up later, it should fail and be rewritten.</para>
+    ///
+    /// <para>The port therefore does NOT gate movement on it. Making <c>CannotMoveStun</c> stop a mob
+    /// would be inventing a mechanic the server does not have, which is exactly the kind of plausible
+    /// fabrication that is hardest to find later.</para></summary>
+    [Fact]
+    public void TheStunBitStopsNothing_BecauseNothingReadsIt()
+    {
+        var mob = new ShineMob { Handle = 1, X = 0, Y = 0, Flags = ContainerFlag.CannotMoveStun };
+        var target = new ShineMob { Handle = 2, X = 1000, Y = 0 };
+        var arg = new MobActionArgument { Actor = mob, Selector = new MobTargetSelector() };
+
+        arg.MoveToward(target, 100);
+        mob.X.ShouldBe(100);
+    }
+
+    /// <summary>An abstate that sets the bit reaches the mob through the container, which is the whole
+    /// path: `SubAbState.shn` row -> `SAA_NOMOVE` -> `Container.flag` -> the move gate.</summary>
+    [Fact]
+    public void AStunAbstateReachesTheMoveGate()
+    {
+        var container = new ParameterContainer();
+        var list = new AbstateListInObject();
+        list.Set(2, strength: 1, restKeeptimeMs: 3_000, nowMs: 0);
+        list.ParameterEnchant(container,
+            _ => [(SubAbstateAction.SAA_NOMOVE, 0)]).ShouldBeTrue();
+
+        var mob = new ShineMob { Handle = 1, X = 0, Y = 0, Flags = container.Flags };
+        var target = new ShineMob { Handle = 2, X = 1000, Y = 0 };
+        new MobActionArgument { Actor = mob, Selector = new MobTargetSelector() }.MoveToward(target, 100);
+        mob.X.ShouldBe(0);
+
+        // ...and it lets go when the state times out.
+        list.Tick(3_000);
+        list.ParameterEnchant(container, _ => []).ShouldBeTrue();
+        container.Flags.ShouldBe(ContainerFlag.None);
     }
 }

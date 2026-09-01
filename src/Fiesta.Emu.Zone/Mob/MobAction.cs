@@ -1,3 +1,4 @@
+using Fiesta.Emu.Zone.Parameter;
 using Fiesta.Emu.Zone.Random;
 
 namespace Fiesta.Emu.Zone.Mob;
@@ -29,10 +30,16 @@ public sealed class MobActionArgument
         new(Enumerable.Range(1, 16).Select(i => (uint)i).ToArray());
 
     /// <summary>Step the mob toward a target. Movement is not ported from the binary yet — this is a
-    /// placeholder straight-line step so the chase state can be exercised, and it is marked as one.</summary>
+    /// placeholder straight-line step so the chase state can be exercised, and it is marked as one.
+    ///
+    /// <para>The one part that IS ported is the gate: `so_ReinforceMove@ShineMobileObject` opens with
+    /// <c>test byte [edi+0x1C8E], 2</c> and returns, so an entangled object does not move. That check sits
+    /// on the move function rather than on any tactic state, which is why it is here and not in
+    /// `MobActionChase`.</para></summary>
     public void MoveToward(IShineObject target, int speed)
     {
         if (Actor is not ShineMob self) return;
+        if (Actor.Flags.HasFlag(ContainerFlag.CannotMoveEntangle)) return;
         long dx = target.X - self.X, dy = target.Y - self.Y;
         var dist = Math.Sqrt(dx * dx + dy * dy);
         if (dist <= speed) { self.X = target.X; self.Y = target.Y; return; }

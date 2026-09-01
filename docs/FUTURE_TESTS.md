@@ -67,18 +67,34 @@ are where 0x1035's params 16 and 17 pick up their free-stat halves. What remains
 
 ## Mob behaviour — the state machine, not the damage formula
 
-- [ ] **Abstate behaviour flags gate the tactic state machine, and nothing honours them.**
-      `SubAbstateAction` 19 `SAA_NOMOVE` and 25 `SAA_NOATTACK` write bits into
-      `Parameter::Container::flag` (+0xCCE), which the PDB names `cannotmove_stun`,
-      `cannotmove_entangle` and `cannotattack`. `SAA_NOATTACK` sets `cannotattack`; `SAA_NOMOVE` sets
-      `cannotmove_entangle`, or `cannotmove_stun` when the sub-type at +0x26 is 0x15 or 0x60 — two kinds of
-      immobilisation, distinguished.
+- [x] **Abstate behaviour flags — found their real readers, and the assumption here was wrong.**
+      This entry used to say `MobActionAttack`, `MobActionChase` and `MobActionTurning` "must check them;
+      none does". The second half was true of this port. The first half is **not true of the server**.
 
-      They are no-ops for DAMAGE (a stunned mob takes and deals normal damage) and that is all
-      `BucketGroundTruthTests` needs, but for 1:1 mob behaviour they are the whole point of a stun.
-      `MobActionAttack`, `MobActionChase` and `MobActionTurning` must check them; none does. The capture
-      already contains the ground truth — `StaBattleBlowStun` (2) and `StaCommonStun02` (307) are applied
-      to mobs, and their movement and swings during those windows are on the wire.
+      The flag byte can be reached two ways — `+0xCCE` from the container, and `+0x1C8E` from the object,
+      since `so_parameter@ShineMobileObject` is `lea eax,[ecx+0xFC0]`. Scanning the image for both gives
+      **exactly two readers in the whole binary**, and neither is a tactic state:
+
+      ```
+      so_ReinforceMove@ShineMobileObject+0x90   test byte [edi+0x1C8E], 2   ; cannotmove_entangle, then return
+      sp_Schedule_SwingStart@ShinePlayer+0xAF   test byte [eax+0xCCE],  4   ; cannotattack
+      ```
+
+      Movement is gated on the MOVE function, so it covers every caller at once — porting the check into
+      `MobActionChase` would have been more work and wrong. Attacking is gated in the PLAYER's swing
+      scheduler. Both are now ported (`MobActionArgument.MoveToward`, `IShineObject.Flags`).
+
+- [ ] **⚠️ `cannotmove_stun` is written by two actions and read by NOTHING.** `SAA_NOMOVE`'s alternative
+      branch and `SAA_AWAY` both set bit 1, and no instruction in the image tests it at either
+      displacement. So the two immobilisations the PDB names separately are not both enforced server-side,
+      and **how a stunned MOB is actually stopped is still unread — it is not this bit.** `cannotattack`'s
+      only reader is a `ShinePlayer` method, so it does not stop a mob either, yet the capture clearly
+      applies `StaBattleBlowStun` (2) and `StaCommonStun02` (307) to mobs.
+      The port deliberately does NOT gate anything on `CannotMoveStun`; inventing that mechanic is exactly
+      the kind of plausible fabrication that is hardest to find later. `AbstateRuntimeTests` pins the
+      finding, so if a reader turns up the test fails and gets rewritten.
+      **Where to look next:** `MobActionSwingDamage::mab_Think`, `AttackRhythm_Mob`, and the
+      `SubAbnormalStateActor` subclasses.
 
 - [ ] **`StaImmortal` (291) is SPAWN INVULNERABILITY, and the state machine has to implement it.**
       Confirmed on the wire in `FighterDamageLvl60.pcapng`: **82 mob handles** carry it, always applied
