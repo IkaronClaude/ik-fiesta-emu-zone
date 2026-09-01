@@ -119,7 +119,8 @@ def collect(lines):
     mob_of = {}                                   # (conv, handle) -> mob id, from REGENMOB
     levelups = 0
     level = None
-    free_stat, chrclass = {}, None
+    free_stat, chrclass, passives = {}, None, ()
+    weapon = {}                                   # (conv, handle) -> equipped weapon item id
     swings, chat, hit_counts = [], [], collections.Counter()
 
     def apply_abstate(conv, handle, ident, active):
@@ -180,6 +181,24 @@ def collect(lines):
             if not free_stat:
                 free_stat = dict(zip(["Strength", "Constitute", "Dexterity", "Intelligence",
                                       "MentalPower", "RedistributePoint"], raw[0x57:0x5D]))
+        elif name == "NC_BRIEFINFO_CHANGEWEAPON_CMD" and len(raw) >= 4:
+            # handle u16@0, item u16@2 -- a real ItemInfo id (251 = LongSword, 257 = Splitter, 40101 =
+            # Kainenecefury here). The weapon decides which MstRt column `cpl_RecalcParam` reads, so the
+            # mastery RATE cannot be computed without it.
+            #
+            # ⚠️ Not every swap is broadcast: this capture's Splitter -> Kaineneceflight change does not
+            # appear. Last-known-weapon is therefore carried forward, which is safe HERE only because both
+            # are WeaponType 1 / one-handed and so select the same column. A capture that swaps across
+            # weapon TYPES without a broadcast would need another source.
+            weapon[(conv, u16(raw, 0))] = u16(raw, 2)
+        elif name == "NC_CHAR_CLIENT_PASSIVE_CMD" and len(raw) >= 2:
+            # count u16, then count * u16 passive-skill ids, IN LIST ORDER. Order matters: cpl_RecalcParam
+            # writes each non-zero mastery value with `mov`, not `add`, so ranks do not sum -- the last
+            # non-zero one wins. It is also re-sent per login and GROWS as skills are bought (3 ids early
+            # in this capture, 17 later), so it is per-swing state, not a fixture constant.
+            n = u16(raw, 0)
+            if 2 + n * 2 <= len(raw):
+                passives = tuple(u16(raw, 2 + i * 2) for i in range(n))
         elif name == "NC_CHAR_CLIENT_SHAPE_CMD" and raw and chrclass is None:
             # PROTO_AVATAR_SHAPE_INFO packs race:2, chrclass:5, gender:1 into byte 0. The class decides
             # which Param<Class>Server.txt supplies JobChangeDmgUp, which is worth up to 2x on every hit
@@ -204,6 +223,9 @@ def collect(lines):
                          + [n for i, n in enumerate(FLAGS_B1) if raw[5] & (1 << i)],
                 "levelups": levelups,
                 "level": level,
+                "passives": passives,
+                "attackerWeapon": weapon.get((conv, att)),
+                "defenderWeapon": weapon.get((conv, dfn)),
                 "attackerMob": mob_of.get((conv, att)),
                 "defenderMob": mob_of.get((conv, dfn)),
                 # Snapshots, not references: the state moves on and a bucket must remember what was true
@@ -244,10 +266,10 @@ def main():
             continue
         me = player.get(s["conv"])
         if s["attacker"] == me:
-            side, mob = "OUT", s["defenderMob"]
+            side, mob, own_weapon = "OUT", s["defenderMob"], s["attackerWeapon"]
             own_ab, foe_ab = s["attackerAbstates"], s["defenderAbstates"]
         elif s["defender"] == me:
-            side, mob = "IN", s["attackerMob"]
+            side, mob, own_weapon = "IN", s["attackerMob"], s["defenderWeapon"]
             own_ab, foe_ab = s["defenderAbstates"], s["attackerAbstates"]
         else:
             unattributed += 1
@@ -257,11 +279,13 @@ def main():
             # or the relog started. Counted, never guessed at.
             unattributed += 1
             continue
-        buckets[(side, mob, s["level"], s["params"], own_ab, foe_ab)].append(s["damage"])
+        buckets[(side, mob, s["level"], s["params"], own_ab, foe_ab,
+                 s["passives"], own_weapon)].append(s["damage"])
 
     rows = []
-    for (side, mob, level, params, own_ab, foe_ab), dmg in buckets.items():
-        rows.append({"side": side, "mob": mob, "level": level,
+    for (side, mob, level, params, own_ab, foe_ab, passives, own_weapon), dmg in buckets.items():
+        rows.append({"side": side, "mob": mob, "level": level, "passives": list(passives),
+                     "weapon": own_weapon,
                      "selfAbstates": list(own_ab), "enemyAbstates": list(foe_ab),
                      "params": dict(params), "n": len(dmg),
                      "min": min(dmg), "max": max(dmg),
