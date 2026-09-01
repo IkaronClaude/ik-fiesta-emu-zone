@@ -38,7 +38,7 @@ public sealed class ParameterContainer
         for (var i = 0; i < sources; i++)
         {
             _plus[i] = ParameterCluster.Plus();
-            _rate[i] = ParameterCluster.Rate();
+            _rate[i] = ParameterCluster.RateFor((StatModifier)i);
         }
     }
 

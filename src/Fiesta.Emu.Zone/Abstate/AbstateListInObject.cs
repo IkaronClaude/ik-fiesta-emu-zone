@@ -101,7 +101,19 @@ public sealed class AbstateListInObject
             _active.Add(new AbstateElementInObject(id, strength, keep, nowMs));
     }
 
-    /// <summary>`ASE_Tick` — drop everything whose `restKeeptime` has run out, and report what went.</summary>
+    /// <summary>`ASE_Tick` — drop everything whose `restKeeptime` has run out, and report what went.
+    ///
+    /// <para><b>Expiry is SERVER state, and here we are the server</b> — so running it is ours to do, and
+    /// so is telling every client about it. The returned list is not a convenience: each element in it is
+    /// an `ABSTATERESET` that has to go out on the wire, and a state that lapses silently is a bug in our
+    /// server rather than a detail of it.</para>
+    ///
+    /// <para>The distinction matters because the same arithmetic appears in a CAPTURE READER, where it is
+    /// the error-prone side: there the server already broadcast the end and inferring it locally competes
+    /// with an observation. Measured on `FighterDamageLvl60.pcapng` — <b>7 states dropped by keeptime, all
+    /// 7 later confirmed by an explicit `ABSTATERESET`, none unconfirmed</b>, out of 178 resets. The real
+    /// server does tell the client every time, so on that side the wire is authoritative and the timer is
+    /// only worth running to close the gap between the state ending and the broadcast arriving.</para></summary>
     public IReadOnlyList<AbstateElementInObject> Tick(long nowMs)
     {
         var gone = _active.Where(e => e.HasExpired(nowMs)).ToList();
@@ -158,11 +170,11 @@ public sealed class AbstateListInObject
     {
         var plus = container.Plus(StatModifier.AbnormalState);
         var rate = container.Rate(StatModifier.AbnormalState);
+        var freshRate = ParameterCluster.RateFor(StatModifier.AbnormalState);
         foreach (var stat in Enum.GetValues<Stat>())
         {
             plus[stat] = ParameterCluster.PlusIdentity;
-            rate[stat] = ParameterCluster.RateErasedSlots.Contains(stat)
-                ? 0 : ParameterCluster.RateIdentity;
+            rate[stat] = freshRate[stat];
         }
         container.Flags = ContainerFlag.None;
 

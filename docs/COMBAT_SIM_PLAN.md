@@ -117,7 +117,10 @@ Archer 11, Mage 16, Joker 21, Sentinel 26), so only archers ever pay `RangeEvasi
 WeaponTitle.Rate +0x6E0, AbnormalState.Rate +0xA10), subtracts two DEFENDER layers at `CriticalTB`
 (AbnormalState.Rate +0xA38, Item.Rate +0x240), adds `FreeStatMen.CriRate`, and floors at 1.
 
-⚠️ **OPEN, and it matters: an eraser-fresh container makes everything crit.** `ParameterCluster.Rate()`
+✅ **SETTLED by live memory, 2026-09-01 — and not the way the evidence was pointing.** Old text follows for
+the record; the resolution is at the end of this section.
+
+⚠️ ~~OPEN, and it matters: an eraser-fresh container makes everything crit.~~ `ParameterCluster.Rate()`
 seeds `CriDamRate` (slot 32) with 1000, so the three attacker terms come to **3000** before any gear. The
 capture says 55.6 permille. `CharacterParameters.Equip` was also filing a weapon's `CriRate` into
 `Item.Plus[Critical]`, which nothing in the roll reads — now fixed to `Item.Rate[CriDamRate]`. The SEED is
@@ -362,3 +365,48 @@ damage callbacks (also task 2). Each needs a capture that actually triggers it.
 - [ ] **Bucket skill hits** by skill and rank — the ground truth for task 4.
 - [ ] **Free-stat tables for Dex / Int / Men**, read in full the way Str was (0x0DA50BC4) and Con should be
       (0x0DA50BD0). See `FUTURE_TESTS.md`.
+
+## The critical-rate seed: settled by reading the live server
+
+The longest-running open question of the swing-roll work, and the answer is a measurement rather than an
+argument. Three reads, in order:
+
+**1. The oracle confirms the formula.** `roe_CriticalRate@NormalPY` run under emulation on an
+eraser-seeded container returns exactly **3000.0**, and poking one slot at a time identifies all five
+offsets independently of the disassembly: `Item.Rate[CriDamRate]`, `WeaponTitle.Rate[CriDamRate]` and
+`AbnormalState.Rate[CriDamRate]` add; `AbnormalState.Rate[CriticalTB]` and `Item.Rate[CriticalTB]`
+subtract. The reading was right.
+
+**2. The live eraser confirms the seed.** All 51 slots read out of zone02's running `Zone.exe`
+(`/proc/<pid>/mem` at 0x0DA3FA78): 1000 everywhere except slots **42..48** — `CriticalTB`, `RegistNone`
+and the four `Resist*` plus `ResistGTI`. `CriDamRate` (32) really is **1000**. The plus eraser at
+0x0DA3FB48 is 51 zeros. `ParameterCluster` was right too, and `so_RecalcEquipParam` re-seeds from those
+same two erasers.
+
+So both halves of the contradiction were solid, which is why arguing about it was going nowhere.
+
+**3. A live CONTAINER settles it.** Scanning zone00's `Zone.exe` for the rate-cluster signature and
+reading what a real container holds:
+
+```
+Item.Rate            slots not 1000: 32, 33, 42..48
+WeaponTitle.Rate     slots not 1000: 32, 33, 42..48
+AbnormalState.Rate   slots not 1000: 32,     42..48
+ItemPowerRate.Rate   slots not 1000:         42..48
+Upgrade.Rate         slots not 1000:         42..48
+PassiveSkill.Rate    slots not 1000:         42..48
+LastTune.Rate        slots not 1000:         42..48
+```
+
+**The crit slots are cleared AFTER the erase, and only in the three clusters the crit formula adds.**
+Every other rate cluster keeps the eraser's 1000 at slot 32. So a live character's crit rate starts at 0,
+is floored at 1, and a weapon's `ItemInfo.CriRate` IS the chance — which is what the operator's play
+numbers said and what the capture measured: Splitter 30, Kaineneceflight 70, Kainenecefury 90, and 13
+criticals in 234 landed outgoing swings (55.6 permille against 51.0 predicted by the weapon term alone).
+
+Modelled as `ParameterCluster.RateFor(source)`, which is the eraser plus the per-cluster clearing. The
+556/556 damage check is unaffected — no damage accessor reads those slots.
+
+⚠️ **What is still unread is WHICH code does the clearing.** It is not `c_clear` and not
+`so_RecalcEquipParam` — both re-seed from the eraser wholesale. The behaviour is measured on live
+containers, so the port is right about the STATE; the mechanism is a loose end.

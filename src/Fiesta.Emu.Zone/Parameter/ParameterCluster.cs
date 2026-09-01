@@ -62,6 +62,32 @@ public sealed class ParameterCluster
         return new ParameterCluster(slots);
     }
 
+    /// <summary>The rate slots a LIVE container holds at 0 even though the eraser puts 1000 there,
+    /// per cluster. Read out of a running zone (see <see cref="Rate"/>'s note).
+    ///
+    /// <para>These are exactly the slots the engine reads ADDITIVELY. `roe_CriticalRate` sums
+    /// `Item.Rate`, `WeaponTitle.Rate` and `AbnormalState.Rate` at <see cref="Stat.CriDamRate"/> and
+    /// subtracts two halves at <see cref="Stat.CriticalTB"/>; an additive term needs a zero identity, and
+    /// these have one. The eraser's 1000 is a generic template that something clears afterwards.</para></summary>
+    public static readonly IReadOnlyDictionary<StatModifier, IReadOnlyList<Stat>> RateZeroedAfterErase =
+        new Dictionary<StatModifier, IReadOnlyList<Stat>>
+        {
+            [StatModifier.Item] = [Stat.CriDamRate, Stat.MagCriDamRate],
+            [StatModifier.WeaponTitle] = [Stat.CriDamRate, Stat.MagCriDamRate],
+            [StatModifier.AbnormalState] = [Stat.CriDamRate],
+        };
+
+    /// <summary>A rate cluster as a LIVE container holds it: the eraser, then
+    /// <see cref="RateZeroedAfterErase"/> applied for this source.</summary>
+    public static ParameterCluster RateFor(StatModifier source)
+    {
+        var c = Rate();
+        if (RateZeroedAfterErase.TryGetValue(source, out var zeroed))
+            foreach (var stat in zeroed)
+                c[stat] = 0;
+        return c;
+    }
+
     /// <summary>Seed by half, so callers can say which kind they want without repeating the mapping.</summary>
     public static ParameterCluster For(StatHalf half)
         => half == StatHalf.Rate ? Rate() : Plus();

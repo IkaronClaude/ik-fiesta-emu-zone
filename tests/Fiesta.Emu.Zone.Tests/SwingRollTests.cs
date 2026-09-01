@@ -148,18 +148,64 @@ public class SwingRollTests
 
     // ---- roe_CriticalRate ----------------------------------------------------------------------------
 
-    /// <summary>The floor is 1.0 and the comparison is strict, so the worst case is exactly one critical
-    /// in a thousand rather than none.</summary>
+    /// <summary>A character with no crit gear crits once in a thousand — the floor — because the three
+    /// rate slots `roe_CriticalRate` sums start at ZERO in a live container.
+    ///
+    /// <para>This was the session's longest-running open question and it is now settled by measurement,
+    /// not argument. The rate ERASER really does hold 1000 at <see cref="Stat.CriDamRate"/> — read out of
+    /// zone02's live memory at 0x0DA3FA78, all 51 slots, and `so_RecalcEquipParam` re-seeds from that same
+    /// eraser. But a live container read out of zone00 holds <b>0</b> at that slot in `Item.Rate`,
+    /// `WeaponTitle.Rate` and `AbnormalState.Rate` — and in no other rate cluster. Something clears them
+    /// after the erase, and those three are exactly the ones the crit formula ADDS.</para>
+    ///
+    /// <para>Without this a bare container summed to 3000 and every swing critted, against a measured
+    /// 55.6 permille on the wire.</para></summary>
     [Fact]
-    public void CriticalRateFloorsAtOne()
+    public void ACharacterWithNoCritGearCritsAtTheFloor()
+    {
+        DamageCalculator.CriticalRate(new Fighter(), new Fighter()).ShouldBe(1.0);
+    }
+
+    /// <summary>Which slots are zeroed, per cluster, exactly as the live container holds them. Every other
+    /// rate cluster keeps the eraser's 1000 at those slots, so this is not "zero the crit slots
+    /// everywhere".</summary>
+    [Fact]
+    public void OnlyTheClustersTheCritFormulaReadsAreZeroed()
+    {
+        var p = new ParameterContainer();
+
+        p.Rate(StatModifier.Item)[Stat.CriDamRate].ShouldBe(0);
+        p.Rate(StatModifier.Item)[Stat.MagCriDamRate].ShouldBe(0);
+        p.Rate(StatModifier.WeaponTitle)[Stat.CriDamRate].ShouldBe(0);
+        p.Rate(StatModifier.WeaponTitle)[Stat.MagCriDamRate].ShouldBe(0);
+        p.Rate(StatModifier.AbnormalState)[Stat.CriDamRate].ShouldBe(0);
+
+        // AbnormalState keeps MagCriDamRate, and the other four clusters keep both.
+        p.Rate(StatModifier.AbnormalState)[Stat.MagCriDamRate].ShouldBe(1000);
+        foreach (var src in new[] { StatModifier.ItemPowerRate, StatModifier.Upgrade,
+                                    StatModifier.PassiveSkill, StatModifier.LastTune })
+        {
+            p.Rate(src)[Stat.CriDamRate].ShouldBe(1000);
+            p.Rate(src)[Stat.MagCriDamRate].ShouldBe(1000);
+        }
+    }
+
+    /// <summary>The payoff: a weapon's `ItemInfo.CriRate` now IS the character's crit chance, which is
+    /// what the operator's play numbers and the capture both say.
+    ///
+    /// <para>`FighterDamageLvl60.pcapng` weapons are Splitter 30, Kaineneceflight 70, Kainenecefury 90,
+    /// and 13 of 234 landed outgoing swings crit — 55.6 permille against 51.0 predicted by the weapon term
+    /// alone.</para></summary>
+    [Theory]
+    [InlineData(30)]
+    [InlineData(70)]
+    [InlineData(90)]
+    public void AWeaponsCriRateIsTheCritChance(int criRate)
     {
         var attacker = new Fighter();
-        var defender = new Fighter();
-        attacker.Parameters.Rate(StatModifier.Item)[Stat.CriDamRate] = 0;
-        attacker.Parameters.Rate(StatModifier.WeaponTitle)[Stat.CriDamRate] = 0;
-        attacker.Parameters.Rate(StatModifier.AbnormalState)[Stat.CriDamRate] = 0;
+        attacker.Parameters.Rate(StatModifier.Item)[Stat.CriDamRate] = criRate;
 
-        DamageCalculator.CriticalRate(attacker, defender).ShouldBe(1.0);
+        DamageCalculator.CriticalRate(attacker, new Fighter()).ShouldBe(criRate);
     }
 
     /// <summary>Three attacker layers add at <see cref="Stat.CriDamRate"/>, two defender layers subtract at

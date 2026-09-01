@@ -144,6 +144,17 @@ def collect(lines):
     free_stat, chrclass, passives = {}, None, ()
     weapon = None                                 # item id in the weapon slot, or None if unknown
     swings, chat, hit_counts = [], [], collections.Counter()
+    # ⚠️ RESTKEEPTIME IS THE SERVER'S JOB, AND THIS FILE IS NOT THE SERVER.
+    #
+    # Expiring a state here means INFERRING what the server did instead of observing it, and the server
+    # is supposed to tell the client every time -- so a timer-expiry that the wire never confirms is
+    # either our arithmetic being wrong or the server failing to broadcast, and those are very different
+    # bugs. So the inference is COUNTED, not silent: `expiry` tallies how often the wire confirmed it.
+    #
+    # (The simulator is the opposite case: there we ARE the server, expiry is ours to run, and ours to
+    # broadcast. See AbstateListInObject.)
+    expiry = collections.Counter()
+    timer_gone = {}                               # (conv, handle, ident) -> when the timer said it ended
 
     def set_abstate(conv, handle, ident, strength, keeptime_ms=None, now=None):
         # STRENGTH, not a flag. `ABSTATE_INFORMATION` is {abstateID, restKeeptime, strength} -- the third
@@ -161,6 +172,14 @@ def collect(lines):
         abstates[(conv, handle)][ident] = (strength, expires)
 
     def clear_abstate(conv, handle, ident):
+        # An explicit ABSTATERESET. If the timer had already dropped this one, the wire has just CONFIRMED
+        # our inference -- which is the outcome we want, and the one that says the server is telling the
+        # client what it is supposed to.
+        key = (conv, handle, ident)
+        expiry["reset"] += 1
+        if key in timer_gone:
+            expiry["reset_confirmed_timer"] += 1
+            del timer_gone[key]
         abstates[(conv, handle)].pop(ident, None)
 
     def live(conv, handle, now):
@@ -171,6 +190,10 @@ def collect(lines):
         out = {}
         for ident, (strength, expires) in abstates[(conv, handle)].items():
             if expires is not None and now is not None and now >= expires:
+                key = (conv, handle, ident)
+                if key not in timer_gone:
+                    timer_gone[key] = expires
+                    expiry["timer"] += 1
                 continue
             out[ident] = strength
         return out
@@ -303,7 +326,8 @@ def collect(lines):
                 "attackerAbstates": tuple(sorted(live(conv, att, ts).items())),
                 "defenderAbstates": tuple(sorted(live(conv, dfn, ts).items())),
             })
-    return swings, chat, hit_counts, free_stat, chrclass
+    expiry["timer_unconfirmed"] = len(timer_gone)
+    return swings, chat, hit_counts, free_stat, chrclass, expiry
 
 
 def main():
@@ -316,7 +340,7 @@ def main():
     a = ap.parse_args()
 
     lines = decode(a.pcap, a.port, a.decoded)
-    swings, chat, hit_counts, free_stat, chrclass = collect(lines)
+    swings, chat, hit_counts, free_stat, chrclass, expiry = collect(lines)
 
     # The player, per conversation: the handle that gets hit most and was never announced as a mob.
     # Robust to relogs and to a handle number meaning different things in different conversations.
@@ -421,6 +445,20 @@ def main():
               "%d critical of %d landed (%.1f permille)"
               % (side, n, miss, 100.0 * miss / n, blk, 100.0 * blk / n,
                  crit, landed, 1000.0 * crit / landed if landed else 0.0))
+    # LOUD on purpose. restKeeptime is SERVER state, and this file is not the server: expiring a state
+    # here infers what the server did instead of observing it, and the server is meant to broadcast the
+    # end every time. So a timer-expiry the wire never confirms is either our arithmetic being wrong or
+    # the server failing to tell the client -- different bugs, both worth chasing, and neither should be
+    # silent. (The simulator is the opposite case: there we ARE the server, and expiry is ours to run AND
+    # ours to broadcast.)
+    if expiry["timer"] or expiry["reset"]:
+        conf, tim = expiry["reset_confirmed_timer"], expiry["timer"]
+        print("\n  abstate expiry: %d dropped by restKeeptime, %d of those later confirmed by an explicit"
+              " ABSTATERESET, %d never confirmed; %d resets on the wire in total."
+              % (tim, conf, expiry["timer_unconfirmed"], expiry["reset"]))
+        if tim and conf < tim:
+            print("  !! %d timer-expiries the wire never confirmed -- either the keeptime arithmetic here"
+                  " is wrong, or the server did not broadcast the end." % (tim - conf))
     print("\nwrote %s" % a.out)
 
 
