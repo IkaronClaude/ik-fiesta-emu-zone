@@ -60,6 +60,13 @@ fields agree; it is actually `points + points/5`. Read the whole table, or say o
       already contains the ground truth — `StaBattleBlowStun` (2) and `StaCommonStun02` (307) are applied
       to mobs, and their movement and swings during those windows are on the wire.
 
+- [ ] **`StaImmortal` (291) on a mob — what does it actually do?** It appears in
+      `FighterDamageLvl60.pcapng` on a mob that then takes normal damage from two swings. Its sub-state
+      `SubStaKeepTime_Eternal` carries no actions at all, so whatever "immortal" means it is not
+      implemented through `aeo_ParameterEnchant`. Find the code that reads it before assuming it is
+      cosmetic. It also arrives at **strength 1** while its only table row is at **Strength 999**, so the
+      server's row-selection rule when the strength does not match is itself unread.
+
 - [ ] **Every other non-parameter `SubAbstateAction`.** The eight read so far were chosen because they
       moved damage. The behavioural half of that enum is unexplored and is where mob AI fidelity lives.
 

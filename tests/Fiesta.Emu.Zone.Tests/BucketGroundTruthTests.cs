@@ -292,9 +292,22 @@ public class BucketGroundTruthTests
             var name = def is null ? null : ShnFile.Str(def, "SubAbState");
             if (string.IsNullOrEmpty(name) || name == "-") continue;   // no sub-state: no parameter effect
 
-            var row = subAbState.Rows.FirstOrDefault(
-                r => ShnFile.Str(r, "InxName") == name && ShnFile.Int(r, "Strength") == ab.Strength);
-            if (row is null) return false;
+            var rows = subAbState.Rows.Where(r => ShnFile.Str(r, "InxName") == name).ToList();
+            var row = rows.FirstOrDefault(r => ShnFile.Int(r, "Strength") == ab.Strength);
+            if (row is null)
+            {
+                // No row at this strength. Rather than guess the server's fallback, ask a question the
+                // DATA answers: does ANY row for this sub-state carry an action? If none does, the
+                // sub-state cannot change a parameter whichever row the server would have picked, so it is
+                // safe to skip. If one does, refuse -- picking a row would be a guess.
+                //
+                // `StaImmortal` (291) arrives at strength 1 while its only `SubStaKeepTime_Eternal` row is
+                // at Strength 999 with every action zero, which is what this exists for.
+                var anyAction = rows.Any(r => new[] { "A", "B", "C", "D" }
+                    .Any(k => ShnFile.Int(r, "ActionIndex" + k) != 0));
+                if (anyAction) return false;
+                continue;
+            }
 
             foreach (var slot in new[] { "A", "B", "C", "D" })
             {

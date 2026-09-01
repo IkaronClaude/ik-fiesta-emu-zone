@@ -47,6 +47,10 @@ import sys
 # emptiness is 0xFFFF -- see NC_ITEM_EQUIPCHANGE_CMD setting slot 10 to 65535 when a shield comes off.
 WEAPON_EQUIP_SLOT, EMPTY_EQUIP_SLOT = 12, 0xFFFF
 
+# sizeof(PROTO_NC_BRIEFINFO_REGENMOB_CMD), the element of the bulk NC_BRIEFINFO_MOB_CMD array.
+# Checked against the wire: a 4173-byte frame is 1 + 28 * 149 exactly.
+REGENMOB_RECORD = 149
+
 PCAP_DECODE = r"C:/Projects/fiesta-proxy/tools/pcap_decode.py"
 XOR_TABLE = os.environ.get("XOR_TABLE_PATH", r"C:/Projects/ik-fiesta-bots/xor-table.hex")
 
@@ -146,6 +150,23 @@ def collect(lines):
             mob_of[(conv, handle)] = u16(raw, 3)
             # A fresh spawn on a recycled handle starts clean.
             abstates.pop((conv, handle), None)
+        elif name == "NC_BRIEFINFO_MOB_CMD" and raw:
+            # mobnum u8@0, then mobnum * PROTO_NC_BRIEFINFO_REGENMOB_CMD (149 bytes each), same layout as
+            # the single-spawn packet.
+            #
+            # ⚠️ THIS IS THE OTHER HALF OF THE ROSTER, and leaving it out is not a small gap. REGENMOB
+            # announces a mob SPAWNING; everything already alive when you enter its view arrives here in
+            # bulk. A capture that starts next to a live mob and kills it produces swings whose handle was
+            # never in a REGENMOB -- and the client obviously rendered that mob, so "not in the roster"
+            # was always a statement about this parser, never about the wire.
+            count = raw[0]
+            for i in range(count):
+                off = 1 + i * REGENMOB_RECORD
+                if off + 5 > len(raw):
+                    break
+                handle = u16(raw, off)
+                mob_of[(conv, handle)] = u16(raw, off + 3)
+                abstates.pop((conv, handle), None)
         elif name == "NC_BRIEFINFO_BRIEFINFODELETE_CMD" and len(raw) >= 2:
             handle = u16(raw, 0)
             abstates.pop((conv, handle), None)
