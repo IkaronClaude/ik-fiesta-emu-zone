@@ -1,0 +1,242 @@
+using Fiesta.Emu.Zone.Parameter;
+
+namespace Fiesta.Emu.Zone.Abstate;
+
+/// <summary>`SubAbstateAction` — the action index in a `SubAbState.shn` row's
+/// `(ActionIndexA..D, ActionArgA..D)` pairs.
+///
+/// <para>Names are the PDB's, values are the enum's, including the misspellings (`SAA_SILIENCE`,
+/// `SAA_TARGETNUMVER`) — they are kept verbatim so they match the symbols and the game data.</para></summary>
+public enum SubAbstateAction
+{
+    SAA_NONE = 0,
+    SAA_STRRATE = 1,
+    SAA_STRPLUS = 2,
+    SAA_WCPLUS = 3,
+    SAA_WCRATE = 4,
+    SAA_ACPLUS = 5,
+    SAA_ACRATE = 6,
+    SAA_DEXPLUS = 7,
+    SAA_TBPLUS = 8,
+    SAA_TBRATE = 9,
+    SAA_THPLUS = 10,
+    SAA_THRATE = 11,
+    SAA_INTPLUS = 12,
+    SAA_MAPLUS = 13,
+    SAA_MENTALPLUS = 14,
+    SAA_MRPLUS = 15,
+    SAA_MRRATE = 16,
+    SAA_SHIELDAMOUNT = 17,
+    SAA_SHIELDACRATE = 18,
+    SAA_NOMOVE = 19,
+    SAA_SPEEDRATE = 20,
+    SAA_ATTACKSPEEDRATE = 21,
+    SAA_MAXHPRATE = 22,
+    SAA_MAXSPRATE = 23,
+    SAA_DEADHPSPRECOVRATE = 24,
+    SAA_NOATTACK = 25,
+    SAA_TICK = 26,
+    SAA_DOTDAMAGE = 27,
+    SAA_CONHEAL = 28,
+    SAA_CASTINGTIMEPLUS = 29,
+    SAA_HEALAMOUNT = 30,
+    SAA_POISONRESISTRATE = 31,
+    SAA_DISEASERESISTRATE = 32,
+    SAA_CURSERESISTRATE = 33,
+    SAA_CRITICALRATE = 34,
+    SAA_MAXHPPLUS = 35,
+    SAA_MAXSPPLUS = 36,
+    SAA_INTRATE = 37,
+    SAA_FEAR = 38,
+    SAA_ALLSTATEPLUS = 39,
+    SAA_REVIVEHEALRATE = 40,
+    SAA_COUNT = 41,
+    SAA_SILIENCE = 42,
+    SAA_DEADLYBLESSING = 43,
+    SAA_DAMAGERATE = 44,
+    SAA_TARGETENEMY = 45,
+    SAA_MARATE = 46,
+    SAA_HEALRATE = 47,
+    SAA_DOTRATE = 48,
+    SAA_AWAY = 49,
+    SAA_TOTALDAMAGERATE = 50,
+    SAA_DISPELSPEEDRATE = 51,
+    SAA_SETABSTATEME = 52,
+    SAA_SETABSTATEFRIEND = 53,
+    SAA_SETABSTATE = 54,
+    SAA_AREA = 55,
+    SAA_GTIRESISTRATE = 56,
+    SAA_MAXHPRATEDAMAGE = 57,
+    SAA_METAABILITY = 58,
+    SAA_METASKIN = 59,
+    SAA_MISSRATE = 60,
+    SAA_REFLECTDAMAGE = 61,
+    SAA_RELESEACTION = 62,
+    SAA_SCANENEMYUSER = 63,
+    SAA_TARGETALL = 64,
+    SAA_HIDEENEMY = 65,
+    SAA_TARGETNOTME = 66,
+    SAA_DOTDIEDAMAGE = 67,
+    SAA_ADDALLDOTDMG = 68,
+    SAA_ADDBLOODINGDMG = 69,
+    SAA_ADDPOISONDMG = 70,
+    SAA_EVASIONAMOUNT = 71,
+    SAA_USESPRATE = 72,
+    SAA_ACMINUS = 73,
+    SAA_ACDOWNRATE = 74,
+    SAA_SUBTRACTALLDOTDMG = 75,
+    SAA_SUBTRACTBLOODINGDMG = 76,
+    SAA_SUBTRACTPOISONDMG = 77,
+    SAA_ATKSPEEDDOWNRATE = 78,
+    SAA_AWAYBACK = 79,
+    SAA_CRITICALDOWNRATE = 80,
+    SAA_DEXMINUS = 81,
+    SAA_HEALAMOUNTMINUS = 82,
+    SAA_MAMINUS = 83,
+    SAA_MADOWNRATE = 84,
+    SAA_MAXHPDOWNRATE = 85,
+    SAA_MRMINUS = 86,
+    SAA_MRDOWNRATE = 87,
+    SAA_SPEEDDOWNRATE = 88,
+    SAA_STRMINUS = 89,
+    SAA_TBMINUS = 90,
+    SAA_TBDOWNRATE = 91,
+    SAA_THMINUS = 92,
+    SAA_THDOWNRATE = 93,
+    SAA_WCMINUS = 94,
+    SAA_WCDOWNRATE = 95,
+    SAA_DOTWCRATE = 96,
+    SAA_TARGETNUMVER = 97,
+    SAA_DOTMARATE = 98,
+    SAA_MENDOWNRATE = 99,
+    SAA_USESPDOWN = 100,
+    SAA_CRIUPRATE = 101,
+    SAA_MRSHIELDRATE = 102,
+    SAA_ACSHIELDRATE = 103,
+    SAA_MONSTERSTICK = 104,
+    SAA_SETACTIVESKILL = 105,
+    SAA_HPRATEDAMAGE = 106,
+    SAA_EXPRATE = 107,
+    SAA_DROPRATE = 108,
+    SAA_AWAYBACKSPOT = 109,
+    SAA_STOPANI = 110,
+    SAA_DOTDMGDOWNRATE = 111,
+    SAA_SHIELDRATE = 112,
+    SAA_LPAMOUNT = 113,
+    SAA_MINHP = 114,
+    SAA_DMGDOWNRATE = 115,
+    SAA_SPEEDRESISTRATE = 116,
+    SAA_MELEE = 117,
+    SAA_RANGE = 118,
+    SAA_ALLSTATPLUS = 119,
+    SAA_RANGEOVER = 120,
+    MAX_SUBABSTATEACTION = 121,
+}
+
+/// <summary>What every action writes, read off `aeo_ParameterEnchant`'s jump table.
+///
+/// <para><b>The table below is generated</b> — `python tools/abstate_actions.py --csharp`. It is not
+/// hand-maintained, because 120 rows of (half, sign, slot) is exactly the shape of thing that acquires a
+/// typo when a human copies it, and the typo would be a silently wrong stat. Nine of these were once read
+/// by eye; the generator reproduces all nine identically, which is the check on it.</para>
+///
+/// <para><b>An absent action is a READ RESULT, not a gap.</b> 49 of the 120 resolve to the shared epilogue
+/// and write nothing into the container at all. That is different from "nobody has looked at it", and the
+/// difference matters: an unexamined action has to make a damage bucket unpredictable, while a genuinely
+/// empty one must not. Several of the absent ones clearly act elsewhere — `SAA_DOTDAMAGE`, `SAA_FEAR`,
+/// `SAA_SILIENCE` and the targeting family live in `SubAbnormalStateActor` subclasses, the tactic machine
+/// or packet handlers. This says where they do NOT act, precisely.</para>
+///
+/// <para>See `docs/SUBABSTATE_ACTIONS.md` for the whole table in readable form.</para></summary>
+public static class AbstateEffects
+{
+    private static readonly Dictionary<SubAbstateAction, AbstateEffect> Table = new()
+    {
+    // GENERATED by tools/abstate_actions.py --csharp. Do not hand-edit.
+    // aeo_ParameterEnchant (0x004079F0); case table 0x408320, jump table 0x408200.
+        [SubAbstateAction.SAA_STRRATE] = new([new(StatHalf.Rate, +1, Stat.Str)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_STRPLUS] = new([new(StatHalf.Plus, +1, Stat.Str)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_WCPLUS] = new([new(StatHalf.Plus, +1, Stat.WCmax), new(StatHalf.Plus, +1, Stat.WCmin)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_WCRATE] = new([new(StatHalf.Rate, +1, Stat.WCmax), new(StatHalf.Rate, +1, Stat.WCmin)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_ACPLUS] = new([new(StatHalf.Plus, +1, Stat.AC)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_ACRATE] = new([new(StatHalf.Rate, +1, Stat.AC)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_DEXPLUS] = new([new(StatHalf.Plus, +1, Stat.Dex)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_TBPLUS] = new([new(StatHalf.Plus, +1, Stat.TB)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_TBRATE] = new([new(StatHalf.Rate, +1, Stat.TB)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_THPLUS] = new([new(StatHalf.Plus, +1, Stat.TH)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_THRATE] = new([new(StatHalf.Rate, +1, Stat.TH)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_INTPLUS] = new([new(StatHalf.Plus, +1, Stat.Int)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MAPLUS] = new([new(StatHalf.Plus, +1, Stat.MAmax), new(StatHalf.Plus, +1, Stat.MAmin)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MENTALPLUS] = new([new(StatHalf.Plus, +1, Stat.Men)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MRPLUS] = new([new(StatHalf.Plus, +1, Stat.MR)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MRRATE] = new([new(StatHalf.Rate, +1, Stat.MR)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_SHIELDACRATE] = new([new(StatHalf.Rate, +1, Stat.ShieldAC)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_NOMOVE] = new([], [], ContainerFlag.CannotMoveEntangle, ContainerFlag.CannotMoveStun),
+        [SubAbstateAction.SAA_SPEEDRATE] = new([new(StatHalf.Rate, +1, Stat.MoveSpeed)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_ATTACKSPEEDRATE] = new([new(StatHalf.Rate, +1, Stat.AttSpeed)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MAXHPRATE] = new([new(StatHalf.Rate, +1, Stat.MaxHP)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MAXSPRATE] = new([new(StatHalf.Rate, +1, Stat.MaxSP)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_NOATTACK] = new([], [], ContainerFlag.CannotAttack, ContainerFlag.None),
+        [SubAbstateAction.SAA_POISONRESISTRATE] = new([new(StatHalf.Rate, +1, Stat.ResistPoison)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_DISEASERESISTRATE] = new([new(StatHalf.Rate, +1, Stat.ResistDeaseas)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_CURSERESISTRATE] = new([new(StatHalf.Rate, +1, Stat.ResistCurse)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_CRITICALRATE] = new([new(StatHalf.Rate, +1, Stat.CriDamRate)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MAXHPPLUS] = new([new(StatHalf.Plus, +1, Stat.MaxHP)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MAXSPPLUS] = new([new(StatHalf.Plus, +1, Stat.MaxSP)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_INTRATE] = new([new(StatHalf.Rate, +1, Stat.Int)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_ALLSTATEPLUS] = new([new(StatHalf.Rate, +1, Stat.Str), new(StatHalf.Rate, +1, Stat.Con), new(StatHalf.Rate, +1, Stat.Dex), new(StatHalf.Rate, +1, Stat.Int), new(StatHalf.Rate, +1, Stat.Men)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MARATE] = new([new(StatHalf.Rate, +1, Stat.MAmax), new(StatHalf.Rate, +1, Stat.MAmin)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_HEALRATE] = new([], [new(ContainerField.HealRate, 0)], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_AWAY] = new([], [], ContainerFlag.CannotMoveStun, ContainerFlag.None),
+        [SubAbstateAction.SAA_GTIRESISTRATE] = new([new(StatHalf.Rate, +1, Stat.ResistGTI)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_METAABILITY] = new([], [new(ContainerField.ChangeAbilityInfo, 0)], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MISSRATE] = new([], [new(ContainerField.MissPercentFix, +1)], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_REFLECTDAMAGE] = new([], [new(ContainerField.DamageReflection, +1)], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_ADDALLDOTDMG] = new([], [new(ContainerField.DotDamagePlusPoison, +1), new(ContainerField.DotDamagePlusDesease, +1), new(ContainerField.DotDamagePlusBlooding, +1), new(ContainerField.DotDamagePlusPitBlooding, +1), new(ContainerField.DotDamagePlusBurn, +1)], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_ADDBLOODINGDMG] = new([], [new(ContainerField.DotDamagePlusBlooding, +1)], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_ADDPOISONDMG] = new([], [new(ContainerField.DotDamagePlusPoison, +1)], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_EVASIONAMOUNT] = new([], [new(ContainerField.RangeEvasion, +1)], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_USESPRATE] = new([], [new(ContainerField.SPRate, +1)], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_ACMINUS] = new([new(StatHalf.Plus, -1, Stat.AC)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_ACDOWNRATE] = new([new(StatHalf.Rate, -1, Stat.AC)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_SUBTRACTALLDOTDMG] = new([], [new(ContainerField.DotDamagePlusPoison, -1), new(ContainerField.DotDamagePlusDesease, -1), new(ContainerField.DotDamagePlusBlooding, -1), new(ContainerField.DotDamagePlusPitBlooding, -1), new(ContainerField.DotDamagePlusBurn, -1)], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_SUBTRACTBLOODINGDMG] = new([], [new(ContainerField.DotDamagePlusBlooding, -1)], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_SUBTRACTPOISONDMG] = new([], [new(ContainerField.DotDamagePlusPoison, -1)], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_ATKSPEEDDOWNRATE] = new([new(StatHalf.Rate, -1, Stat.AttSpeed)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_CRITICALDOWNRATE] = new([new(StatHalf.Rate, -1, Stat.CriDamRate)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_DEXMINUS] = new([new(StatHalf.Plus, -1, Stat.Dex)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MAMINUS] = new([new(StatHalf.Plus, -1, Stat.MAmax), new(StatHalf.Plus, -1, Stat.MAmin)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MADOWNRATE] = new([new(StatHalf.Rate, -1, Stat.MAmax), new(StatHalf.Rate, -1, Stat.MAmin)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MAXHPDOWNRATE] = new([new(StatHalf.Rate, -1, Stat.MaxHP)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MRMINUS] = new([new(StatHalf.Plus, -1, Stat.MR)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MRDOWNRATE] = new([new(StatHalf.Rate, -1, Stat.MR)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_SPEEDDOWNRATE] = new([new(StatHalf.Rate, -1, Stat.MoveSpeed)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_STRMINUS] = new([new(StatHalf.Plus, -1, Stat.Str)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_TBMINUS] = new([new(StatHalf.Plus, -1, Stat.TB)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_TBDOWNRATE] = new([new(StatHalf.Rate, -1, Stat.TB)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_THMINUS] = new([new(StatHalf.Plus, -1, Stat.TH)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_THDOWNRATE] = new([new(StatHalf.Rate, -1, Stat.TH)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_WCMINUS] = new([new(StatHalf.Plus, -1, Stat.WCmax), new(StatHalf.Plus, -1, Stat.WCmin)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_WCDOWNRATE] = new([new(StatHalf.Rate, -1, Stat.WCmax), new(StatHalf.Rate, -1, Stat.WCmin)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MENDOWNRATE] = new([new(StatHalf.Rate, -1, Stat.Men)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_MRSHIELDRATE] = new([], [new(ContainerField.MagicalImmuneRate, 0)], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_ACSHIELDRATE] = new([], [new(ContainerField.PhysicalImmuneRate, 0)], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_LPAMOUNT] = new([new(StatHalf.Plus, +1, Stat.LPRecover)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_SPEEDRESISTRATE] = new([new(StatHalf.Rate, +1, Stat.ResistMoveSpdDown)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_ALLSTATPLUS] = new([new(StatHalf.Plus, +1, Stat.Str), new(StatHalf.Plus, +1, Stat.Con), new(StatHalf.Plus, +1, Stat.Dex), new(StatHalf.Plus, +1, Stat.Int), new(StatHalf.Plus, +1, Stat.Men)], [], ContainerFlag.None, ContainerFlag.None),
+        [SubAbstateAction.SAA_RANGEOVER] = new([], [new(ContainerField.RangeOver, +1)], ContainerFlag.None, ContainerFlag.None),
+    };
+
+    /// <summary>What an action does, or <c>null</c> when the handler is the shared epilogue.</summary>
+    public static AbstateEffect? For(SubAbstateAction action)
+        => Table.GetValueOrDefault(action);
+
+    /// <summary>Whether the action index is one the server dispatches at all. `aeo_ParameterEnchant`
+    /// bounds it with <c>cmp ebx, 0x77</c> after subtracting 1, so 1..120 dispatch and everything else —
+    /// including <see cref="SubAbstateAction.SAA_NONE"/> — falls straight through.</summary>
+    public static bool IsDispatched(SubAbstateAction action)
+        => (int)action >= 1 && (int)action <= 120;
+
+    /// <summary>Every action with a container effect, for tests that want to sweep them.</summary>
+    public static IReadOnlyDictionary<SubAbstateAction, AbstateEffect> All => Table;
+}

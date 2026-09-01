@@ -112,6 +112,28 @@ public sealed class ParameterContainer
     /// binary checks whether the defender is moving.</para></summary>
     public ChangeByConditionParam PassiveMovingTbPlus { get; set; } = ChangeByConditionParam.None;
 
+    /// <summary>`Parameter::Container::flag` (+0x0CCE) — the behaviour bits. Set by `SAA_NOMOVE`,
+    /// `SAA_NOATTACK` and `SAA_AWAY`; read by nothing in the damage formula and by everything in the mob
+    /// tactic machine. See <see cref="ContainerFlag"/>.</summary>
+    public ContainerFlag Flags { get; set; }
+
+    private readonly int[] _fields = new int[Enum.GetValues<ContainerField>().Length];
+
+    /// <summary>One of the named scalars past the clusters. See <see cref="ContainerField"/>.</summary>
+    public int this[ContainerField field]
+    {
+        get => _fields[(int)field];
+        set => _fields[(int)field] = value;
+    }
+
+    /// <summary>Apply one abstate action's write to a field, honouring the operation the handler uses.
+    ///
+    /// <para><paramref name="sign"/> of 0 means ASSIGN, which is a real operation and not a missing value:
+    /// `SAA_HEALRATE` is `mov` where every neighbouring handler is `add`, so two sources of it do not
+    /// stack.</para></summary>
+    public void WriteField(ContainerField field, int sign, int arg)
+        => _fields[(int)field] = sign == 0 ? arg : _fields[(int)field] + sign * arg;
+
     /// <summary>`MissPercentFix` (+0x0CD0), an `unsigned short` — a fixed miss chance in permille that
     /// REPLACES the whole hit-rate computation.
     ///
@@ -120,8 +142,13 @@ public sealed class ParameterContainer
     /// does NOT set `isshieldblock`); anything else returns exactly <c>1000 - MissPercentFix</c>, skipping
     /// `roe_FreeStatHitRate` and therefore also skipping the ranged-evasion subtraction.</para>
     ///
-    /// <para>Zero is the ordinary state and means "no fixed miss chance", not "unset".</para></summary>
-    public int MissPercentFix { get; set; }
+    /// <para>Zero is the ordinary state and means "no fixed miss chance", not "unset". Written by
+    /// `SAA_MISSRATE`.</para></summary>
+    public int MissPercentFix
+    {
+        get => this[ContainerField.MissPercentFix];
+        set => this[ContainerField.MissPercentFix] = value;
+    }
 
     /// <summary>`RangeEvasion` (+0x0CCC), a SIGNED `short` — evasion that applies only to attacks made
     /// from beyond <see cref="Combat.DamageCalculator.RangedAttackThreshold"/>.
@@ -129,8 +156,12 @@ public sealed class ParameterContainer
     /// <para>Subtracted from the hit rating by `roe_FreeStatHitRate` (0x00500010) when the attack's range
     /// exceeds 300. `so_smo_RangeEvation@ShineMobileObject` (0x004A6380) is a one-line
     /// <c>movsx eax, word [this+0x1C8C]</c>, and `ShineObject`'s base version returns 0 — so a plain
-    /// object has none and only mobiles carry it.</para></summary>
-    public int RangeEvasion { get; set; }
+    /// object has none and only mobiles carry it. Written by `SAA_EVASIONAMOUNT`.</para></summary>
+    public int RangeEvasion
+    {
+        get => this[ContainerField.RangeEvasion];
+        set => this[ContainerField.RangeEvasion] = value;
+    }
 
     /// <summary>`PassiveCriDamageRatePlus` (+0x0CDC), an `unsigned short` — the permille a critical adds
     /// ON TOP of the doubling.
