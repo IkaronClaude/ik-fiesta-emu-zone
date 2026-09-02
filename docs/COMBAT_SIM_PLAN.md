@@ -616,10 +616,36 @@ Nothing exists. `SkillDataBox` reads `CastTime`/`DlyTime` for attack intervals o
       The function returns -1 for a target that is not a `ShineMob`: it opens with a type walk against a
       specific RTTI pointer.
 
-- [ ] **The `sm_SkillExchange_*` predicates** — `HPLow` (0x004BB100), `HPLow_ChangeOrder` (0x004BB600),
-      `OutOfRange` (0x004BAEF0), `TargetState` (0x004BB390): when a mob abandons the sequence's current
-      entry. `so_mob_SelectWeapon` calls `sm_SkillExchange_OutOfRange` at +0x14D, so at least that one is
-      on the selection path. Still placeholders.
+- [ ] **The `sm_SkillExchange_*` predicates** — `OutOfRange` (0x004BAEF0), `HPLow` (0x004BB100),
+      `TargetState` (0x004BB390), `HPLow_ChangeOrder` (0x004BB600): when a mob abandons the sequence's
+      current entry. `so_mob_SelectWeapon` calls `sm_SkillExchange_OutOfRange` at +0x14D, so at least that
+      one is on the selection path.
+
+      **The surrounding structure IS now read**, which is most of the work — `AttackElement4Mob` is 7148
+      bytes and lays out as:
+
+      ```
+      +0x0000  ae4m_BossMob         u16
+      +0x0002  ae4m_SequenceLength  u8
+      +0x0004  ae4m_skillID         u16[500]        <- THE sequence, confirmed
+      +0x03EC  ae4m_OutOfRangeBody  SkillChangeList (1224 bytes, SkillChange[1200] at +0x18)
+      +0x08B4  ae4m_HPLowBody       SkillChangeList
+      +0x0D7C  ae4m_TargetStateBody SkillChangeList
+      +0x1244  ae4m_OutOfRange      SkillChangeList*    <- what the predicates dereference
+      +0x1248  ae4m_HPLow           SkillChangeList*
+      +0x124C  ae4m_TargetState     SkillChangeList*
+      +0x1250  ae4m_SaveNextSkill   SkillChangeList*
+      ```
+
+      and `SkillChange` is 12 bytes: `sc_From u16, sc_To u16, sc_Value u32, sc_ASIndex u32` — a
+      from-skill/to-skill swap with a threshold. Each predicate opens by testing its POINTER (not the
+      body) for null and returning immediately, so a mob with no rule of that kind costs nothing.
+
+      What is NOT read is the comparison itself: each reads a u16 at `[list+0x0E]` as an index and a u16
+      at `[list+0x04]`, then indexes `[list+0x08]` with a 12-byte stride reading a u16 at +4 — and that
+      last offset lands on `sc_Value`'s low half rather than on `sc_From`/`sc_To`, which does not fit the
+      obvious reading. **Do not guess it**; the mismatch is exactly the sort that produces a confident
+      wrong port. Resolve `List<SkillChange>`'s base layout first.
 
 **Proof:** `FighterDamageLvl60.pcapng` contains **633 `NC_BAT_SKILLBASH_HIT_DAMAGE_CMD` frames** that have
 never been looked at, plus `SKILLBASH_CAST_SUC_ACK` / `CAST_FAIL_ACK` / `HIT_OBJ_START` / `HIT_BLAST`.
