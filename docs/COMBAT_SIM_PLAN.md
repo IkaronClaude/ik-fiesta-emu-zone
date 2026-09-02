@@ -236,9 +236,24 @@ and applies their parameter effects; nothing can apply, tick or expire one.
       ⚠️ **The third callback is dead in this build.** Actor slot 0x50 is `ret 0x10` on the base and no
       subclass in the image overrides it, so that whole pass calls nothing. Worth knowing before anyone
       spends time looking for its effect.
-- [ ] **Port them.** Only `sasa_Act_DamegeIntercept` is fully read; `sasa_Act_LastDamegeInterceptByAtk`
-      (0x00407570) is longer and its body is not read yet. Nothing can exercise either until the actor
-      subclasses exist, which is the item above.
+- [x] **Port them — DONE** (`Abstate/AbstateDamageCallbacks.cs`). `sasa_Act_LastDamegeInterceptByAtk`
+      (0x00407570) turned out short once the table walk is unpicked:
+
+      ```
+      rate   = assa_FindEffect(element.row[strength].args, SAA_TOTALDAMAGERATE /*50*/);
+      damage = damage * rate / 1000;                      // signed, truncating
+      ```
+
+      It runs on the **ATTACKER's** states — a state that scales down everything its owner deals — and the
+      `LastDmgRatio` and `HideDamage` actors share this one body verbatim.
+
+      ⚠️ **`assa_FindEffect` (0x00416160) returns 0 when the action is absent.** It scans the row's FOUR
+      (action, argument) slots and falls out with `xor eax, eax`, so an element reaching this callback
+      without a `SAA_TOTALDAMAGERATE` slot **zeroes the damage** rather than leaving it alone. Ported that
+      way rather than defaulting to a neutral 1000: it is only survivable because the two actors are bound
+      to rows carrying the action, and a neutral default would hide a mis-built row instead of failing on
+      it. It also means "absent" and "present, valued 0" are indistinguishable — to the original as much
+      as to this port.
 
 **Proof:** `damage_buckets.py` already reconstructs abstate state from the wire. Have the simulator
 reconstruct the same timeline from the same events and diff the two. Expiry needs real timestamps — frame
