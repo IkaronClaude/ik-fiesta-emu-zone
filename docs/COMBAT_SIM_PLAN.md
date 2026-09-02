@@ -596,14 +596,15 @@ Nothing exists. `SkillDataBox` reads `CastTime`/`DlyTime` for attack intervals o
       `alsst_SkillBlast_RandomTarget`) and `mdt_PostSkillBlast`. Those choose WHO is hit; everything about
       what the hit does is now ported.
 
-- [ ] **`setitemskilleffect`'s slot NAMES are not established.** The buffer is understood (a per-caster
-      set-bonus staging area, 17 `unsigned long`, all 1000 at rest, read by `smo_SkillBlast` at slots 1,
-      2, 9, 12, 13) and slot 2's and 13's USES are read directly from the code — slot 2 multiplies the
-      damage, slot 13 feeds the hit-rate path. But the obvious index enum does **not** fit:
-      `SkillEffectIncreaseType` has **15** values against **17** slots, and its slot 2 is
-      `SEIT_KEEPTIME_RATE_INCREASE` where the code plainly uses slot 2 as a damage multiplier. So the
-      index space is something else. **Do not label the slots from that enum** — find the writer's index
-      source first (`smo_ply_SetItemEffect` -> `siel_AppendEffect`'s `add [idx*4 + base]`).
+- [x] **`setitemskilleffect`'s slot names — SETTLED, and the guess was the wrong enum.** The index type is
+      **`SetIndex`** (17 values against the buffer's 17 dwords), found by TYPING the writer rather than
+      pattern-matching names: `siel_AppendEffect` takes its index from
+      `SetItemData::EffectDescription.seteffect`, which is a `SetIndex`. Slot 2 is `SET_DAMEGERATE` and
+      slot 13 `SET_PROBABILITYRATE` — exactly their observed uses in `smo_SkillBlast`.
+      `SkillEffectIncreaseType` (15 values, slot 2 = "keeptime") was the wrong enum, and refusing to force
+      it was the right call. ⭐ The accumulation is `slot += argument - 1000` per piece onto a buffer
+      starting at 1000, so set pieces ADD their excess rather than compounding — the opposite of the
+      item-action results, which compound. Ported as `Skill/SetItemEffect.cs`.
 
       `sm_GetUseWeaponRate` (0x004AA060) reads a **per-instance override vector first** and falls back to
       `MobWeapon.BlastRate` (+0x47), so two mobs of the same kind can disagree about their weights without
@@ -757,31 +758,100 @@ single honoured option is the crit is consistent with the crit being the uncondi
       needed after all.
 - [x] **`sp_WeaponTitleOption`'s `Type` space** — only (1, 1) is implemented, and it accumulates.
 
-### Still unaccounted for
+### ⭐ Character titles — they DO write the container, via ABSTATES
 
-- [ ] **Weapon socketed bonus stones.** `EnchantSocketRateTable`, `NC_ITEM_ENCHANT_ADD_GEM` and
-      `NC_ITEM_ENCHANT_ADD_NEW_SOCKET` exist; which cluster a socketed stone lands in is unread.
-      ⚠️ `so_FirstActionAfterSocketConnect` is a NETWORK socket and a false friend — do not follow it.
-- [ ] **Character title bonuses.** `CCharacterTitle` / `CCharacterTitleZone` are a SEPARATE system from
-      `CWeaponTitle`, despite the shared word. Whether they reach a cluster the damage accessors read is
-      unknown.
-- [ ] **`setitemskilleffect`'s slot names** (see task 4). The set buffer is understood and slots 2 and 13
-      have their uses read, but the index enum does not fit — 15 named values against 17 slots, and its
-      slot 2 is `KEEPTIME` where the code uses slot 2 as a damage multiplier.
+Operator, 2026-09-02: *"character titles DO apply bonuses, to stats, to containers specifically."*
+Correct, and an earlier pass here said the opposite. The mistake was reading ONE data class and stopping:
+`CHARACTER_TITLE_DATA` holds definitions only (`Type`, `Permit`, `Refresh`, then five tiers of
+`Title` / `Value` / `Fame`) and genuinely has no stat fields — but the stat side lives in a SECOND class,
+`CCharacterTitleDataStateServer`:
 
-⭐ **Set bonuses cannot add critical chance.** `roe_CriticalRate` reads exactly `Item.Rate`,
-`WeaponTitle.Rate` and `AbnormalState.Rate` plus the MEN table, and touches no set-item data. The set
-buffer reaches combat only through `smo_SkillBlast`'s slot reads — so it scales skill damage and skill hit
-rate and nothing else.
+```
+CT_DataState              +0x00 nStateNum u8, +0x04 StateData[72]
+CT_DataState::StateData   +0x00 nStrength u8
+                          +0x04 pAbStateDic      AbStateStr*
+                          +0x08 pAbStateMainDic  AbStateStr*
+```
 
-### How to settle the open ones
+So a title grants an **abstate at a strength**, applied through `GetStateData` ->
+`so_AbnormalState_BitSet` + `so_AbnormalState_BroadcastSet` at `sp_NC_MAP_LOGINCOMPLETE_CMD` (login) and
+again at `sp_ReviveNow` (revive).
 
-Live container reads, the way the crit model was settled ([[fiesta-live-container-read]]): equip the
-item, read the container, see which cluster moved. One read per source, exact, and it sees the
-computed-index writes a static scan cannot.
+⭐ **Which means titles are already modelled**, because abstates write `AbnormalState.Plus/Rate` through
+`aeo_ParameterEnchant`, which is ported and tested. And since `roe_CriticalRate` sums
+`AbnormalState.Rate[CriDamRate]`, **a title can grant crit by the same channel a crit scroll does** — the
+one measured live at 40.
 
-- [ ] **One live read each with: a socketed weapon, and a character title.** Record which cluster each
-      moves. (The license no longer needs one — it was settled from the binary.)
+- [x] **Character title bonuses** — the abstate channel, already ported. What is missing is only DATA:
+      nothing loads `CT_DataState` and hands the simulation a title's abstate.
+
+### ⭐ Sockets and item options — one channel, and its vocabulary is enumerated
+
+`ShineItemAttr_Weapon` carries four of the operator's sources side by side, which is the clearest single
+view of the whole question:
+
+```
++0x00 upgrade              u8    <- the +N ENCHANT level        -> Upgrade cluster
++0x07 mobkills[18]               <- the LICENSE kill counts      -> WeaponTitle cluster
++0x30 gemSockets[9]              <- { elementalGemID, restCount }
++0x39 maxSocketCount       u8
++0x3A createdSocketCount   u8
++0x40 option    ItemOptionStorage  <- 24 { type, value } pairs   -> Item cluster
+```
+
+A socket is **not its own stat channel**: `gemSockets` records which gem sits in each slot and how many
+uses remain, and the resulting stat is an ordinary option pair. Options are typed by `RandomOptionType`
+(15 values) and read back with `iac_FindOption(item, type)`.
+
+⭐ Two of the fifteen are the crit pair, and they land exactly on the terms `roe_CriticalRate` already
+reads: **`ROT_CRI` -> `Item.Rate[CriDamRate]`** and **`ROT_CRITICAL_TB` -> `Item.Rate[CriticalTB]`**, the
+defender's subtrahend. That is why the live measurement summed cleanly at weapon 90 + costume 70 +
+earrings 40 = 200 — one path into the `Item` cluster, not one per source.
+
+`EnchantSocketRateTable` is about the enchanting PROCESS (the chance of adding socket 0/1/2 by item
+grade), not about what a socket grants.
+
+- [x] **Weapon socketed bonus stones** — the `ItemOptionStorage` -> `Item` cluster path, ported as
+      `Parameter/ItemOptions.cs`. `ROT_WC`, `ROT_MA` and `ROT_DEMANDLVDOWN` are left unmapped on purpose:
+      the first two name a PAIR of bounds rather than one slot, the third has no combat effect.
+
+### Still open
+
+- [ ] ⭐ **CONDITIONAL gems — the mechanism is NOT located.** Operator, 2026-09-02: *"some gems only apply
+      to certain monster TYPES e.g. spirits or beasts, and some only apply to enemies of a certain class
+      (pvp oriented)."* The type axis exists and is named — `MobType`: `MT_HUMAN`, `MT_MAGICLIFE`,
+      `MT_SPIRIT`, `MT_BEAST`, `MT_ELEMENTAL`, `MT_UNDEAD`, `MT_DEVIL`, `MT_META`, plus the
+      non-combat `MT_NPC` / `MT_OBJECT` / `MT_MINE` / `MT_HERB` / `MT_WOOD` / `MT_NOTARGET` /
+      `MT_NODAMAGE`. The class axis would be `cc_BaseClass`.
+
+      **But `RandomOptionType` has no conditional entries**, and `mdb_GetMobType` has only TWO callers
+      (`InteractWithNPC`, `sp_NC_MAP_MULTY_LINK_SELECT_REQ`) — neither on the damage path. So a
+      conditional gem does NOT reach the damage engine through the option list, and the mechanism is
+      something else. Candidates, in order of likelihood: `elementalGemID` resolving to its own table with
+      a condition column; or the gem applying an ABSTATE whose actor tests the defender. **Do not model
+      conditional gems as unconditional option pairs** — that would silently apply an anti-undead bonus to
+      everything.
+
+- [ ] **Load the DATA for what is already modelled.** Three mechanisms are ported with nothing feeding
+      them: `CT_DataState` (title abstates), `WEAPON_TITLE_DATA` (licenses), and item option lists. Each
+      needs a loader before a simulated character carries any of it.
+
+### A note from outside, recorded but NOT adopted
+
+Operator relayed a Discord exchange (2025-10-06) about `PS_ConditionEnum` in **CN files**: that condition
+**0** is used there by default and means *"increased evasion while moving"*, with the remark that "it's
+the while-moving condition that is important, the abstate you choose doesn't matter".
+
+⚠️ **That does not describe THIS binary.** In the 2016 build `cpl_SetAbstate`'s condition-0 arm reads the
+source's equipped weapon and requires `ItemInfo.WeaponType == WT_CROSSBOW (10)` — the check agrees with
+the enum's own name, `PS_CBOWATKRATEKNOCKBACK`. And `smo_SwingDamage` invokes it with the flag hard-coded
+to **1** and the TARGET as the object argument, which suits a knockback applied to whoever was hit and
+not a self-buff for moving.
+
+Two readings, both plausibly true of their own build: the CN server is a different binary, and the
+Discord poster says so. Recorded because if condition 0 ever needs implementing, the CN meaning is a
+strong hint about INTENT — but the arm ported here is the one this executable contains. The shipped 2016
+`PSkillSetAbstate.shn` has **no condition-0 rows at all**, so nothing exercises either reading today.
 
 ## 5. The five damage hooks that no clean swing reaches
 
