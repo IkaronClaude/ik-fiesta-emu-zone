@@ -205,9 +205,34 @@ and applies their parameter effects; nothing can apply, tick or expire one.
       The same type byte is what picks `cannotmove_stun` over `cannotmove_entangle`, so it is now a field
       on `AbstateElementInObject` and the alt-branch rule is the list's own rather than a caller's delegate.
 
-- [ ] **The remaining actors.** Shields and absorbs (`sasa_Act_DamegeAbsorpt`, `sasa_Act_AllDamageAbsorb`),
-      damage-down (`sasa_Act_NormalDamageDown`, `sasa_Act_DotDamageDown`), `sasa_Act_MinHP`, the heals, and
-      `sasa_Act_Killed`. All are one-subclass slots, so each is a small read.
+- [x] **The remaining actors — READ and PORTED** (`Abstate/AbstateDamageCallbacks.cs`). Each was small,
+      as expected; what was NOT expected is that they do not share a convention.
+
+      | actor | action | behaviour |
+      | --- | --- | --- |
+      | `ShieldHPRate::AllDamageAbsorb` | — | an **HP-POOL**: `pool <= dmg` -> the overflow passes THROUGH and the state ends; otherwise the hit is zeroed |
+      | `RangeIntercept::DamegeIntercept` | — | a **COUNTED** absorb: the hit is zeroed whatever its size, one charge spent |
+      | `DamageDownRate::NormalDamageDown` | `SAA_DMGDOWNRATE` 115 | `dmg -= dmg*rate/1000`, and `rate >= 1000` -> 0 |
+      | `DamageDownRate::DotDamageDown` | `SAA_DOTDMGDOWNRATE` 111 | same body, different action |
+      | `MinHP::MinHP` | `SAA_MINHP` 114 | RAISES a floor, so the highest among the states wins and visit order does not matter |
+      | `UseSPDown::UseSPDown` | `SAA_USESPDOWN` 100 | `cost -= cost*rate/1000`, **no `>= 1000` clamp** — a rate above 1000 goes negative |
+      | `SelfRevive::Killed` | `SAA_REVIVEHEALRATE` 40 | `setIsRebirth(1)` then `setHealRate(rate)` |
+      | `PartyRecharge::Killed` | `SAA_DEADHPSPRECOVRATE` 24 | combines with a set-item bonus — **not fully read** |
+
+      ⚠️ **Two shields, two behaviours.** Against a big hit the HP-pool shield breaks and lets the
+      remainder through while the counted absorb eats it whole. Indistinguishable on small hits.
+
+      ⚠️ **The absent-action convention is NOT uniform**, and it has to be read per slot. Damage-down,
+      MinHP and UseSPDown call `assa_IsHaveEffect` first and leave the value ALONE when the action is
+      missing. `LastDamegeInterceptByAtk` and `SelfRevive` call `assa_FindEffect` directly and use its
+      missing-value of **0** — zeroing the damage in one case and reviving at rate 0 in the other.
+
+      ⭐ `UseSPDown` closes a loop: `StaMagicDanceUseSPDown01`..`04`, the abstates the shipped
+      `MagicDance` / `PointAttack` passive rows apply, carry exactly this action. The passive path in task
+      3 and this actor are two ends of one mechanic.
+
+      "The heals" in the original wording resolve to the HP/SP-over-time path already ported as
+      `DotDamage` — there is no separate heal actor slot in the image.
 - [x] **The three abstate damage callbacks** in `roe_CalcDamage`'s tail are READ. Each walks one side's
       `so_mobile_AbstateList` (object vtable +0x52C) and calls one `SubAbnormalStateActor` slot on every
       element:

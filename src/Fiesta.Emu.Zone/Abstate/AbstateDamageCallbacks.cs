@@ -67,6 +67,110 @@ public static class AbstateDamageCallbacks
     public static int LastDamageRateByAttacker(int damage, int totalDamageRatePermille)
         => unchecked(damage * totalDamageRatePermille) / 1000;
 
+    // ---- the one-subclass actor slots -----------------------------------------------------------------
+    //
+    // ⚠️ These all call `assa_IsHaveEffect` FIRST and return when the action is absent, so a row without
+    // the action leaves the damage ALONE. That is the opposite of LastDamageRateByAttacker above, which
+    // multiplies by the missing-value 0 and zeroes it. The two conventions live side by side in the same
+    // family of callbacks, and which one a slot uses is not guessable -- it has to be read.
+
+    /// <summary>`SubAbnormalStateActorShieldHPRate::sasa_Act_AllDamageAbsorb` (0x00402390) — an HP-POOL
+    /// shield, as distinct from the counted absorb in <see cref="RangeIntercept"/>.
+    ///
+    /// <code>
+    /// if (pool &lt;= damage) { damage -= pool; pool = 0; end the state; }   // overflow passes THROUGH
+    /// else                 { pool -= damage; damage = 0; }
+    /// </code>
+    ///
+    /// <para>So a big enough hit breaks the shield and still lands for the remainder, where the counted
+    /// absorb would have eaten it whole. Two shields, two completely different behaviours against one
+    /// large hit — worth keeping straight.</para></summary>
+    /// <param name="pool">The element's remaining absorb pool (+0x54).</param>
+    public static (int Damage, int Pool, bool EndsState) ShieldHpPool(int damage, int pool)
+        => pool <= damage ? (damage - pool, 0, true) : (0, pool - damage, false);
+
+    /// <summary>`SubAbnormalStateActorDamageDownRate::sasa_Act_NormalDamageDown` (0x004023D0) and
+    /// `sasa_Act_DotDamageDown` (0x00402450) — the same body against two different actions,
+    /// <see cref="SubAbstateAction.SAA_DMGDOWNRATE"/> (115) and
+    /// <see cref="SubAbstateAction.SAA_DOTDMGDOWNRATE"/> (111).
+    ///
+    /// <code>
+    /// if (!assa_IsHaveEffect(action)) return damage;        // absent leaves it ALONE
+    /// rate = assa_FindEffect(action);
+    /// if (rate &gt;= 1000) return 0;                          // fully negated, and it is &gt;=, not &gt;
+    /// return damage - (uint)(damage * rate) / 1000;         // UNSIGNED divide
+    /// </code>
+    ///
+    /// <para><b>A REDUCTION, not a scale.</b> A rate of 300 removes 30% and leaves 70% — it does not
+    /// scale the damage to 30%. Getting that inverted would still look plausible on every value and be
+    /// wrong on all of them.</para></summary>
+    /// <param name="ratePermille">The row's argument, or null when the row does not carry the action —
+    /// which is the case that leaves the damage untouched.</param>
+    public static int DamageDown(int damage, int? ratePermille)
+    {
+        if (ratePermille is not { } rate) return damage;
+        if (rate >= 1000) return 0;
+        return damage - (int)((uint)unchecked(damage * rate) / 1000u);
+    }
+
+    /// <summary>`SubAbnormalStateActorMinHP::sasa_Act_MinHP` (0x004024F0) — a FLOOR on HP, raised rather
+    /// than set.
+    ///
+    /// <code>
+    /// if (!assa_IsHaveEffect(SAA_MINHP)) return floor;
+    /// value = assa_FindEffect(SAA_MINHP);
+    /// if (floor &lt; value) floor = value;                    // unsigned compare
+    /// </code>
+    ///
+    /// <para>The pass runs over every element, so the HIGHEST floor among an object's states wins and the
+    /// order they are visited in does not matter. This is what keeps a character at 1 HP rather than
+    /// dead.</para></summary>
+    public static uint MinHp(uint floor, uint? value)
+        => value is { } v && floor < v ? v : floor;
+
+    /// <summary>`SubAbnormalStateActorUseSPDown::sasa_Act_UseSPDown` (0x004021D0) — the same reduction
+    /// shape as <see cref="DamageDown"/>, against <see cref="SubAbstateAction.SAA_USESPDOWN"/> (100), and
+    /// applied to a skill's SP COST rather than to damage.
+    ///
+    /// <para>This is what the shipped `MagicDance` / `PointAttack` passives resolve to — their
+    /// `StaMagicDanceUseSPDown01`..`04` abstates carry this action. So the passive path and this actor are
+    /// two ends of the same mechanic.</para>
+    ///
+    /// <para>Absent leaves the cost alone (`assa_IsHaveEffect` first). Note there is no `&gt;= 1000` clamp
+    /// here, unlike <see cref="DamageDown"/> — a rate above 1000 would make the cost NEGATIVE rather than
+    /// zero. Nothing in the shipped data does that, and the difference is the binary's, not a
+    /// simplification.</para></summary>
+    public static uint UseSpDown(uint spCost, int? ratePermille)
+    {
+        if (ratePermille is not { } rate) return spCost;
+        return spCost - (uint)unchecked((long)spCost * rate) / 1000u;
+    }
+
+    /// <summary>`SubAbnormalStateActorSelfRevive::sasa_Act_Killed` (0x00407910) — what a self-revive
+    /// abstate does when its owner dies.
+    ///
+    /// <code>
+    /// rate = assa_FindEffect(args, SAA_REVIVEHEALRATE /*40*/);
+    /// player-&gt;so_ply_setIsRebirth(1);
+    /// player-&gt;so_ply_setHealRate(rate);
+    /// </code>
+    ///
+    /// <para>⚠️ It uses `assa_FindEffect` DIRECTLY, with no `assa_IsHaveEffect` guard — so a row without
+    /// the action still flags the rebirth and sets the heal rate to <b>0</b>. The guarded and unguarded
+    /// conventions really do sit side by side in this family.</para></summary>
+    /// <returns>The rebirth flag and the heal rate to revive at.</returns>
+    public static (bool Rebirth, int HealRatePermille) SelfRevive(int reviveHealRatePermille)
+        => (true, reviveHealRatePermille);
+
+    /// <summary>`SubAbnormalStateActorPartyRecharge::sasa_Act_Killed` (0x00407730) — the party-recharge
+    /// counterpart, keyed on <see cref="SubAbstateAction.SAA_DEADHPSPRECOVRATE"/> (24).
+    ///
+    /// <para><b>Only partly read.</b> The action lookup is certain; what follows combines it with
+    /// `SetItemAbstateEffect::siae_GetArgument_Base1000ByEffect` — a set-item bonus, the same family as
+    /// the staging buffer in <see cref="Skill.MultiHit"/> — and that combination is not read yet. Stated
+    /// rather than modelled, so nothing here pretends to compute it.</para></summary>
+    public const SubAbstateAction PartyRechargeAction = SubAbstateAction.SAA_DEADHPSPRECOVRATE;
+
     /// <summary>`assa_FindEffect` (0x00416160) — an `AbStateStrArgument` holds FOUR (action, argument)
     /// slots and this is a linear scan of them.
     ///
