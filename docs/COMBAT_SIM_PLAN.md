@@ -680,11 +680,19 @@ The engine reaches a stat through SEVEN container clusters (`Item`, `ItemPowerRa
 `WeaponTitle`, `PassiveSkill`, `AbnormalState`, `LastTune`), each with a Plus and a Rate half — but not
 every source goes through a cluster at all. Three distinct mechanisms are now known:
 
-1. **cluster** — folded into the container, read by every accessor that reads that cluster;
-2. **dedicated `ShinePlayer` field** — outside the container entirely (the license damage bonus);
-3. **global staging buffer** — `setitemskilleffect`, rebuilt per caster (set bonuses).
+1. **a cluster staged once**, at equip — ordinary gear;
+2. **a cluster RE-STAGED per swing**, against the current target — weapon licenses, which is how a
+   per-mob-type bonus lives in a per-character container (`smo_SwingDamage` calls
+   `smo_ply_WeaponTitleSet(defenderMobId)` every swing);
+3. **a global staging buffer** — `setitemskilleffect`, rebuilt per caster (set bonuses), outside the
+   container entirely.
 
-Anything modelled as (1) that is really (2) or (3) will be silently absent from the simulation.
+Anything modelled as (1) that is really (2) is present but frozen on the wrong target; anything that is
+really (3) is silently absent.
+
+⚠️ An earlier version of this section listed "dedicated `ShinePlayer` fields" as mechanism 2. That was a
+misread — see the license section below. Object-relative offsets in the 0x1500-0x1700 range land INSIDE
+the container, which is embedded at +0xFC0.
 
 ### Settled, with evidence
 
@@ -696,10 +704,9 @@ Anything modelled as (1) that is really (2) or (3) will be silently absent from 
 | MEN | no cluster — a table lookup in `roe_FreeStatCriRate` | live table, 25 MEN = 50 |
 | weapon enchant (+N) | `Upgrade` cluster | the weapon-damage accessors read `Upgrade.Plus`, fuzz-verified |
 
-### ⭐ Licenses / weapon titles — READ, and they split in two
+### ⭐ Licenses / weapon titles — READ, PORTED, and my first reading was WRONG
 
-`WEAPON_TITLE_DATA` (64 bytes) is the whole mechanic and matches the operator's description field for
-field:
+`WEAPON_TITLE_DATA` (64 bytes) matches the operator's description field for field:
 
 ```
 +0x00 MobID          u16     <- the license is keyed to a MOB TYPE
@@ -707,33 +714,48 @@ field:
 +0x23 MobKillCount   u32     <- "depending on how many you killed"
 +0x27 MinAdd         u16     <- the damage bonus
 +0x29 MaxAdd         u16
-+0x2B SP1_Reference/Type/Value, then SP2, SP3   <- three per-level options
++0x2B SP1_Reference/Type/Value, then SP2, SP3
 ```
 
-`smo_ply_WeaponTitleSet(mobId)` (`ShinePlayer` 0x00569CD0) looks the row up for the equipped weapon and
-the given mob id, then:
+`ShinePlayer::smo_ply_WeaponTitleSet(mobId)` (0x00569CD0) looks the row up for the equipped weapon and the
+given mob id. ⭐ **It is called from `smo_SwingDamage` with the DEFENDER's mob id** (vtable +0xEC8), so a
+license is re-staged on EVERY SWING against whatever is being hit. That is how "only against Orcs" is
+implemented without the container knowing about targets: the cluster is rebuilt per swing.
 
-- **`MinAdd` / `MaxAdd` -> `ShinePlayer` fields +0x1634/+0x1638 and +0x1648/+0x164C.** NOT a cluster. And
-  the function takes a **mob id**, so this is re-staged per TARGET TYPE — which is exactly the operator's
-  "only against a mob of this type". A simulation must call it on target change, not once at equip.
-- **`SP1..SP3` -> `sp_WeaponTitleOption(Reference, Type, Value)`**, which implements exactly ONE case:
-  `Reference == 1 && Type == 1` accumulates into `ShinePlayer+0x16A0`; everything else logs "Invalid".
+⚠️ **The correction.** An earlier pass here called the destinations "dedicated `ShinePlayer` fields, NOT
+in the container", and built a whole three-mechanism taxonomy on that. It is wrong. The container is
+embedded in the object at **+0xFC0** and `WeaponTitle.Rate` sits at container **+0x660**, so every one of
+those offsets is an ordinary cluster slot:
 
-⭐ **This explains `WeaponTitle.Rate[CriDamRate]`** — the cluster `roe_CriticalRate` reads and that this
-port had never seen WRITTEN. The unconditional half of a license is its crit, so a licensed weapon's crit
-should arrive there and the existing crit model already handles it, provided a caller seeds the cluster.
-That is a hypothesis with a named test below, not a claim.
+```
+object +0x1634  =  WeaponTitle.Rate[WCmin]        = MinAdd
+object +0x1638  =  WeaponTitle.Rate[WCmax]        = MaxAdd
+object +0x1648  =  WeaponTitle.Rate[MAmin]        = MinAdd     // the magic pair gets the same numbers
+object +0x164C  =  WeaponTitle.Rate[MAmax]        = MaxAdd
+object +0x16A0  =  WeaponTitle.Rate[CriDamRate]  += Value      // sp_WeaponTitleOption, ref 1 / type 1
+```
 
-- [ ] **Find the damage path's consumer of `ShinePlayer+0x1634/+0x1638`.** A displacement scan finds only
-      `smo_ply_WeaponTitleSet` (the writer) and `sp_ParameterView` (the stat-panel packet) — and per this
-      project's own rule that is NOT a negative result: a computed-index read is invisible to such a scan,
-      and this binary's COMDAT folding makes one actively misleading. Until the consumer is found, the
-      **+20% to +40% versus the licensed mob type is entirely unmodelled**.
-- [ ] **Confirm the license crit lands in `WeaponTitle.Rate[CriDamRate]`** with a live container read on a
-      character holding a levelled license. If it does, crit from licenses is already correct and only the
-      seeding is missing. If it does not, the crit model has a source it cannot see.
-- [ ] **Decode `sp_WeaponTitleOption`'s `Type` space.** Only `Type == 1` is implemented; whether crit is
-      that one type or arrives by another route is unread.
+**So the arithmetic was already modelled all along** — the weapon accessors read `WeaponTitle.Rate` and
+`roe_CriticalRate` reads `WeaponTitle.Rate[CriDamRate]`. The only thing missing was the STAGING, now
+ported as `Parameter/WeaponTitleLicense.cs`. The lesson: **resolve an object-relative offset against the
+embedded container before concluding it is a bespoke field.** The base implementation gave it away by
+refilling +0x1554/+0x1620 from the plus and rate ERASERS — a bespoke field would not be eraser-filled.
+
+⭐ **This also answers the open question about `CriDamRate`.** The rate eraser seeds 1000 into nearly every
+slot, yet a live container reads **0** at `CriDamRate` in exactly the three clusters `roe_CriticalRate`
+sums. `smo_ply_WeaponTitleSet` is one of the three: it refills the cluster from the erasers and then
+explicitly zeroes `CriDamRate` and `MagCriDamRate`. `ParameterCluster.RateZeroedAfterErase` had those two
+slots listed from the live read alone — the inference is now sourced.
+
+`sp_WeaponTitleOption(Reference, Type, Value)` implements exactly ONE case: `Reference == 1 && Type == 1`
+accumulates into `CriDamRate`; every other combination hits an "Invalid" log and does nothing. That the
+single honoured option is the crit is consistent with the crit being the unconditional half.
+
+- [x] **The damage path's consumer of the license bonus** — it is the ordinary weapon accessors, via
+      `WeaponTitle.Rate`. There was never a missing consumer; there was a missing staging step.
+- [x] **The license crit lands in `WeaponTitle.Rate[CriDamRate]`** — read from the writer, no live test
+      needed after all.
+- [x] **`sp_WeaponTitleOption`'s `Type` space** — only (1, 1) is implemented, and it accumulates.
 
 ### Still unaccounted for
 
@@ -758,9 +780,8 @@ Live container reads, the way the crit model was settled ([[fiesta-live-containe
 item, read the container, see which cluster moved. One read per source, exact, and it sees the
 computed-index writes a static scan cannot.
 
-- [ ] **One live read each with: a levelled license, a socketed weapon, a character title.** Record which
-      cluster (or which `ShinePlayer` field) each moves. This single session would close four of the items
-      above.
+- [ ] **One live read each with: a socketed weapon, and a character title.** Record which cluster each
+      moves. (The license no longer needs one — it was settled from the binary.)
 
 ## 5. The five damage hooks that no clean swing reaches
 
