@@ -817,12 +817,29 @@ grade), not about what a socket grants.
 
 ### Still open
 
-- [ ] ⭐ **CONDITIONAL gems — the mechanism is NOT located.** Operator, 2026-09-02: *"some gems only apply
-      to certain monster TYPES e.g. spirits or beasts, and some only apply to enemies of a certain class
-      (pvp oriented)."* The type axis exists and is named — `MobType`: `MT_HUMAN`, `MT_MAGICLIFE`,
-      `MT_SPIRIT`, `MT_BEAST`, `MT_ELEMENTAL`, `MT_UNDEAD`, `MT_DEVIL`, `MT_META`, plus the
-      non-combat `MT_NPC` / `MT_OBJECT` / `MT_MINE` / `MT_HERB` / `MT_WOOD` / `MT_NOTARGET` /
-      `MT_NODAMAGE`. The class axis would be `cc_BaseClass`.
+- [x] **CONDITIONAL gems — SEARCHED, and not present in this binary.** Operator, 2026-09-02: *"some gems
+      only apply to certain monster TYPES e.g. spirits or beasts, and some only apply to enemies of a
+      certain class (pvp oriented)."*
+
+      The type axis exists and is named — `MobType`: `MT_HUMAN`, `MT_MAGICLIFE`, `MT_SPIRIT`, `MT_BEAST`,
+      `MT_ELEMENTAL`, `MT_UNDEAD`, `MT_DEVIL`, `MT_META`, plus the non-combat `MT_NPC` / `MT_OBJECT` /
+      `MT_MINE` / `MT_HERB` / `MT_WOOD` / `MT_NOTARGET` / `MT_NODAMAGE`. But nothing connects it to a gem:
+
+      | where I looked | result |
+      | --- | --- |
+      | `RandomOptionType` (15 values) | no conditional entries |
+      | `ItemInfo` columns | crit family only, no species/class column |
+      | `ItemOptions.shn` | `OptionDegree`, `Type`, `Interval`, `Rate[9]` — no condition |
+      | `GradeItemOption.shn` | flat stats |
+      | `MobSpecies.shn` | id -> four names, no stats |
+      | the 121 `SubAbstateAction` values | `SAA_TARGET*` is about WHO an effect targets, not mob type |
+      | `mdb_GetMobType` callers | only `InteractWithNPC` and `MULTY_LINK_SELECT` — neither on the damage path |
+
+      ⚠️ **A bounded negative, stated as one.** A computed-index path could still hide from all of this, so
+      this is "searched these seven places and found nothing", not "proved absent". But it is the same
+      shape as the CN `PS_Condition` divergence below: the operator knows a server that has the feature,
+      and this 2016 executable appears not to. **Do not model conditional gems as unconditional option
+      pairs** — that would silently apply an anti-undead bonus to everything.
 
       **But `RandomOptionType` has no conditional entries**, and `mdb_GetMobType` has only TWO callers
       (`InteractWithNPC`, `sp_NC_MAP_MULTY_LINK_SELECT_REQ`) — neither on the damage path. So a
@@ -832,9 +849,37 @@ grade), not about what a socket grants.
       conditional gems as unconditional option pairs** — that would silently apply an anti-undead bonus to
       everything.
 
-- [ ] **Load the DATA for what is already modelled.** Three mechanisms are ported with nothing feeding
-      them: `CT_DataState` (title abstates), `WEAPON_TITLE_DATA` (licenses), and item option lists. Each
-      needs a loader before a simulated character carries any of it.
+- [x] **Load the DATA — licenses done, and the numbers confirm the model.**
+      `Data/WeaponTitleCatalog.cs` loads all **1,971** rows of `WeaponTitleData.shn`, keyed per mob and
+      ordered by level, with `EarnedLevel(mobId, kills)` giving the last COMPLETED tier. Five tests run
+      against the real file.
+
+      ⭐ **The measured values confirm the operator's description exactly.** `MinAdd`/`MaxAdd` are permille
+      rates on the weapon bounds, and the table holds two progression tracks:
+
+      | track | levels | rates | as percent |
+      | --- | --- | --- | --- |
+      | standard | 0-5 | 1150, 1200, 1250, 1300, 1350, 1400 | **+15% to +40%**, 5% a step |
+      | extended | 0-9 | 1300 .. 1800 | +30% to +80%, 10% a step |
+
+      The operator said *"+20% to +40% depending on how many you killed"* — that is the standard track to
+      the point. And **878 of 1,971 levels carry an SP option**, i.e. the crit half appears on 45% of
+      tiers and grows with level, exactly as described.
+
+- [x] **Load the remaining tables — done, and one of them turned out not to be a table at all.**
+
+      `Data/CharacterTitleCatalog.cs` loads `CharacterTitleStateServer.shn` (823 rows,
+      `Type` / `TitleLV` / `StateName` / `Strength`), keyed per (title type, tier). A blank `StateName` is
+      a tier with no stat effect — real and common — so it is skipped and the lookup returns null rather
+      than an unresolvable abstate. ⚠️ This is the file the earlier wrong conclusion missed:
+      `CharacterTitleData.shn` holds definitions, THIS holds the effects.
+
+      **Item options need no loader.** `ItemOptions.shn` is a `{ OptionDegree, Type, Interval, Rate[9] }`
+      ROLL table — how an item gets options when generated — and `RandomOption.shn` /
+      `RandomOptionCount.shn` are the same family. A character's actual socketed options are INSTANCE
+      state on the item (`ItemOptionStorage` inside `SHINE_ITEM_STRUCT`), not a static row, so the caller
+      supplies them and `Parameter/ItemOptions.cs` is already that shape. Item GENERATION is a separate
+      subsystem this plan does not cover.
 
 ### A note from outside, recorded but NOT adopted
 
