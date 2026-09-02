@@ -419,7 +419,7 @@ public static class DamageCalculator
     public static double AttackPower(ICombatant attacker, int rollPermille,
                                     EngagementRule rule = EngagementRule.NormalPhysical,
                                     int hpMissingPermille = 0,
-                                    int itemActionRatePermille = 1000,
+                                    ItemActionResults? itemActions = null,
                                     ActiveSkillInfo? skill = null,
                                     SkillEmpower empower = default)
     {
@@ -456,18 +456,18 @@ public static class DamageCalculator
         high += empowerTerm;
 
         // `EventRun_IncDmgRate` / `EventRunBySkillGroupIndex`, +0x1E9..+0x2D6: the attacker's item-action
-        // manager AND the defender's, folded into one permille.
+        // manager AND the defender's, collected into ONE ActionResults.
         //
         // ⚠️ It applies to EACH BOUND, before the roll -- NOT to the rolled figure, which is where an
-        // earlier version of this port put it. The whole block is skipped unless one of the two EventRun
-        // calls reports an action fired, which is why a neutral rate must be a no-op here rather than a
-        // multiply by 1000: the server does not merely multiply by one, it does not run the step at all.
-        // The distinction is visible because each bound is TRUNCATED to an integer (`fistp`, round-toward-
+        // earlier version of this port put it. Each bound is TRUNCATED to an integer (`fistp`, toward
         // zero) on the way into GetRateAppliValue.
-        if (itemActionRatePermille != NeutralRatePermille)
+        // ⚠️ The gate is "did any action fire", not "is the rate neutral". With no results the block is
+        // skipped whole and the bounds are never truncated; with results, each bound goes through
+        // GetRateAppliValue, which COMPOUNDS the results one at a time with a truncating divide each.
+        if (itemActions is { Count: > 0 })
         {
-            low = ApplyRate(Ftol32(low), itemActionRatePermille);
-            high = ApplyRate(Ftol32(high), itemActionRatePermille);
+            low = itemActions.Apply((int)Ftol32(low));
+            high = itemActions.Apply((int)Ftol32(high));
         }
 
         // The range goes through _ftol because the server's RNG takes an int.
@@ -536,7 +536,7 @@ public static class DamageCalculator
                          || (mods.ForceCritical ?? rng.Next(0, 1000) < mods.CriticalChancePermille);
 
         var attackPower = AttackPower(attacker, rollPermille, rule, mods.AttackerHpMissingPermille,
-                                      mods.ItemActionDamageRatePermille);
+                                      mods.ItemActions);
         var defendPower = DefendPower(defender, rule, mods.DefenderHpMissingPermille);
 
         var damage = CoreDamage(attackPower, defendPower, attacker.Level, mods.BaseDamageRatePermille);

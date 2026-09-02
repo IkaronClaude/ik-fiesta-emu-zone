@@ -109,16 +109,22 @@ public sealed record AttackModifiers
     /// <inheritdoc cref="AttackForceRate1024"/>
     public int DefendForceRate1024 { get; init; }
 
-    /// <summary>`ItemActionObserveManager::EventRun_IncDmgRate` — the item-action rate chain, in permille,
-    /// applied to BOTH weapon bounds before the min..max roll.
+    /// <summary>`ItemActionObserveManager::EventRun_IncDmgRate` — the item-action results, applied to
+    /// BOTH weapon bounds before the min..max roll.
     ///
-    /// <para>`roe_AttackPower+0x129/+0x155` runs it on the ATTACKER's manager and then the DEFENDER's, and
-    /// `GetRateAppliValue` folds the results into one rate. The defender's manager being consulted is the
-    /// surprise: a player's own gear can scale the damage they RECEIVE.</para>
+    /// <para>`roe_AttackPower+0x129/+0x155` runs it on the ATTACKER's manager and then the DEFENDER's,
+    /// accumulating into one `ActionResults`. The defender's manager being consulted is the surprise: a
+    /// player's own gear can scale the damage they RECEIVE.</para>
     ///
-    /// <para>1000 is neutral. Verified by oracle to sit BEFORE the roll and before the mastery rate — the
-    /// same place the skill-empower term lands.</para></summary>
-    public int ItemActionDamageRatePermille { get; init; } = 1000;
+    /// <para>⚠️ <b>Not a single rate.</b> `GetRateAppliValue` COMPOUNDS the results one at a time, each
+    /// with its own truncating divide, so they cannot be pre-multiplied into one number — see
+    /// <see cref="ItemActionResults"/>. Null (or empty) is the neutral case, and it is a genuinely
+    /// different code path rather than a multiply by one: the whole block is gated on an action having
+    /// fired, and skipping it also skips the truncation of the bounds.</para>
+    ///
+    /// <para>Verified by oracle to sit BEFORE the roll and before the mastery rate — the same place the
+    /// skill-empower term lands.</para></summary>
+    public ItemActionResults? ItemActions { get; init; }
 
     /// <summary>`ShinePlayer::so_ply_DecreaseDmgPassiveSkill` (0x005651E0) — the one hook that can REDUCE
     /// incoming damage, run on the DEFENDER at `roe_CalcDamage+0x59E`.

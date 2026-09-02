@@ -32,9 +32,33 @@ Every swing the simulator already makes is affected. Today swings never miss, ne
       pointer arrays at 0x0DA50BC4 (Str), BC8 (Int), BCC (Dex), BD0 (Con), BD4 (Men) and embedded verbatim
       as `FreeStatTables`. The curves the earlier version computed are kept only as comments, held against
       the data by a test, because the operator asked for the tables themselves rather than a fit to them.
-- [ ] **Item actions.** `ItemActionObserveManager::EventRun` is not modelled; `ItemActionRates.None` keeps
-      the roll ORDER honest (the extra draws are skipped exactly where the server skips them) without
-      pretending to compute anything.
+- [x] **Item actions — the DAMAGE half is READ and PORTED** (`Combat/ItemActionResults.cs`).
+      `EventRun_IncDmgRate` (0x005D2010) is three null gates and then a fixed argument: event selector
+      **9**, slot mask **0xFFFF**, `subject` = attacker, `object` = defender.
+
+      What the damage path consumes is `ActionResults::GetRateAppliValue` (0x005D0C20), and its shape was
+      the surprise:
+
+      ```
+      if (value == 0) return 0;
+      for (i = 0; i < count; i++)
+          value = (uint)(value * result[i].rate) / 1000;     // UNSIGNED, truncating, EVERY step
+      ```
+
+      ⭐ **The results COMPOUND and each truncates on its own.** Three results of 1100 are not one rate of
+      1331 and are certainly not a sum: the intermediate is floored after every step, so summing or
+      pre-multiplying both drift, and drift further the more results there are. **Order matters too** —
+      `[300, 7000]` on a value of 5 gives 7 while `[7000, 300]` gives 10, because the small rate first
+      floors 1.5 to 1 and the chain never recovers. That is why `AttackModifiers` now carries an
+      `ItemActionResults` sequence rather than a single permille.
+
+      ⚠️ **"No actions" is a different PATH from "a neutral rate".** `roe_AttackPower` gates the whole
+      block on an action having fired, and inside the block each bound is truncated to an integer on the
+      way past — so skipping it also skips a truncation.
+
+      Still unmodelled: `_EventRun`'s dispatcher, i.e. WHICH items produce results and with what rates.
+      That is item-and-condition data, not damage arithmetic, and nothing in the damage path needs it —
+      the fold above is the whole interface between the two.
 
 ### Started 2026-09-01 — where the rolls actually live
 
@@ -600,8 +624,8 @@ Four of the five are now read; the fifth is the item-action machinery in task 1'
       under all three readings**, because the arithmetic never changed — only the prose was ever at risk,
       which is exactly why the unit is now stated with its evidence.
 
-- [ ] **`EventRun_IncDmgRate` item actions** — the same item as task 1's, below. The only hook of the five
-      still unmodelled.
+- [x] **`EventRun_IncDmgRate` item actions** — done; see task 1's entry for the compounding fold. **All
+      five hooks are now read.**
 
 ## 6. Instrument work these depend on
 

@@ -73,19 +73,22 @@ public class DamageHookTests
         (halved - plain / 2).ShouldBeInRange(-1, 1);
     }
 
-    /// <summary>`EventRun_IncDmgRate` folds the ATTACKER's item actions and the DEFENDER's into one
-    /// permille and applies it inside attack power — before the mastery rate, which the oracle confirmed.
-    /// 1000 is neutral.</summary>
+    /// <summary>`EventRun_IncDmgRate` collects the ATTACKER's item actions and the DEFENDER's into one
+    /// `ActionResults` and applies it inside attack power — before the mastery rate, which the oracle
+    /// confirmed. No results is the neutral case.</summary>
     [Fact]
-    public void TheItemActionRateScalesAttackPowerNotTheFinalDamage()
+    public void TheItemActionResultsScaleAttackPowerNotTheFinalDamage()
     {
         var attacker = Attacker();
         var plain = DamageCalculator.AttackPower(attacker, rollPermille: 500);
         var boosted = DamageCalculator.AttackPower(attacker, rollPermille: 500,
-                                                   itemActionRatePermille: 2000);
+                                                   itemActions: new ItemActionResults([2000]));
 
-        boosted.ShouldBe(plain * 2, tolerance: 0.001);
-        DamageCalculator.AttackPower(attacker, 500, itemActionRatePermille: 1000).ShouldBe(plain);
+        // Not exactly 2x: the bounds are truncated to integers before the rate is applied, which the
+        // untouched path never does. Being within a unit of double IS the finding.
+        (boosted - plain * 2).ShouldBeInRange(-2, 2);
+        DamageCalculator.AttackPower(attacker, 500, itemActions: ItemActionResults.None)
+            .ShouldBe(plain, "an empty result set is the gate staying shut, so nothing is truncated");
     }
 
     /// <summary>None of the hooks moves a swing that does not use them — which is what keeps the 556/556
@@ -96,7 +99,7 @@ public class DamageHookTests
         var m = AttackModifiers.Default;
         m.AttackForceRate1024.ShouldBe(0);
         m.DefendForceRate1024.ShouldBe(0);
-        m.ItemActionDamageRatePermille.ShouldBe(1000);
+        m.ItemActions.ShouldBeNull("no item actions is the default, and it is the gate staying shut");
         m.DecreaseDamagePassivePermille.ShouldBe(1000);
 
         DamageCalculator.ResolveDamage(Attacker(), Defender(), Pinned)
