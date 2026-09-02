@@ -316,9 +316,12 @@ with a debuff used repeatedly against the same target.
 
 Nothing exists. `SkillDataBox` reads `CastTime`/`DlyTime` for attack intervals only.
 
-- [ ] **`SkillDataIndex::sdi_DamageRule`** (+0x70) — a skill brings its own `RulesOfEngagement`, which is
-      where `roe_magical` / `roe_physical` enter and therefore where all caster damage lives.
-      `sdi_Activ` (+0x04) is the `ActiveSkillInfo` row, `sdi_AttackDist` (+0x74) the range.
+- [x] **`SkillDataIndex::sdi_DamageRule`** (+0x70) — confirmed in use, and it is the ONLY rules pointer
+      the skill path touches. `smo_SkillBlast` loads `[sklinfo+0x70]` and calls its `roe_HitRate` (slot 6),
+      `roe_HitRateByGlobalAction` (slot 11) and `roe_CalcDamage` (slot 7) through it — so which rule a
+      skill uses is per-skill DATA, not a property of the caster's class. `sdi_Activ` (+0x04) is the
+      `ActiveSkillInfo` row (read by `roe_AttackPower`), `sdi_ServInf` (+0x00) the `ActiveSkillInfoServer`
+      row (read by `roe_HitRate`), `sdi_AttackDist` (+0x74) the range.
 - [x] **`MiscDataTable::mdt_ArgumentLoad`** (0x004A6110) — read and ported, and it is **CONDITIONAL**,
       which the plan did not anticipate. The row is keyed by skill id (`bsearch` over 20-byte
       `MiscData_VarifyByAbstate` rows at `this+0x3460`) but it only fires when the DEFENDER currently
@@ -404,8 +407,53 @@ Nothing exists. `SkillDataBox` reads `CastTime`/`DlyTime` for attack intervals o
       block is gated shut when no item action fires, so the default neutral rate never exercised it, and
       the 556/556 ground truth is unchanged either way. Fixed, with the gate modelled as a gate rather
       than as a multiply by 1000.
-- [ ] **`smo_SkillBlast`** (0x00581452 constructs the EngageArgument) and the multi-hit path
-      (`MultiHitArgument`, `EngageArgument+0x24`).
+- [x] **`smo_SkillBlast` and the multi-hit path — READ and PORTED** (`Skill/MultiHit.cs`).
+
+      `EngageArgument+0x24` is `pMultiHitArg`. The surprise is where it is NOT used: **`roe_CalcDamage`
+      never scales damage by the multi-hit rate.** It reads the pointer exactly once, at +0x1AE, to gate
+      the CRITICAL STUN:
+
+      ```
+      arg->iscritical = 1;                                    // set BEFORE the branch
+      if (pMultiHitArg == null)              roe_CriticalStun(arg);   // a plain swing always tries
+      else if (pMultiHitArg->mha_DamageRate > 0) roe_CriticalStun(arg);
+      // otherwise skipped entirely
+      ```
+
+      So a filler strike carrying no damage rate can be flagged critical and never stun, while an ordinary
+      swing always makes the attempt — a property of the individual STRIKE, not of the skill. Critical
+      damage is unaffected either way.
+
+      The scaling is the CALLER's, at `smo_SkillBlast+0x93B`, on the finished integer:
+
+      ```
+      dmg = sdi_DamageRule->roe_CalcDamage(arg);
+      dmg = (uint)(dmg * serverRate) / 1000;      // UNSIGNED  (mul 0x10624DD3; shr edx,6)
+      dmg = (dmg * mha_DamageRate) / 1000;        // SIGNED, truncating (imul; sar; sign fixup)
+      if (scaled > 0 && dmg == 0 && mha_DamageRate > 0) dmg = 1;
+      ```
+
+      **The two divides are different divides** and disagree on a negative product, and the floor to 1 is
+      conditional on three things — so a low-rate tick can never be rounded away while a zero-rate tick
+      stays at zero. `tools/oracle_multihit.py` drives that exact instruction block: **12 of 12 cases
+      agree** with the port.
+
+      The sequence itself is `MultiHitData::MultiHitElement` — up to 160 `OneHit` rows with `mhe_ArrayCnt`
+      live, each carrying `oh_HitTimeRate`, `oh_DamageRate`, `oh_AreaStep` and an abstate triple; loaded by
+      `mht_Load` from `9Data/Shine/MultiHitType.shn` into `_MultiHitTable` (0x0DA29384).
+
+- [ ] **Two unnamed server-wide rate globals**, found while reading the above and NOT identified.
+      `0x1325EDB8` scales damage and `0x1325EDE4` scales hit rate, both as permille against the same
+      1000. The PDB names neither — they resolve only to `setitemskilleffect + 0x8 / +0x34`, a
+      neighbouring symbol, which is not an identification. They behave as rate multipliers and 1000 is the
+      no-op, which is why the port defaults them there. **Read them out of a live zone before describing
+      them as configured rates** ([[fiesta-live-container-read]] has the method).
+
+- [ ] **The rest of `smo_SkillBlast`** — 6.6KB, of which this read covers the EngageArgument construction
+      (+0x52), the hit/miss rolls through `sdi_DamageRule`, and the damage arithmetic. Target selection
+      (`alsst_SkillBlast`, `alsst_SkillBlast_RandomTarget`), the effect container
+      (`SkillBlastEffectContainer::sbec_Store` / `sbec_Routine`, which is what makes a sequence land over
+      TIME) and `mdt_PostSkillBlast` are not read.
 - [ ] **Mob skill use** — `OPEN_QUESTIONS.md` §1. `AttackElement4Mob`'s 500-entry sequence,
       `so_mob_SelectWeapon`'s WELL512 roll against `sm_GetUseWeaponRate`, and the `sm_SkillExchange_*`
       predicates that are currently placeholders. **1,324 mobs have more than one weapon and the simulation
