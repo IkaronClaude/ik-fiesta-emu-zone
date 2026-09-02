@@ -349,3 +349,28 @@ Kept because the shape of the near-miss is worth remembering: a ranged attacker 
 attack value is very easy to remember as a magic attacker. Had this been resolved by inference instead of a
 check, the tempting move would have been to "fix" the port to match the recollection — and
 `MobWeapon.IsMagical` would now be lying about 2,878 mobs to accommodate one.
+
+## LongCaptureNoDc misses by ~10%, on SWINGS as well as skills — OPEN, and probably the fixture
+
+Ran as an independent control on the skill work: a second, unrelated physical capture (levels 5–13,
+skills `TripleHit01` / `SeverBone01` / `RedSlash01`) against a model that scores 545/545 on
+`FighterDamageLvl60`. It does **not** reproduce that result — 19 inside, 169 over, 119 unpredictable.
+
+**But the same capture's plain SWINGS miss too**: 119 of 354 hits in 35 overshooting buckets, where the
+swing check is 510/510 on the level-60 capture. A miss that lands on both paths equally is not in the
+skill path; it is in an input they share.
+
+Two candidates, neither yet tested:
+
+- **Level.** `roe_Damage` scales by `(attackerLevel + 1)`, and this capture runs at levels 5–13 where
+  being one level low is an 8–17% under-prediction. The observed median overshoot is 7–10%. The level is
+  tracked as an absolute from `NC_CHAR_CLIENT_BASE_CMD` re-asserted per login and incremented per
+  `NC_BAT_LEVELUP_CMD`; a missed level-up at the front of the capture would do exactly this.
+- **Gear the capture never announced.** It starts mid-session: 119 of 307 skill hits and 138 swings are
+  refused outright for having no known weapon, so the equipment state is admittedly incomplete. What is
+  missing for those is missing for the rest too.
+
+⚠️ **This does not put the 545/545 in doubt, and it must not be used to.** The level-60 capture carries
+complete state — every hit is predicted, none refused — while this one cannot say whether the model or
+its own inputs are wrong. Worth resolving because a control that only works on one capture is a weak
+control; not worth "fixing" the model against until the level and the gear are pinned down first.
