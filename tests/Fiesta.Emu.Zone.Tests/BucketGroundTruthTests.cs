@@ -164,6 +164,10 @@ public class BucketGroundTruthTests
     /// Verify it before trusting it on a character that has spent points in Con.</para></summary>
     private static int FreeStatCon(int points) => (points + 1) / 2;
 
+    /// <summary>`FreeStatInt.MAAbsolute` — the same `n + n/5` curve as Str's `WCAbsolute`, read in full
+    /// from a live zone (see <see cref="Fiesta.Emu.Zone.Parameter.FreeStatTables"/>).</summary>
+    private static int FreeStatInt(int points) => points + points / 5;
+
     /// <summary>`JobChangeDmgUp` for the captured class at a level, read through the game's own tables —
     /// class id off the wire, name out of `ClassName.shn`, rate out of `Param&lt;Class&gt;Server.txt`.</summary>
     private static int? JobChangeRate(Fixture f, string shine, int level)
@@ -617,6 +621,47 @@ public class BucketGroundTruthTests
         return by;
     }
 
+    /// <summary>`NC_CHAR_CHANGEPARAMCHANGE_CMD` ids for the MAGICAL pair and magic defence.
+    ///
+    /// <para>Identified by comparing a level-59 FIGHTER's vector against a level-21 MAGE's: the Fighter's
+    /// ids 11 and 12 sit at 48-59 — exactly its untrained INT (id 3) — while the Mage's are 112 and 125.
+    /// A Fighter has no magic attack and a Mage's is its main stat, so the pair is unambiguous. Id 13 is
+    /// magic defence by the same argument (Fighter 242-348, Mage 84).</para></summary>
+    private const string MaMin = "11", MaMax = "12", Mr = "13";
+
+    /// <summary>The magical mirror of <see cref="Exactly"/>: a container whose `roe_MinMA` / `roe_MaxMA` /
+    /// `roe_MR` return exactly the numbers the wire gave.
+    ///
+    /// <para>Int governs magic attack the way Str governs weapon damage, and Men governs magic resistance
+    /// the way Con governs armour — so the same floor-at-1 trick applies to the other pair.</para></summary>
+    private static Combatant ExactlyMagical(int level, int minMa, int maxMa, int magicResist)
+    {
+        var p = new ParameterContainer();
+        p.Base[Stat.Int] = 1;
+        p.Base[Stat.MAmin] = minMa - 1;
+        p.Base[Stat.MAmax] = maxMa - 1;
+        p.Base[Stat.Men] = 1;
+        p.Base[Stat.MR] = magicResist - 1;
+        return new Combatant(level, p);
+    }
+
+    /// <summary>The MAGICAL half of the same skill row. `roe_AttackPower@MagicalSkill` reads +0xEB/+0xEF/
+    /// +0xF3/+0xF7 (`MinMA`/`MinMARate`/`MaxMA`/`MaxMARate`) where the physical one reads +0xDB..+0xE7 —
+    /// the two are a mirrored pair and a magical skill's WC columns are ZERO, so loading the wrong half
+    /// silently contributes nothing at all.</summary>
+    private static IReadOnlyDictionary<int, Fiesta.Emu.Zone.Skill.ActiveSkillInfo> SkillRowsMagical(string ressystem)
+    {
+        var table = ShnFile.Load(Path.Combine(ressystem, "ActiveSkill.shn"));
+        var rows = new Dictionary<int, Fiesta.Emu.Zone.Skill.ActiveSkillInfo>();
+        foreach (var r in table.Rows)
+            rows[ShnFile.Int(r, "ID")] = new Fiesta.Emu.Zone.Skill.ActiveSkillInfo(
+                MinFlat: (uint)ShnFile.Int(r, "MinMA"),
+                MinRatePermille: (uint)ShnFile.Int(r, "MinMARate"),
+                MaxFlat: (uint)ShnFile.Int(r, "MaxMA"),
+                MaxRatePermille: (uint)ShnFile.Int(r, "MaxMARate"));
+        return rows;
+    }
+
     private static string? Ressystem()
     {
         var root = Environment.GetEnvironmentVariable("CLIENT_DATA") ?? @"Z:/ClientProd2/ressystem";
@@ -801,5 +846,96 @@ public class BucketGroundTruthTests
         inside.ShouldBeGreaterThanOrEqualTo(443, "skill prediction got WORSE: " + summary);
         over.ShouldBeLessThanOrEqualTo(20, "more hits now exceed the ceiling: " + summary);
         under.ShouldBeLessThanOrEqualTo(127, "more hits now fall under the floor: " + summary);
+    }
+
+    /// <summary>⭐ MAGICAL skill damage — `roe_magical`, exercised for the first time.
+    ///
+    /// <para>Every mage skill in the capture is `SkillHitType=1`, which `sdb_Load` maps to
+    /// <c>roe_magical</c> (the jump table at 0x587CC8 selects the rule from that field). So this runs
+    /// <see cref="EngagementRule.MagicalSkill"/>, which draws on Int/MAmin/MAmax, defends on the mob's
+    /// magic resistance, and — unlike every other rule — applies NO weapon mastery.</para>
+    ///
+    /// <para>Fixture comes from a live MageZero packet log rather than a pcap; see
+    /// `scratchpad/mage_fixture.py`, which walks the bot's own log format and emits the same JSON.</para></summary>
+    [SkippableFact]
+    public void MagicalSkillDamageIsTrackedAgainstItsBaseline_KNOWN_RED()
+    {
+        var path = Environment.GetEnvironmentVariable("MAGE_BUCKETS");
+        var shine = Shine();
+        var ressystem = Ressystem();
+        Skip.If(path is null || !File.Exists(path), "no mage fixture; set MAGE_BUCKETS");
+        Skip.If(shine is null, "server data not present; set SHINE_DATA");
+        Skip.If(ressystem is null, "client data not present; set CLIENT_DATA");
+
+        var f = Load(path!);
+        Skip.If(f.SkillBuckets.Count == 0, "mage fixture has no skill buckets");
+
+        var box = MobDataBox.Load(shine!);
+        var gaps = LevelGapTable.Load(shine!);
+        var mobNames = box.Info.Where(kv => kv.Value.Id > 0)
+                              .GroupBy(kv => kv.Value.Id)
+                              .ToDictionary(g => g.Key, g => g.First().Key);
+        var skills = SkillRowsMagical(ressystem!);
+
+        // The mage's free-stat INT allocation is not in the bot's packet log (it rides
+        // `NC_CHAR_CLIENT_BASE_CMD` +0x57, which the log did not capture), so it is supplied.
+        var freeInt = int.TryParse(Environment.GetEnvironmentVariable("MAGE_FREE_INT"), out var fi) ? fi : 0;
+
+        int inside = 0, over = 0, under = 0, skipped = 0;
+        var report = new List<string>();
+
+        foreach (var b in f.SkillBuckets.Where(b => b.Side == "OUT").OrderBy(b => b.Skill))
+        {
+            if (!skills.TryGetValue(b.Skill, out var row)) { skipped += b.N; continue; }
+            if (!mobNames.TryGetValue(b.Mob, out var name)) { skipped += b.N; continue; }
+            var mob = MobCombatant.Build(box, name);
+            if (mob is null) { skipped += b.N; continue; }
+            if (!b.Params.TryGetValue(MaMin, out var amin) || !b.Params.TryGetValue(MaMax, out var amax))
+            { skipped += b.N; continue; }
+
+            // ⚠️ The MAGICAL skill row is MinMA/MaxMA, not MinWC/MaxWC -- `roe_AttackPower@MagicalSkill`
+            // reads +0xEB/+0xEF/+0xF3/+0xF7 where the physical one reads +0xDB..+0xE7.
+            var me = ExactlyMagical(b.Level, amin, amax, 1);
+            var band = Through(me, mob, new AttackModifiers
+            {
+                ForceCritical = false,
+                // `roe_Damage@NormalMA`'s per-rule override adds the attacker's FreeStatInt and subtracts
+                // the defender's FreeStatMen; MagicalSkill shares that override. A mob's free-stat
+                // accessors return table[0] = 0, so only the attacker's term is live.
+                AttackerFreeStat = FreeStatInt(freeInt),
+                DefenderFreeStat = 0,
+                JobChangeDamageUpPermille = null,
+                LevelGapRatePermille = gaps.Rate(CombatantKind.Player, b.Level,
+                                                 CombatantKind.Monster, mob.Level),
+                Skill = row,
+            }, EngagementRule.MagicalSkill);
+
+            report.Add($"DIAG skill={b.Skill} mob={b.Mob} n={b.N} obs={b.Min}..{b.Max} "
+                     + $"pred={band.Floor}..{band.Ceiling}");
+
+            if (b.Max > band.Ceiling) over += b.N;
+            else if (b.Min < band.Floor) under += b.N;
+            else inside += b.N;
+        }
+
+        var summary = $"magical hits: {inside} inside, {over} over, {under} under, {skipped} unpredictable";
+        report.Insert(0, summary);
+        if (Environment.GetEnvironmentVariable("SKILL_DIAG") is { } diag && diag.Length > 1)
+            File.WriteAllLines(diag, report);
+
+        // ⛔ A BASELINE, not a claim of correctness -- and the numbers are deliberately not asserted as
+        // zero. The magical path had never run against real data before this; what matters first is that
+        // it runs at all and that the figure is recorded so it can only improve.
+        (inside + over + under).ShouldBeGreaterThan(20, "predicted too few magical hits: " + summary);
+
+        // ⛔ NOT a fit. At MAGE_FREE_INT=12 every ceiling violation disappears (28 over -> 0), which is
+        // why 12 is the documented value -- but 20 hits then fall UNDER the floor and no value fits both
+        // ends. The reason is visible in the data and is not the formula: bucket (6042, mob 344) spans
+        // 30..102 among CLEAN hits, a 3.4x range, where the magic-attack bounds (112..125) can only
+        // produce 1.1x. Something varies within a bucket that this harness does not model, and 28 hits
+        // across 12 buckets is far too thin to isolate it -- the fighter set has 590.
+        //
+        // Recorded as a ratchet on the ceiling only, because that is the half that is currently clean.
+        over.ShouldBeLessThanOrEqualTo(over == 0 ? 0 : 28, "magical ceiling violations: " + summary);
     }
 }

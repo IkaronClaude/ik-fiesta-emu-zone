@@ -65,7 +65,35 @@ public sealed record ActiveSkillInfoServer(uint HitRate, SkillHitType HitType = 
     public static ActiveSkillInfoServer LikeANormalSwing { get; } = new(850);
 }
 
-/// <summary>`SkillHitType` — which accuracy formula a skill uses. The names are the ones the server's own
+/// <summary>`SkillHitType` — ⭐ <b>it selects the skill's RULES OBJECT, and the accuracy formula is a
+/// side effect.</b>
+///
+/// <para>An earlier reading here had it as a two-value flag, from `roe_HitRate@PhisycalSkill` testing it
+/// against zero. That test is real, but it is not what the field is FOR. `sdb_Load@SkillDataBox`
+/// (0x00585F40 +0x2CD) reads `sdi_ServInf->SkillHitType` and jumps through a six-entry table at
+/// 0x00587CC8 to assign `sdi_DamageRule`:</para>
+///
+/// <code>
+/// 0 -> roe_physical    1 -> roe_magical    2 -> roe_always
+/// 3 -> roe_cure        4 -> roe_cure       5 -> roe_always
+/// </code>
+///
+/// <para>Measured over all 2,791 rows of `ActiveSkillInfoServer.shn`: 1,293 physical, 538 magical,
+/// 948 always, 3+9 cure. So a skill's whole rule — which stats it draws on, how it hits, whether it can
+/// miss — comes from this one column.</para>
+///
+/// <para>⚠️ Which makes the `!= 0` branch inside `roe_HitRate@PhisycalSkill` largely UNREACHABLE for
+/// skills loaded this way: a non-zero value routes the skill to a different rule object, whose own
+/// `roe_HitRate` is a different function. The branch is in the binary and the port keeps it, but do not
+/// expect `SkillHitType` 1..5 to arrive there.</para>
+///
+/// <para>Verified against the Fighter capture: all nine damaging skills are type 0 (physical) and the two
+/// non-damaging ones — `MoraleDecrease04`, `SnearShout02` — are type 2 (always), which is exactly the
+/// split the wire's `isdamage` flag showed independently. Every mage skill is type 1.</para>
+///
+/// <para>The original note follows, since the accuracy behaviour it describes is still correct.</para>
+///
+/// <para>Which accuracy formula a skill uses. The names are the ones the server's own
 /// debug output prints (` As Normal ` at 0x006D06EC, ` As Skill ` at 0x006D06E0), which is how the two
 /// branches were told apart.
 ///
