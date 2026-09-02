@@ -82,7 +82,7 @@ public static class MultiHit
     ///
     /// <code>
     /// dmg = sdi_DamageRule-&gt;roe_CalcDamage(arg);          // the whole engine, per strike
-    /// dmg = (uint)(dmg * serverRate) / 1000;               // UNSIGNED divide
+    /// dmg = (uint)(dmg * setItemRate) / 1000;              // UNSIGNED divide
     /// dmg = (dmg * mha_DamageRate) / 1000;                 // SIGNED, truncating toward zero
     /// if (scaled &gt; 0 &amp;&amp; dmg == 0 &amp;&amp; mha_DamageRate &gt; 0) dmg = 1;
     /// </code>
@@ -99,14 +99,18 @@ public static class MultiHit
     /// zero. That is the same distinction the critical-stun gate makes, from the same field.</para></summary>
     /// <param name="calculatedDamage">What `roe_CalcDamage` returned for this strike.</param>
     /// <param name="multiHitDamageRatePermille">`mha_DamageRate`.</param>
-    /// <param name="serverRatePermille">The server-wide damage multiplier at 0x1325EDB8. ⚠️ Its identity
-    /// is NOT established — the PDB gives it no name and it resolves only to a neighbouring symbol. It
-    /// behaves as a permille rate and 1000 leaves the damage alone, which is why that is the default; do
-    /// not describe it as a configured rate until it has been read out of a live zone.</param>
+    /// <param name="setItemDamageRatePermille">`setitemskilleffect.se_Argument[2]` (0x1325EDB8) — the
+    /// caster's matched-equipment-SET damage bonus, in 1/1000.
+    ///
+    /// <para>It is a GLOBAL, which makes it look like server configuration, and it is not: it is a
+    /// staging buffer holding the CURRENT object's set bonuses, rebuilt by `smo_ply_SetItemEffect` and
+    /// accumulated by `siel_AppendEffect` (<c>add [idx*4 + base], value</c>). So it varies per caster and
+    /// applies only to someone wearing a set. Read live from a zone at rest, all seventeen slots hold
+    /// 1000 — hence the neutral default.</para></summary>
     public static int HitDamage(int calculatedDamage, int multiHitDamageRatePermille,
-                                int serverRatePermille = 1000)
+                                int setItemDamageRatePermille = 1000)
     {
-        var scaled = (int)((uint)unchecked(calculatedDamage * serverRatePermille) / 1000u);
+        var scaled = (int)((uint)unchecked(calculatedDamage * setItemDamageRatePermille) / 1000u);
         var damage = unchecked(scaled * multiHitDamageRatePermille) / 1000;
 
         if (scaled > 0 && damage == 0 && multiHitDamageRatePermille > 0)

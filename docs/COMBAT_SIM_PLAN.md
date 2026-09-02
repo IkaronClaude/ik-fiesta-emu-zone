@@ -442,12 +442,26 @@ Nothing exists. `SkillDataBox` reads `CastTime`/`DlyTime` for attack intervals o
       live, each carrying `oh_HitTimeRate`, `oh_DamageRate`, `oh_AreaStep` and an abstate triple; loaded by
       `mht_Load` from `9Data/Shine/MultiHitType.shn` into `_MultiHitTable` (0x0DA29384).
 
-- [ ] **Two unnamed server-wide rate globals**, found while reading the above and NOT identified.
-      `0x1325EDB8` scales damage and `0x1325EDE4` scales hit rate, both as permille against the same
-      1000. The PDB names neither — they resolve only to `setitemskilleffect + 0x8 / +0x34`, a
-      neighbouring symbol, which is not an identification. They behave as rate multipliers and 1000 is the
-      no-op, which is why the port defaults them there. **Read them out of a live zone before describing
-      them as configured rates** ([[fiesta-live-container-read]] has the method).
+- [x] **The two "unnamed globals" are IDENTIFIED, and they are not server config.** They are members of
+      `?setitemskilleffect@@3VSkillEffect@SetItemData@@A` at 0x1325EDB0 — a `SetItemData::SkillEffect`,
+      which is `unsigned long se_Argument[17]`, so 0x1325EDB8 is `se_Argument[2]` and 0x1325EDE4 is
+      `se_Argument[13]`. The nearest-symbol lookup that produced "+0x8 / +0x34" was right about the
+      symbol and wrong to treat the offsets as a gap: they are field indices.
+
+      It is a **staging buffer for the current object's matched-equipment-SET bonuses**, rebuilt by
+      `smo_ply_SetItemEffect` (`ShinePlayer`'s override walks the player's set list at +0x2A7E0, count at
+      +0x2A7F4) and accumulated by `siel_AppendEffect`, which does `add [idx*4 + base], value`. So these
+      are a per-caster GEAR bonus, not a server-wide rate — a distinction that matters because a server
+      config would apply to everyone and this applies only to whoever is wearing the set.
+
+      `smo_SkillBlast` reads five of the seventeen slots: **[2]** scales skill damage and **[13]** scales
+      skill hit rate (both permille, both against a 1000 neutral); **[1]**, **[9]** and **[12]** are also
+      permille rates combined against 1000 — [12] as `a + slot - 1000` — and are **not** pinned to a
+      specific effect yet.
+
+      Read live from `zone00` (pid 248, mapping `0074c000-1550e000`): all seventeen slots hold **1000**,
+      i.e. no set bonus staged at rest. That is why the port defaults them to 1000, and it is now a
+      measured default rather than an assumed one.
 
 - [ ] **The rest of `smo_SkillBlast`** — 6.6KB, of which this read covers the EngageArgument construction
       (+0x52), the hit/miss rolls through `sdi_DamageRule`, and the damage arithmetic. Target selection

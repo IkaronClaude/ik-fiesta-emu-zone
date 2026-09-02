@@ -38,16 +38,17 @@ public class MultiHitTests
                                                                      string why)
         => MultiHit.HitDamage(damage, rate).ShouldBe(expected, why);
 
-    /// <summary>The server-wide multiplier at 0x1325EDB8 rides in front of the strike rate, with its own
+    /// <summary>The set-item damage bonus (`se_Argument[2]`, 0x1325EDB8) rides in front of the strike rate, with its own
     /// divide.
     ///
-    /// <para>⚠️ Its identity is NOT established — the PDB gives it no name and it resolves only to a
-    /// neighbouring symbol. It behaves as a permille rate; that is all this test claims.</para></summary>
+    /// <para>It is a GLOBAL that is NOT server configuration: `setitemskilleffect` stages the CURRENT
+    /// object's matched-set bonuses, rebuilt per caster. Read live from a zone at rest, all seventeen
+    /// slots hold 1000, so the neutral default is measured rather than assumed.</para></summary>
     [Theory]
     [InlineData(1000, 1000, 2000, 2000)]
     [InlineData(1000, 1000, 0, 0)]      // zeroes everything, floor included
     [InlineData(999, 999, 999, 997)]    // three truncations compounding
-    public void TheServerRateAppliesFirstAndSeparately(int damage, int rate, int server, int expected)
+    public void TheSetItemBonusAppliesFirstAndSeparately(int damage, int rate, int server, int expected)
         => MultiHit.HitDamage(damage, rate, server).ShouldBe(expected);
 
     /// <summary>`roe_CalcDamage+0x1AE`: an ordinary swing always attempts the critical stun; a multi-hit
