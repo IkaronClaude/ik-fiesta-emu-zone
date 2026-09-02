@@ -126,6 +126,17 @@ public sealed record AttackModifiers
     /// skill-empower term lands.</para></summary>
     public ItemActionResults? ItemActions { get; init; }
 
+    /// <summary>The CAST SKILL's `ActiveSkillInfo` row, or null for a plain swing.
+    ///
+    /// <para>Only the two skill rules read it — see <see cref="EngagementRuleExtensions.ReadsSkillRow"/>.
+    /// It scales and shifts each weapon bound INDEPENDENTLY, so it changes the range a swing is drawn
+    /// from rather than the result.</para></summary>
+    public Skill.ActiveSkillInfo? Skill { get; init; }
+
+    /// <summary>The cast's empower allocation. Only its damage nibble is read, and only when
+    /// <see cref="Skill"/> carries a table.</summary>
+    public Skill.SkillEmpower Empower { get; init; }
+
     /// <summary>`ShinePlayer::so_ply_DecreaseDmgPassiveSkill` (0x005651E0) — the one hook that can REDUCE
     /// incoming damage, run on the DEFENDER at `roe_CalcDamage+0x59E`.
     ///

@@ -536,7 +536,7 @@ public static class DamageCalculator
                          || (mods.ForceCritical ?? rng.Next(0, 1000) < mods.CriticalChancePermille);
 
         var attackPower = AttackPower(attacker, rollPermille, rule, mods.AttackerHpMissingPermille,
-                                      mods.ItemActions);
+                                      mods.ItemActions, mods.Skill, mods.Empower);
         var defendPower = DefendPower(defender, rule, mods.DefenderHpMissingPermille);
 
         var damage = CoreDamage(attackPower, defendPower, attacker.Level, mods.BaseDamageRatePermille);

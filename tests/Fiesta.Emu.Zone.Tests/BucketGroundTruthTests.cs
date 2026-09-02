@@ -46,8 +46,14 @@ public class BucketGroundTruthTests
                                  IReadOnlyDictionary<string, int> Params,
                                  IReadOnlyList<int> Passives, int? Weapon, int N, int Min, int Max);
 
+    /// <summary>A skill bucket: the same state key as a swing, plus WHICH skill was cast.</summary>
+    private sealed record SkillBucket(string Side, int Skill, int Mob, int Level,
+                                      IReadOnlyList<Abstate> EnemyAbstates,
+                                      IReadOnlyDictionary<string, int> Params,
+                                      IReadOnlyList<int> Passives, int? Weapon, int N, int Min, int Max);
+
     private sealed record Fixture(IReadOnlyList<Bucket> Buckets, IReadOnlyDictionary<string, int> FreeStat,
-                                  int ChrClass);
+                                  int ChrClass, IReadOnlyList<SkillBucket> SkillBuckets);
 
     /// <summary>`NC_CHAR_CHANGEPARAMCHANGE_CMD` parameter ids for the three fields that matter.
     ///
@@ -97,9 +103,25 @@ public class BucketGroundTruthTests
             b.GetProperty("min").GetInt32(),
             b.GetProperty("max").GetInt32())).ToList();
 
+        var skillBuckets = root.TryGetProperty("skillBuckets", out var sb)
+            ? sb.EnumerateArray().Where(b => b.GetProperty("n").GetInt32() > 0).Select(b => new SkillBucket(
+                b.GetProperty("side").GetString()!,
+                b.GetProperty("skill").GetInt32(),
+                b.GetProperty("mob").GetInt32(),
+                b.GetProperty("level").GetInt32(),
+                b.GetProperty("enemyAbstates").EnumerateArray().Select(Pair).ToList(),
+                b.GetProperty("params").EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetInt32()),
+                b.GetProperty("passives").EnumerateArray().Select(x => x.GetInt32()).ToList(),
+                b.GetProperty("weapon").ValueKind == JsonValueKind.Number
+                    ? b.GetProperty("weapon").GetInt32() : null,
+                b.GetProperty("n").GetInt32(),
+                b.GetProperty("min").GetInt32(),
+                b.GetProperty("max").GetInt32())).ToList()
+            : [];
+
         return new Fixture(buckets,
             root.GetProperty("freeStat").EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetInt32()),
-            root.GetProperty("chrclass").GetInt32());
+            root.GetProperty("chrclass").GetInt32(), skillBuckets);
     }
 
     /// <summary>The free-stat Str term, <b>which is NOT the allocated point count.</b>
@@ -366,11 +388,12 @@ public class BucketGroundTruthTests
     ///
     /// <para>Both bounds pin the roll and forbid a critical, so the band is the whole space of clean
     /// outcomes — nothing random is left in it.</para></summary>
-    private static Band Through(ICombatant attacker, ICombatant defender, AttackModifiers mods)
+    private static Band Through(ICombatant attacker, ICombatant defender, AttackModifiers mods,
+                                EngagementRule rule = EngagementRule.NormalPhysical)
     {
         var rng = new System.Random(1);
-        var lo = DamageCalculator.ResolveDamage(attacker, defender, mods with { RollPermille = 0 }, rng);
-        var hi = DamageCalculator.ResolveDamage(attacker, defender, mods with { RollPermille = 1000 }, rng);
+        var lo = DamageCalculator.ResolveDamage(attacker, defender, mods with { RollPermille = 0 }, rng, rule);
+        var hi = DamageCalculator.ResolveDamage(attacker, defender, mods with { RollPermille = 1000 }, rng, rule);
         return new Band(Math.Min(lo, hi), Math.Max(lo, hi));
     }
 
@@ -530,5 +553,198 @@ public class BucketGroundTruthTests
         // Asserted on OVERSHOOT only, and only where nothing unmodelled was acting: that is the case where
         // the server produced damage this port says is impossible.
         overBuckets.ShouldBe(0, summary);
+    }
+
+    // ---- skills ----------------------------------------------------------------------------------
+
+    /// <summary>`ActiveSkill.shn`'s four damage columns per skill id — the ones `roe_AttackPower` reads
+    /// out of `sdi_Activ`.</summary>
+    /// ⚠️ Two types carry this game struct's name: `Data.ActiveSkillInfo` (id/name/cast timing, loaded
+    /// by `SkillDataBox`) and `Skill.ActiveSkillInfo` (the four DAMAGE columns `roe_AttackPower` reads).
+    /// They model different halves of one row and both are legitimately named; qualify at every use.
+    private static IReadOnlyDictionary<int, Fiesta.Emu.Zone.Skill.ActiveSkillInfo> SkillRows(string ressystem)
+    {
+        var table = ShnFile.Load(Path.Combine(ressystem, "ActiveSkill.shn"));
+        var rows = new Dictionary<int, Fiesta.Emu.Zone.Skill.ActiveSkillInfo>();
+        foreach (var r in table.Rows)
+        {
+            var id = ShnFile.Int(r, "ID");
+            rows[id] = new Fiesta.Emu.Zone.Skill.ActiveSkillInfo(
+                MinFlat: (uint)ShnFile.Int(r, "MinWC"),
+                MinRatePermille: (uint)ShnFile.Int(r, "MinWCRate"),
+                MaxFlat: (uint)ShnFile.Int(r, "MaxWC"),
+                MaxRatePermille: (uint)ShnFile.Int(r, "MaxWCRate"));
+        }
+        return rows;
+    }
+
+    /// <summary>Each skill's `HitID` — the `MultiHitType.shn` sequence it fires, or 0 for a single
+    /// strike.</summary>
+    private static IReadOnlyDictionary<int, int> SkillHitIds(string ressystem)
+    {
+        // ⚠️ `ActiveSkill.shn` has DUPLICATE ids (9034 appears twice), so ToDictionary throws. Last row
+        // wins, matching how SkillRows above builds its map -- consistent, and the duplicates are not in
+        // any capture analysed so far.
+        var table = ShnFile.Load(Path.Combine(ressystem, "ActiveSkill.shn"));
+        var map = new Dictionary<int, int>();
+        foreach (var r in table.Rows) map[ShnFile.Int(r, "ID")] = ShnFile.Int(r, "HitID");
+        return map;
+    }
+
+    /// <summary>⭐ `MultiHitType.shn` — the per-strike damage rates, as (lowest, highest) per sequence id.
+    ///
+    /// <para>A multi-hit skill does NOT deal its damage once. `TripleHit06` fires sequence 20, which is
+    /// three strikes at <b>300 / 200 / 500</b> permille summing to 1000 — it hits three times and splits
+    /// the damage. `roe_CalcDamage` computes the whole hit and `smo_SkillBlast` then scales each strike by
+    /// its own `mha_DamageRate` (see <see cref="MultiHit.HitDamage"/>).</para>
+    ///
+    /// <para>A bucket cannot know WHICH strike of a sequence a given hit was — the wire carries the
+    /// damage, not the step. So the band has to span the whole sequence: the floor scaled by the LOWEST
+    /// rate and the ceiling by the HIGHEST. That is wider than the truth for any single strike and is the
+    /// honest bound, not a fudge; narrowing it would need the strike index, which is not on the wire.</para></summary>
+    private static IReadOnlyDictionary<int, (int Low, int High)> MultiHitRates(string shine)
+    {
+        var table = ShnFile.Load(Path.Combine(shine, "MultiHitType.shn"));
+        var by = new Dictionary<int, (int Low, int High)>();
+        foreach (var r in table.Rows)
+        {
+            var id = ShnFile.Int(r, "ID");
+            var rate = ShnFile.Int(r, "DmgRate");
+            by[id] = by.TryGetValue(id, out var cur)
+                ? (Math.Min(cur.Low, rate), Math.Max(cur.High, rate))
+                : (rate, rate);
+        }
+        return by;
+    }
+
+    private static string? Ressystem()
+    {
+        var root = Environment.GetEnvironmentVariable("CLIENT_DATA") ?? @"Z:/ClientProd2/ressystem";
+        return File.Exists(Path.Combine(root, "ActiveSkill.shn")) ? root : null;
+    }
+
+    /// <summary>⭐ Every clean SKILL hit must sit inside the band the engine can produce.
+    ///
+    /// <para>Same pipeline as the swing check, with two additions: the rule is
+    /// <see cref="EngagementRule.PhysicalSkill"/>, and the cast's `ActiveSkillInfo` row is threaded into
+    /// attack power — where its flat terms land on the weapon BOUNDS before the roll, not on the
+    /// result.</para>
+    ///
+    /// <para>The skills in this capture all carry `MinWCRate`/`MaxWCRate` of 0, so their contribution is
+    /// purely the flat add. That is a property of the DATA and not of the code — the independent-bounds
+    /// widening is real and simply unexercised here.</para>
+    ///
+    /// <para>⭐ <b>THE MULTI-HIT SPLIT was the dominant missing term</b>, and finding it moved the fit from
+    /// 216 to 443 inside. `TripleHit06` fires `MultiHitType` sequence 20 — three strikes at
+    /// <b>300 / 200 / 500</b> permille summing to 1000 — so each wire hit is a FRACTION of what
+    /// `roe_CalcDamage` produced, and predicting every hit as the whole thing overshot by 3-5x.</para>
+    ///
+    /// <para>⛔ <b>THIS IS NOT EXACT.</b> 443 of 590 inside, <b>20 over a ceiling and 127 under a floor</b>,
+    /// against the swing check's 510/510. The residual is real and unexplained; candidates ruled OUT so
+    /// far: `MiscDataTable.txt` is `SkillBreedMob` (summons and traps), not a per-skill damage rate, and
+    /// `DamageByAngle` can only RAISE damage so it cannot explain an undershoot. Candidates still open:
+    /// a skill's own `sdi_DamageRule` (this assumes `PhisycalSkill` for all of them), AoE damage division
+    /// across targets, and whether the flat `MinWC` is added for every skill or only some.</para>
+    ///
+    /// <para>Named <c>_KNOWN_RED</c> in the repo's convention so nobody reads a green suite as a solved
+    /// problem.</para></summary>
+    [SkippableFact]
+    public void SkillDamagePredictionIsTrackedAgainstItsBaseline_KNOWN_RED()
+    {
+        var path = FixturePath();
+        var shine = Shine();
+        var ressystem = Ressystem();
+        Skip.If(path is null, "no bucket fixture; see the class comment for how to make one");
+        Skip.If(shine is null, "server data not present; set SHINE_DATA");
+        Skip.If(ressystem is null, "client data not present; set CLIENT_DATA");
+
+        var f = Load(path!);
+        Skip.If(f.SkillBuckets.Count == 0, "fixture has no skill buckets -- re-run damage_buckets.py");
+
+        var box = MobDataBox.Load(shine!);
+        var gaps = LevelGapTable.Load(shine!);
+        var mobNames = box.Info.Where(kv => kv.Value.Id > 0)
+                              .GroupBy(kv => kv.Value.Id)
+                              .ToDictionary(g => g.Key, g => g.First().Key);
+        var skills = SkillRows(ressystem!);
+        var hitIds = SkillHitIds(ressystem!);
+        var multiHit = MultiHitRates(shine!);
+        var abState = ShnFile.Load(Path.Combine(shine!, "AbState.shn"));
+        var subAbState = ShnFile.Load(Path.Combine(shine!, "SubAbState.shn"));
+        var passiveTable = ShnFile.Load(Path.Combine(shine!, "PassiveSkill.shn"));
+        var items = ShnFile.Load(Path.Combine(shine!, "ItemInfo.shn"));
+        var jobByLevel = f.SkillBuckets.Select(b => b.Level).Distinct()
+                                       .ToDictionary(l => l, l => JobChangeRate(f, shine!, l));
+
+        int inside = 0, over = 0, under = 0, skipped = 0, hits = 0;
+        var report = new List<string>();
+        // ⚠️ Refusals get a REASON. A single `skipped` counter hides which gate is rejecting, and this
+        // test first shipped refusing all 590 hits while reporting a pass -- the coverage floor below
+        // caught it, but only the breakdown said WHY (a null weapon, so MasteryRate returned null).
+        var why = new SortedDictionary<string, int>();
+        void Refuse(string reason, int n)
+        {
+            skipped += n;
+            why[reason] = why.GetValueOrDefault(reason) + n;
+        }
+
+        foreach (var b in f.SkillBuckets.Where(b => b.Side == "OUT")
+                           .OrderBy(b => b.Skill).ThenBy(b => b.Mob))
+        {
+            if (!skills.TryGetValue(b.Skill, out var row)) { Refuse("skill not in ActiveSkill.shn", b.N); continue; }
+            if (!mobNames.TryGetValue(b.Mob, out var name)) { Refuse("mob id not named", b.N); continue; }
+            var mob = MobCombatant.Build(box, name);
+            if (mob is null) { Refuse("mob has no combat data", b.N); continue; }
+            if (!ApplyAbstates(mob.Parameters, b.EnemyAbstates, abState, subAbState)) { Refuse("unread abstate action", b.N); continue; }
+            if (!b.Params.TryGetValue(DmgMin, out var dmin) || !b.Params.TryGetValue(DmgMax, out var dmax))
+            { Refuse("no DmgMin/DmgMax on the wire yet", b.N); continue; }
+
+            var rate = MasteryRate(passiveTable, items, b.Passives, b.Weapon);
+            if (rate is not { } mastery) { Refuse("no weapon known, so no mastery rate", b.N); continue; }
+
+            var freeStr = FreeStatStr(f.FreeStat.GetValueOrDefault("Strength"));
+            var me = Exactly(b.Level, dmin - freeStr, dmax - freeStr, 1, mastery);
+            var band = Through(me, mob, new AttackModifiers
+            {
+                ForceCritical = false,
+                AttackerFreeStat = freeStr,
+                DefenderFreeStat = 0,
+                JobChangeDamageUpPermille = jobByLevel.GetValueOrDefault(b.Level),
+                LevelGapRatePermille = gaps.Rate(CombatantKind.Player, b.Level,
+                                                 CombatantKind.Monster, mob.Level),
+                Skill = row,
+            }, EngagementRule.PhysicalSkill);
+
+            // THE MULTI-HIT SPLIT. A sequence's strikes each carry their own permille of the finished
+            // damage, so a hit from a multi-hit skill is a FRACTION of what roe_CalcDamage produced.
+            // HitID 0 means a single strike and leaves the band alone.
+            var hitId = hitIds.GetValueOrDefault(b.Skill);
+            if (hitId != 0 && multiHit.TryGetValue(hitId, out var span))
+                band = new Band(Fiesta.Emu.Zone.Skill.MultiHit.HitDamage(band.Floor, span.Low),
+                                Fiesta.Emu.Zone.Skill.MultiHit.HitDamage(band.Ceiling, span.High));
+
+            hits += b.N;
+            if (b.Max > band.Ceiling) { over += b.N; report.Add($"skill {b.Skill} mob {b.Mob}: max {b.Max} > ceiling {band.Ceiling}"); }
+            else if (b.Min < band.Floor) { under += b.N; report.Add($"skill {b.Skill} mob {b.Mob}: min {b.Min} < floor {band.Floor}"); }
+            else inside += b.N;
+        }
+
+        var summary = $"skill hits: {inside} inside, {over} over, {under} under, {skipped} unpredictable "
+                    + $"(of {hits + skipped})"
+                    + (why.Count > 0 ? "  [" + string.Join("; ", why.Select(k => $"{k.Key}={k.Value}")) + "]" : "");
+        report.Insert(0, summary);
+
+        // ⚠️ A COVERAGE FLOOR, so this cannot pass vacuously. Every refusal path above (`continue`) is a
+        // hit this port declined to predict, and this test FIRST SHIPPED refusing all 590 while reporting
+        // a pass -- the floor is what caught it. Keep it.
+        inside.ShouldBeGreaterThan(400, "predicted too few skill hits to mean anything: " + summary);
+
+        // ⛔ NOT EXACT, and deliberately not asserted as if it were. The swing check is 510/510; this is
+        // 443 of 590 inside, with 20 over a ceiling and 127 under a floor. The numbers are a RATCHET: they
+        // may improve, and a regression fails. Loosening them to make the suite green would hide the one
+        // thing this test exists to measure.
+        inside.ShouldBeGreaterThanOrEqualTo(443, "skill prediction got WORSE: " + summary);
+        over.ShouldBeLessThanOrEqualTo(20, "more hits now exceed the ceiling: " + summary);
+        under.ShouldBeLessThanOrEqualTo(127, "more hits now fall under the floor: " + summary);
     }
 }
