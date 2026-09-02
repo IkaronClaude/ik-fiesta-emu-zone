@@ -94,13 +94,16 @@ def decode(pcap, port, cache):
     # --timestamps is what makes a DURATION checkable. Without it the dump carries per-direction byte
     # offsets and nothing else, so an abstate's restKeeptime cannot be expired and frame ORDER gets
     # mistaken for a clock.
-    # ⚠️ `--hex-limit` IS NOT COSMETIC -- it decides what this file can see at all. `pcap_decode`
-    # defaults to 128 bytes and the hex rows ARE the wire here, so a longer payload is silently cut off
-    # mid-struct rather than reported as truncated. `NC_CHAR_CLIENT_SKILL_CMD` is 790 bytes for a level-60
-    # fighter; at the default only the first 9 of its 65 skill records survive, which showed up as the
-    # empower allocation on `PowerHit01` simply not existing. Anything array-shaped has this shape of bug.
+    # ⚠️ `--hex-limit 0` (unlimited) IS NOT COSMETIC -- it decides what this file can see at all. The hex
+    # rows ARE the wire here, so a payload longer than the limit is cut off mid-struct.
+    # `NC_CHAR_CLIENT_SKILL_CMD` is 790 bytes for a level-60 fighter; under the old 128-byte default only
+    # the first 9 of its 65 skill records survived, which showed up as the empower allocation on
+    # `PowerHit01` simply not existing. Anything array-shaped has this shape of bug.
+    #
+    # `pcap_decode` now defaults high and shouts about anything it withholds, so this is belt AND braces:
+    # asked for explicitly so no future change to that default can quietly shorten what we parse.
     cmd = [sys.executable, PCAP_DECODE, pcap, "--hide-movement", "--timestamps",
-           "--hex-limit", "65536"]
+           "--hex-limit", "0"]
     if port:
         cmd += ["--port", str(port)]
     out = subprocess.run(cmd, capture_output=True, env=env,
