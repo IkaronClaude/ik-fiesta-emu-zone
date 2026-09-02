@@ -577,10 +577,31 @@ Nothing exists. `SkillDataBox` reads `CastTime`/`DlyTime` for attack intervals o
       (`alsst_SkillBlast`, `alsst_SkillBlast_RandomTarget`), the effect container
       (`SkillBlastEffectContainer::sbec_Store` / `sbec_Routine`, which is what makes a sequence land over
       TIME) and `mdt_PostSkillBlast` are not read.
-- [ ] **Mob skill use** — `OPEN_QUESTIONS.md` §1. `AttackElement4Mob`'s 500-entry sequence,
-      `so_mob_SelectWeapon`'s WELL512 roll against `sm_GetUseWeaponRate`, and the `sm_SkillExchange_*`
-      predicates that are currently placeholders. **1,324 mobs have more than one weapon and the simulation
-      only ever uses index 0.**
+- [x] **Mob weapon selection — READ and PORTED** (`Mob/MobWeaponSelection.cs`).
+      `so_mob_SelectWeapon` (0x004AB720) walks the weapon list from the **HIGHEST index DOWN to 0** and
+      takes the first that passes, so higher indices are the special attacks and get first refusal; index
+      0 catches what none of them wanted. Each candidate clears three gates BEFORE any roll — its skill
+      resolves in `SkillDataBox`, the mob's SP covers `ActiveSkillInfo.SP`, and the weapon is off cooldown
+      — and only then rolls `well512_GetRandom(1000) <= sm_GetUseWeaponRate(i)`.
+
+      `sm_GetUseWeaponRate` (0x004AA060) reads a **per-instance override vector first** and falls back to
+      `MobWeapon.BlastRate` (+0x47), so two mobs of the same kind can disagree about their weights without
+      the data changing.
+
+      ⚠️ **The roll is INCLUSIVE**, so a `BlastRate` of 0 is not "never" — a draw of 0 still selects, one
+      time in a thousand. And "nothing selected" returns **-1**, not 0, because 0 is a real index.
+
+      ⚠️ **This qualifies the old complaint rather than answering it.** "The simulation only ever uses
+      index 0" is CORRECT against a player: `mab_Think` dynamic-casts the target to `ShinePlayer` and
+      zeroes the index, which a pre-existing test in this repo already pinned. The descending walk governs
+      mob-versus-NON-player attacks. `smo_SkillBlastOption() == 2` (blocked from casting) also forces 0.
+
+- [ ] **The rest of mob skill use** — `AttackElement4Mob::ae4m_NextSkill` (0x004A9730) and its 500-entry
+      sequence, and the `sm_SkillExchange_*` predicates (`HPLow` 0x004BB100, `HPLow_ChangeOrder`
+      0x004BB600, `OutOfRange` 0x004BAEF0, `TargetState` 0x004BB390), which decide when a mob switches
+      away from the sequence's current entry. `so_mob_SelectWeapon` calls `ae4m_NextSkill` before the
+      descending walk, so the sequence chooses a candidate and the walk is the fallback path — that
+      relationship is read, the sequence's own contents are not.
 
 **Proof:** `FighterDamageLvl60.pcapng` contains **633 `NC_BAT_SKILLBASH_HIT_DAMAGE_CMD` frames** that have
 never been looked at, plus `SKILLBASH_CAST_SUC_ACK` / `CAST_FAIL_ACK` / `HIT_OBJ_START` / `HIT_BLAST`.
