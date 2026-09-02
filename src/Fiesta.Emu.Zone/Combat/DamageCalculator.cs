@@ -2,6 +2,7 @@ using System;
 using static Fiesta.Emu.Zone.Combat.ServerArithmetic;
 
 using Fiesta.Emu.Zone.Parameter;
+using Fiesta.Emu.Zone.Skill;
 
 namespace Fiesta.Emu.Zone.Combat;
 
@@ -205,6 +206,64 @@ public static class DamageCalculator
         return hit;
     }
 
+    /// <summary>`roe_HitRate@RulesOfEngagementPhisycalSkill` (0x00502D30) and its magical twin
+    /// (0x00503360) — a CAST skill's chance to hit, in permille.
+    ///
+    /// <para>Two things make it more than "<see cref="HitRate"/> with a different constant".</para>
+    ///
+    /// <para><b>1. The skill supplies its own accuracy constant.</b> Where the plain swing multiplies by a
+    /// hard-coded 850.0, the skill multiplies by `ActiveSkillInfoServer.SkilPyHitRate` (`SkilMaHitRate` for
+    /// the magical rule). Same units, so a skill row holding 850 is exactly as accurate as an ordinary
+    /// attack, one holding 1700 is twice as accurate, and one holding 0 can never land.</para>
+    ///
+    /// <para><b>2. `SkillHitType` selects a completely different formula.</b> Non-zero, and the aim /
+    /// evasion contest is not merely reweighted — it is not evaluated at all:</para>
+    /// <code>
+    /// AsNormal      hit = (int)(HitRate * roe_TH(att) / roe_TB(def))    // + the moving and free-stat terms
+    /// ByLevelRatio  hit = (int)(HitRate * att.Level / def.Level)
+    /// </code>
+    /// <para>So a `ByLevelRatio` skill ignores Dex, aim, evasion, the defender's movement and every
+    /// modifier feeding them, and answers only to the two levels. Both branches still go through
+    /// `roe_FreeStatHitRate`, so ranged evasion is subtracted either way.</para>
+    ///
+    /// <para><b>What is deliberately NOT here</b>, exactly as with <see cref="HitRate"/>: the shield-block
+    /// roll. The skill function opens with one — `well512_GetRandom(1000)` against vtable slot 5
+    /// (`roe_ShieldBlock@NormalPY`), setting `EngageArgument.isshieldblock` and returning 0 on a block —
+    /// and that is resolution, not a rate. Note the ORDER, which differs from the plain swing: the block
+    /// roll happens BEFORE the MissPercentFix short-circuit, so a defender with a fixed miss chance can
+    /// still block first.</para></summary>
+    /// <param name="skill">The cast skill's server row. Its <see cref="ActiveSkillInfoServer.HitRate"/>
+    /// replaces the swing's 850 and its <see cref="ActiveSkillInfoServer.HitType"/> picks the formula.</param>
+    public static double SkillHitRate(ICombatant attacker, ICombatant defender, ActiveSkillInfoServer skill)
+    {
+        var d = defender.Parameters;
+
+        // Identical short-circuit to the plain swing, and it also skips `roe_FreeStatHitRate` -- so a
+        // fixed miss chance ignores ranged evasion here too.
+        if (d.MissPercentFix != 0)
+            return d.MissPercentFix > 1000 ? 0.0 : 1000.0 - d.MissPercentFix;
+
+        double hit;
+        // The test is against ZERO, not against ByLevelRatio -- `cmp dword [eax+0x3a], 0` / `jne`. Any
+        // other value takes the level-ratio branch, so this must not be an equality check.
+        if (skill.HitType != SkillHitType.AsNormal)
+        {
+            hit = Ftol32(skill.HitRate * (double)attacker.Level / defender.Level);
+        }
+        else
+        {
+            var th = ToHitRating(attacker) + attacker.FreeStatDexTHRate;
+            var tb = ToBlockRating(defender) + defender.FreeStatDexTBRate;
+            if (defender.IsInMoving)
+                tb += d.PassiveMovingTbPlus.ValueAtIndex(0);
+            hit = Ftol32(skill.HitRate * th / tb);
+        }
+
+        if (attacker.AttackRange > RangedAttackThreshold)
+            hit -= d.RangeEvasion;
+        return hit;
+    }
+
     /// <summary>`roe_CriticalRate@NormalPY` (0x00501700) — the chance of a critical, in permille.
     ///
     /// <code>
@@ -345,11 +404,24 @@ public static class DamageCalculator
     ///
     /// <para><b>The mastery multiplier is not floored.</b> With a physical-weapon-mastery rate of 0 this
     /// returns exactly 0 even though both bounds are floored at 1 — no mastery means no damage, and the
-    /// floors on the bounds do not rescue it.</para></summary>
+    /// floors on the bounds do not rescue it.</para>
+    ///
+    /// <para><b>Everything a skill contributes lands on the BOUNDS, never on the result.</b> The skill
+    /// row scales and shifts each bound independently, the empower term is added to both, and even the
+    /// item-action rate multiplies each bound rather than the rolled figure. So a skill changes the RANGE
+    /// the swing is drawn from, and the single draw happens once, at the end, over whatever range is
+    /// left.</para></summary>
+    /// <param name="skill">The cast skill's `ActiveSkillInfo` row, or null for a plain swing. Ignored by
+    /// the rules that are not skill rules — the two skill `roe_AttackPower` overrides are the only ones
+    /// that dereference `sdi_Activ`.</param>
+    /// <param name="empower">The cast's empower allocation. Only its damage nibble is read, and only when
+    /// <paramref name="skill"/> carries a table.</param>
     public static double AttackPower(ICombatant attacker, int rollPermille,
                                     EngagementRule rule = EngagementRule.NormalPhysical,
                                     int hpMissingPermille = 0,
-                                    int itemActionRatePermille = 1000)
+                                    int itemActionRatePermille = 1000,
+                                    ActiveSkillInfo? skill = null,
+                                    SkillEmpower empower = default)
     {
         var s = attacker.Parameters;
         var magical = rule.School() == DamageSchool.Magical;
@@ -366,15 +438,43 @@ public static class DamageCalculator
         low += (magical ? s.PassiveHpDownMaMin : s.PassiveHpDownWcMin).Value(hpMissingPermille);
         high += (magical ? s.PassiveHpDownMaMax : s.PassiveHpDownWcMax).Value(hpMissingPermille);
 
+        // THE SKILL ROW, `roe_AttackPower@PhisycalSkill+0xFF` (magical twin at the same displacement).
+        // Each bound is scaled by its OWN permille rate and then given its OWN flat term, so the two
+        // bounds move independently -- see ActiveSkillInfo. Applied only when a skill is actually cast;
+        // the plain-swing rules never read the row.
+        if (skill is not null && rule.ReadsSkillRow())
+        {
+            low += low * skill.MinRatePermille / 1000.0 + skill.MinFlat;
+            high += high * skill.MaxRatePermille / 1000.0 + skill.MaxFlat;
+        }
+
+        // THE EMPOWER TERM, +0x17E..+0x1E6. ONE lookup added to BOTH bounds -- so empowering a cast for
+        // damage shifts the whole range up without widening it. Zero when no points were spent on damage,
+        // which the server tests explicitly (0 is a real allocation, not a marker).
+        var empowerTerm = skill?.Empower?.DamageTerm(empower) ?? 0u;
+        low += empowerTerm;
+        high += empowerTerm;
+
+        // `EventRun_IncDmgRate` / `EventRunBySkillGroupIndex`, +0x1E9..+0x2D6: the attacker's item-action
+        // manager AND the defender's, folded into one permille.
+        //
+        // ⚠️ It applies to EACH BOUND, before the roll -- NOT to the rolled figure, which is where an
+        // earlier version of this port put it. The whole block is skipped unless one of the two EventRun
+        // calls reports an action fired, which is why a neutral rate must be a no-op here rather than a
+        // multiply by 1000: the server does not merely multiply by one, it does not run the step at all.
+        // The distinction is visible because each bound is TRUNCATED to an integer (`fistp`, round-toward-
+        // zero) on the way into GetRateAppliValue.
+        if (itemActionRatePermille != NeutralRatePermille)
+        {
+            low = ApplyRate(Ftol32(low), itemActionRatePermille);
+            high = ApplyRate(Ftol32(high), itemActionRatePermille);
+        }
+
         // The range goes through _ftol because the server's RNG takes an int.
         var range = (long)Ftol32(high - low);
         var draw = range * rollPermille / 1000;
 
         var value = low + draw;
-        // `EventRun_IncDmgRate`'s chain, roe_AttackPower+0x129/+0x155: the attacker's item-action manager
-        // AND the defender's, folded into one permille and applied to the rolled figure. Verified by
-        // oracle to sit before the mastery rate below.
-        value = ApplyRate(value, itemActionRatePermille);
         if (!rule.AppliesWeaponMastery())
             return value;
         return ApplyRate(value, s.Rate(StatModifier.PassiveSkill)[

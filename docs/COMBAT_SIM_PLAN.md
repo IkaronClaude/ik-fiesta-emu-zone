@@ -28,9 +28,10 @@ Every swing the simulator already makes is affected. Today swings never miss, ne
       `roe_CalcDamage+0x4C2`.
 - [x] **`roe_CriticalStun`** (0x00500070) and `roe_CriticalStunRate` — a flat **200** permille, and the
       abstate it applies is hard-coded `0x133` = **307** = `StaCommonStun02`.
-- [ ] **The tables behind the free-stat terms are still unread.** `FreeStatDex` and `FreeStatMen` have
-      never been dumped the way `FreeStatStr` was (181 entries, live, at 0x0DA50BC4), so
-      `ICombatant.FreeStatDexTHRate` and friends have to be supplied by the caller. See `FUTURE_TESTS.md`.
+- [x] **The tables behind the free-stat terms are READ, all five, all 181 entries** — dumped live from the
+      pointer arrays at 0x0DA50BC4 (Str), BC8 (Int), BCC (Dex), BD0 (Con), BD4 (Men) and embedded verbatim
+      as `FreeStatTables`. The curves the earlier version computed are kept only as comments, held against
+      the data by a test, because the operator asked for the tables themselves rather than a fit to them.
 - [ ] **Item actions.** `ItemActionObserveManager::EventRun` is not modelled; `ItemActionRates.None` keeps
       the roll ORDER honest (the extra draws are skipped exactly where the server skips them) without
       pretending to compute anything.
@@ -355,12 +356,54 @@ Nothing exists. `SkillDataBox` reads `CastTime`/`DlyTime` for attack intervals o
       flat run of twenty** — level 6 reads `nT1[0]`, not `nT0[5]`. Reading them as four separate tables
       would be wrong for every level above 5.
 
-- [ ] **Where the empower term lands in the attack-power chain.** The lookup is exact; what
-      `roe_AttackPower` then does with it — added before or after which rate, inside or outside which
-      truncation — is unread, and the port deliberately stops at the lookup rather than guessing.
+- [x] **Where the empower term lands in the attack-power chain — READ, at +0x17E..+0x1E6.** ONE lookup,
+      added to **both bounds**, after the skill row and before the item-action rates and the roll. So
+      empowering a cast for damage SHIFTS the range and does not widen it. This agrees with the earlier
+      oracle result (additive on both bounds, before the roll, before the mastery rate) and now has the
+      instruction sequence behind it rather than a bracketing measurement.
 
-- [ ] **`ActiveSkillInfoServer`** — `DmgIncRate` / `DmgIncValue`, `SkillHitType`, `SkilPyHitRate` /
-      `SkilMaHitRate`, `AggroPerDamage` / `AbsoluteAggro`, `SwingTime` / `HitTime`.
+- [x] **`ActiveSkillInfoServer` — and the item in this list named the WRONG TABLE.** The expectation was
+      that a skill's damage bonus comes from `DmgIncRate` / `DmgIncValue`. It does not. `roe_AttackPower`
+      dereferences `sdi_Activ` (+0x04, the CLIENT `ActiveSkillInfo` row) and reads four columns there:
+
+      ```
+      physical   MinWC +0xDB  MinWCRate +0xDF  MaxWC +0xE3  MaxWCRate +0xE7
+      magical    MinMA +0xEB  MinMARate +0xEF  MaxMA +0xF3  MaxMARate +0xF7
+
+      low  = low  + low  * MinRate/1000 + MinFlat;
+      high = high + high * MaxRate/1000 + MaxFlat;
+      ```
+
+      **The bounds are scaled INDEPENDENTLY** — a skill can widen its damage range, not merely shift it.
+      Measured on the real function with the RNG pinned to each end (`tools/oracle_skill.py`), all five
+      cases exact. Nothing clamps `low <= high`: `MinWCRate` alone inverts the range and the server hands
+      the negative span to the RNG without noticing.
+
+      `ActiveSkillInfoServer` IS read, by the HIT path only — `roe_HitRate@PhisycalSkill` (0x00502D30)
+      takes exactly two columns from `sdi_ServInf`:
+        - **`SkilPyHitRate` / `SkilMaHitRate`** (+0x23 / +0x27) replaces the plain swing's hard-coded
+          **850** in the same position and units, so a row holding 850 is exactly as accurate as an
+          ordinary attack.
+        - **`SkillHitType`** (+0x3A) selects the formula, and the branch is `!= 0`, not `== 1`:
+          `AsNormal` is the ordinary `rate * TH / TB` contest; anything else is
+          `rate * attackerLevel / defenderLevel`, which **ignores aim, evasion, Dex and the defender's
+          movement entirely**. Verified by moving the attacker's Dex from 20 to 2000: the normal branch
+          went 850 -> 1700000 and the level branch did not move off 1142.
+
+      Also read while there: the skill hit function does its OWN shield-block roll (well512 against vtable
+      slot 5) BEFORE the MissPercentFix short-circuit — the opposite order from the plain swing.
+
+      `AggroPerDamage` / `AbsoluteAggro` / `SwingTime` / `HitTime` / `AddSoul` are real columns but no
+      damage-path function reads them; they belong to aggro and action timing. Deliberately absent from
+      `ActiveSkillInfoServer` rather than modelled as zero.
+
+- [x] **The item-action rate was in the WRONG PLACE in this port, and the skill read is what exposed it.**
+      `GetRateAppliValue` is applied to **each bound, before the roll** (`roe_AttackPower@NormalPY`
+      +0x163..+0x1BF, PhisycalSkill +0x272..+0x2D6), with each bound TRUNCATED to an integer on the way
+      in — not to the rolled figure, which is where the port had it. Invisible until now because the whole
+      block is gated shut when no item action fires, so the default neutral rate never exercised it, and
+      the 556/556 ground truth is unchanged either way. Fixed, with the gate modelled as a gate rather
+      than as a multiply by 1000.
 - [ ] **`smo_SkillBlast`** (0x00581452 constructs the EngageArgument) and the multi-hit path
       (`MultiHitArgument`, `EngageArgument+0x24`).
 - [ ] **Mob skill use** — `OPEN_QUESTIONS.md` §1. `AttackElement4Mob`'s 500-entry sequence,
@@ -394,8 +437,7 @@ damage callbacks (also task 2). Each needs a capture that actually triggers it.
       this ends" must not quietly become "it already ended".
 - [ ] **Bucket misses and blocks**, not just clean hits — the rates are the ground truth for task 1.
 - [ ] **Bucket skill hits** by skill and rank — the ground truth for task 4.
-- [ ] **Free-stat tables for Dex / Int / Men**, read in full the way Str was (0x0DA50BC4) and Con should be
-      (0x0DA50BD0). See `FUTURE_TESTS.md`.
+- [x] **Free-stat tables for Dex / Int / Men / Con**, read in full the way Str was — done, see task 1.
 
 ## The critical-rate seed: settled by reading the live server
 

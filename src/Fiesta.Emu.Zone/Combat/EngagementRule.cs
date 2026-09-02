@@ -99,4 +99,16 @@ public static class EngagementRuleExtensions
     ///
     /// <para>The asymmetry is real and was measured, not inferred from the symmetry of the other three.</para></summary>
     public static bool AppliesWeaponMastery(this EngagementRule rule) => rule != EngagementRule.MagicalSkill;
+
+    /// <summary>Whether the rule's `roe_AttackPower` reads the cast skill's `ActiveSkillInfo` row.
+    ///
+    /// <para>Only the two SKILL rules do. `roe_AttackPower@PhisycalSkill` (0x00506B40) and
+    /// `@MagicalSkill` (0x00506ED0) dereference <c>arg-&gt;sklinfo-&gt;sdi_Activ</c>; `@NormalPY` and
+    /// `@NormalMA` never touch it, and the remaining four rules do not override `roe_AttackPower` at
+    /// all.</para>
+    ///
+    /// <para>So passing a skill row alongside a plain-swing rule is not an error and is not silently
+    /// half-applied — it is ignored, exactly as the server ignores it.</para></summary>
+    public static bool ReadsSkillRow(this EngagementRule rule)
+        => rule is EngagementRule.PhysicalSkill or EngagementRule.MagicalSkill;
 }

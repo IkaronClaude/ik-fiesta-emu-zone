@@ -17,6 +17,14 @@ internal static class ServerArithmetic
     /// binary is 1e12 (the constant at 0x6CFE28).</summary>
     internal const double RateDivisor = 1_000_000_000_000.0;
 
+    /// <summary>The permille value that means "no change": 1000.
+    ///
+    /// <para>It is worth a name because the server treats it as a SKIP rather than as a multiply by one.
+    /// `ParameterCluster::operator*=` compares against it exactly and leaves the stat alone, and the
+    /// item-action block in `roe_AttackPower` is gated shut entirely when nothing fired. Multiplying by
+    /// 1000/1000 is not always the same thing, because the skipped path also skips a truncation.</para></summary>
+    internal const int NeutralRatePermille = 1000;
+
     /// <summary>One permille multiplier: <c>value * rate / 1000</c>, multiply then divide, in that order.
     ///
     /// The order is load-bearing where the result is later truncated: taking the product of several rates
