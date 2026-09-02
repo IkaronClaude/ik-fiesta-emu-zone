@@ -917,8 +917,37 @@ public class BucketGroundTruthTests
     /// <see cref="EngagementRule.MagicalSkill"/>, which draws on Int/MAmin/MAmax, defends on the mob's
     /// magic resistance, and — unlike every other rule — applies NO weapon mastery.</para>
     ///
-    /// <para>Fixture comes from a live MageZero packet log rather than a pcap; see
-    /// `scratchpad/mage_fixture.py`, which walks the bot's own log format and emits the same JSON.</para></summary>
+    /// <para>Fixture comes from a live MageZero packet log rather than a pcap; see `tools/mage_fixture.py`,
+    /// which walks the bot's own log format and emits the same JSON.</para>
+    ///
+    /// <para>⛔ <b>RED: the magical path under-predicts, 10 of 10 above the ceiling.</b> Unlike the
+    /// physical residual this one is NOT a constant — no single multiplier fits, because the observations
+    /// require at least 1.278x (FireBolt01) and at most 1.176x (MagicMissile04) and that window is empty.
+    /// The size of the miss tracks the skill's OWN `MinMA` inversely: `FireBolt01` (MinMA 26) needs 1.48x
+    /// while `MagicMissile04` (MinMA 151) needs 1.18x. A term proportional to the skill row would do the
+    /// opposite, so what is missing sits in the BASE magic attack, not the skill's contribution.</para>
+    ///
+    /// <para>Ruled OUT on data, not argument:</para>
+    /// <list type="bullet">
+    /// <item>⚠️ <b>Free-stat INT.</b> An earlier note recorded `MAGE_FREE_INT=12` as the value that
+    /// zeroes ceiling violations. `NC_CHAR_CLIENT_BASE_CMD` says the allocation is
+    /// <c>Constitute 21, Intelligence 0</c> — the 12 was curve-fitting against a number the wire reports
+    /// as zero. The env var survives as a probe; it is not a finding.</item>
+    /// <item><b>Job-change damage-up.</b> `NC_CHAR_CLIENT_SHAPE_CMD` gives class 16, base Mage, whose
+    /// `JobChangeDmgUp` is 1000 permille at every level. `WizMage` would be 1970 at level 21 — nearly 2x,
+    /// which would make this UNDER-shoot rather than over. The bot has not job-changed.</item>
+    /// <item><b>Multi-hit and AoE.</b> All six skills carry `HitID` 0 and `TargetNumber` 1.</item>
+    /// <item><b>Skill empower.</b> The character's `PROTO_SKILLREADBLOCKCLIENT.empow` is zero on every
+    /// skill it holds, so the term that closed `PowerHit05` cannot apply here.</item>
+    /// </list>
+    ///
+    /// <para>⚠️ <b>THE SAMPLE IS THE REAL BLOCKER, and it is a BOT problem, not a simulator one.</b> Ten
+    /// clean hits across seven buckets, mostly n=1 — and a single draw inside a band can only bound the
+    /// answer, never locate it. MageZero cast 36 times in 4h15m while swinging 817 times; ClericZero's
+    /// 46 MB log holds ZERO casts and zero swings; ArcherZero swung 1394 times and cast nothing. The
+    /// classes that should be casting are auto-attacking instead, so the wire is not producing magical
+    /// damage to check against. The fighter set has 545 hits for comparison. Fix the rotation or take a
+    /// real capture before drawing any conclusion from these ten numbers.</para></summary>
     [SkippableFact]
     public void MagicalSkillDamageIsTrackedAgainstItsBaseline_KNOWN_RED()
     {
@@ -985,19 +1014,12 @@ public class BucketGroundTruthTests
         if (Environment.GetEnvironmentVariable("SKILL_DIAG") is { } diag && diag.Length > 1)
             File.WriteAllLines(diag, report);
 
-        // ⛔ A BASELINE, not a claim of correctness -- and the numbers are deliberately not asserted as
-        // zero. The magical path had never run against real data before this; what matters first is that
-        // it runs at all and that the figure is recorded so it can only improve.
-        (inside + over + under).ShouldBeGreaterThan(20, "predicted too few magical hits: " + summary);
-
-        // ⛔ NOT a fit. At MAGE_FREE_INT=12 every ceiling violation disappears (28 over -> 0), which is
-        // why 12 is the documented value -- but 20 hits then fall UNDER the floor and no value fits both
-        // ends. The reason is visible in the data and is not the formula: bucket (6042, mob 344) spans
-        // 30..102 among CLEAN hits, a 3.4x range, where the magic-attack bounds (112..125) can only
-        // produce 1.1x. Something varies within a bucket that this harness does not model, and 28 hits
-        // across 12 buckets is far too thin to isolate it -- the fighter set has 590.
-        //
-        // Recorded as a ratchet on the ceiling only, because that is the half that is currently clean.
-        over.ShouldBeLessThanOrEqualTo(over == 0 ? 0 : 28, "magical ceiling violations: " + summary);
+        // ⛔ RED, AND HONESTLY SO. Every magical hit lands ABOVE the predicted ceiling -- 10 of 10 on the
+        // MageZero sample -- so the magical path under-predicts. Asserted the same way the physical one
+        // is, because a weaker assertion is how this went unnoticed: the previous version asserted only
+        // "more than 20 hits were predicted" and passed while 28 of 28 sat outside the band.
+        skipped.ShouldBe(0, "some magical hits were refused rather than predicted: " + summary);
+        over.ShouldBe(0, "a magical hit exceeded the ceiling: " + summary);
+        under.ShouldBe(0, "a magical hit fell under the floor: " + summary);
     }
 }
