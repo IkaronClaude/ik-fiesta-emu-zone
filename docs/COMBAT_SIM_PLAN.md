@@ -669,47 +669,98 @@ Nothing exists. `SkillDataBox` reads `CastTime`/`DlyTime` for attack intervals o
 never been looked at, plus `SKILLBASH_CAST_SUC_ACK` / `CAST_FAIL_ACK` / `HIT_OBJ_START` / `HIT_BLAST`.
 Extend `damage_buckets.py` to bucket skill hits by (skill id, rank, state) exactly as it does swings.
 
-## 4b. Every source that feeds a stat — which are accounted for, and which are not
+## 4b. The modifier sources the simulation does NOT process
 
-Operator's list, 2026-09-02: *"Weapon Enchants, Weapon crit rate upgrades through licenses, weapon
-socketed bonus stones, set bonuses, character title bonuses, skill empower."*
+Operator, 2026-09-02: *"Weapon Enchants, Weapon crit rate upgrades through licenses, weapon socketed bonus
+stones, set bonuses, character title bonuses, skill empower."* Plus the correction that matters most:
+*"license DIRECTLY gives a damage bonus ONLY against a mob of this type... Only the DAMAGE is conditional,
+the CRIT is a full bonus on the weapon against all enemies."*
 
-The container has SEVEN modifier clusters (`Item`, `ItemPowerRate`, `Upgrade`, `WeaponTitle`,
-`PassiveSkill`, `AbnormalState`, `LastTune`), each with a Plus and a Rate half, and the accessors read
-specific ones. So "is source X accounted for" is really "does X land in a cluster the accessor reads".
+The engine reaches a stat through SEVEN container clusters (`Item`, `ItemPowerRate`, `Upgrade`,
+`WeaponTitle`, `PassiveSkill`, `AbnormalState`, `LastTune`), each with a Plus and a Rate half — but not
+every source goes through a cluster at all. Three distinct mechanisms are now known:
 
-**Settled, with evidence:**
+1. **cluster** — folded into the container, read by every accessor that reads that cluster;
+2. **dedicated `ShinePlayer` field** — outside the container entirely (the license damage bonus);
+3. **global staging buffer** — `setitemskilleffect`, rebuilt per caster (set bonuses).
 
-| source | lands in | evidence |
+Anything modelled as (1) that is really (2) or (3) will be silently absent from the simulation.
+
+### Settled, with evidence
+
+| source | mechanism | evidence |
 | --- | --- | --- |
-| skill empower | neither — added straight to both weapon bounds | read at `roe_AttackPower+0x17E`, oracle-confirmed |
-| weapon base crit, jewellery, costumes | `Item.Rate[CriDamRate]`, SUMMED | live container: axe 90 + mask 70 + earrings 40 = exactly 200 |
+| skill empower | neither — added to both weapon bounds directly | `roe_AttackPower+0x17E`, oracle-confirmed |
+| weapon base crit, jewellery, costumes | `Item.Rate[CriDamRate]`, SUMMED | live container: 90 + 70 + 40 = exactly 200 |
 | crit buff scrolls | `AbnormalState.Rate[CriDamRate]` | live container: `HighCriScroll` = 40 |
-| MEN | no cluster at all — a table lookup in `roe_FreeStatCriRate` | live table, 25 MEN = 50 |
+| MEN | no cluster — a table lookup in `roe_FreeStatCriRate` | live table, 25 MEN = 50 |
 | weapon enchant (+N) | `Upgrade` cluster | the weapon-damage accessors read `Upgrade.Plus`, fuzz-verified |
 
-**NOT established — and deliberately not guessed:**
+### ⭐ Licenses / weapon titles — READ, and they split in two
 
-- **Licenses.** `iac_wptitle_Setlicense@ItemAttrCls_Weapon` names the WEAPON TITLE system, and
-  `roe_CriticalRate` does read `WeaponTitle.Rate[CriDamRate]` — so the path plausibly exists end to end.
-  The symbol name is not proof that a license writes that slot.
-- **Socketed stones.** `EnchantSocketRateTable` / `NC_ITEM_ENCHANT_ADD_GEM` exist; which cluster they
-  land in is unread. ⚠️ `so_FirstActionAfterSocketConnect` is a NETWORK socket and a false friend here.
-- **Character titles.** `CCharacterTitle` / `CCharacterTitleZone` are a separate system from
-  `CWeaponTitle`; whether they reach a cluster the damage accessors read is unknown.
+`WEAPON_TITLE_DATA` (64 bytes) is the whole mechanic and matches the operator's description field for
+field:
 
-⭐ **Set bonuses do NOT reach `roe_CriticalRate` at all.** That formula reads exactly three clusters
-(`Item.Rate`, `WeaponTitle.Rate`, `AbnormalState.Rate`) plus the MEN table, and touches no set-item data.
-The set buffer reaches combat only through `smo_SkillBlast`'s slot reads — so a set bonus can scale skill
-damage and skill hit rate but cannot add critical chance by that path.
+```
++0x00 MobID          u16     <- the license is keyed to a MOB TYPE
++0x02 Level          u8
++0x23 MobKillCount   u32     <- "depending on how many you killed"
++0x27 MinAdd         u16     <- the damage bonus
++0x29 MaxAdd         u16
++0x2B SP1_Reference/Type/Value, then SP2, SP3   <- three per-level options
+```
 
-**How to settle the three open ones:** the same way the crit model was settled — equip the item on a live
-character and read the container ([[fiesta-live-container-read]]). One read per source answers it exactly,
-where a displacement scan cannot: a loop writing `cluster[slot]` with a computed index is invisible to it,
-and this binary's COMDAT folding makes such a scan actively misleading.
+`smo_ply_WeaponTitleSet(mobId)` (`ShinePlayer` 0x00569CD0) looks the row up for the equipped weapon and
+the given mob id, then:
 
-- [ ] **Read a live container with a licensed weapon, a socketed weapon, and a character title equipped**,
-      and record which cluster each moves.
+- **`MinAdd` / `MaxAdd` -> `ShinePlayer` fields +0x1634/+0x1638 and +0x1648/+0x164C.** NOT a cluster. And
+  the function takes a **mob id**, so this is re-staged per TARGET TYPE — which is exactly the operator's
+  "only against a mob of this type". A simulation must call it on target change, not once at equip.
+- **`SP1..SP3` -> `sp_WeaponTitleOption(Reference, Type, Value)`**, which implements exactly ONE case:
+  `Reference == 1 && Type == 1` accumulates into `ShinePlayer+0x16A0`; everything else logs "Invalid".
+
+⭐ **This explains `WeaponTitle.Rate[CriDamRate]`** — the cluster `roe_CriticalRate` reads and that this
+port had never seen WRITTEN. The unconditional half of a license is its crit, so a licensed weapon's crit
+should arrive there and the existing crit model already handles it, provided a caller seeds the cluster.
+That is a hypothesis with a named test below, not a claim.
+
+- [ ] **Find the damage path's consumer of `ShinePlayer+0x1634/+0x1638`.** A displacement scan finds only
+      `smo_ply_WeaponTitleSet` (the writer) and `sp_ParameterView` (the stat-panel packet) — and per this
+      project's own rule that is NOT a negative result: a computed-index read is invisible to such a scan,
+      and this binary's COMDAT folding makes one actively misleading. Until the consumer is found, the
+      **+20% to +40% versus the licensed mob type is entirely unmodelled**.
+- [ ] **Confirm the license crit lands in `WeaponTitle.Rate[CriDamRate]`** with a live container read on a
+      character holding a levelled license. If it does, crit from licenses is already correct and only the
+      seeding is missing. If it does not, the crit model has a source it cannot see.
+- [ ] **Decode `sp_WeaponTitleOption`'s `Type` space.** Only `Type == 1` is implemented; whether crit is
+      that one type or arrives by another route is unread.
+
+### Still unaccounted for
+
+- [ ] **Weapon socketed bonus stones.** `EnchantSocketRateTable`, `NC_ITEM_ENCHANT_ADD_GEM` and
+      `NC_ITEM_ENCHANT_ADD_NEW_SOCKET` exist; which cluster a socketed stone lands in is unread.
+      ⚠️ `so_FirstActionAfterSocketConnect` is a NETWORK socket and a false friend — do not follow it.
+- [ ] **Character title bonuses.** `CCharacterTitle` / `CCharacterTitleZone` are a SEPARATE system from
+      `CWeaponTitle`, despite the shared word. Whether they reach a cluster the damage accessors read is
+      unknown.
+- [ ] **`setitemskilleffect`'s slot names** (see task 4). The set buffer is understood and slots 2 and 13
+      have their uses read, but the index enum does not fit — 15 named values against 17 slots, and its
+      slot 2 is `KEEPTIME` where the code uses slot 2 as a damage multiplier.
+
+⭐ **Set bonuses cannot add critical chance.** `roe_CriticalRate` reads exactly `Item.Rate`,
+`WeaponTitle.Rate` and `AbnormalState.Rate` plus the MEN table, and touches no set-item data. The set
+buffer reaches combat only through `smo_SkillBlast`'s slot reads — so it scales skill damage and skill hit
+rate and nothing else.
+
+### How to settle the open ones
+
+Live container reads, the way the crit model was settled ([[fiesta-live-container-read]]): equip the
+item, read the container, see which cluster moved. One read per source, exact, and it sees the
+computed-index writes a static scan cannot.
+
+- [ ] **One live read each with: a levelled license, a socketed weapon, a character title.** Record which
+      cluster (or which `ShinePlayer` field) each moves. This single session would close four of the items
+      above.
 
 ## 5. The five damage hooks that no clean swing reaches
 
