@@ -303,11 +303,56 @@ order is not a clock (see task 6).
       declines to act on. Ported as `SubAbstatePriority` + `AbstateListInObject.SetWithPriority`, which
       returns the displaced states because each is an `ABSTATERESET` the server owes its clients.
 
-- [ ] **The passive-skill half** — `cpl_SetAbstate` (0x00446A10), `so_ply_PassiveSetAbstate` (0x005798E0),
-      `PSkillSetAbstate.shn` and `PassiveDataBox::sdb_GetSetAbstate`: which passives apply an abstate, and
-      on what condition.
-- [ ] **`mdt_ArgumentLoad`'s abstate half** — a skill row also carries an `ABSTATEINDEX` to apply
-      (row +0x0C), alongside the `damagerate` and `crirateadd` it writes.
+- [x] **The passive-skill half — READ and PORTED** (`Abstate/PassiveSetAbstate.cs`).
+      `cpl_SetAbstate` accepts exactly FOUR conditions (`cmp [ebp+8], 4; jge`, then a four-entry jump
+      table), so that is the complete set of hooks passives have into the abstate system:
+
+      ```
+      foreach (row in passiveList)
+          if (row.PS_Condition != condition)                                   continue;
+          if (condition == PS_CBOWATKRATEKNOCKBACK &&
+              (!flag || source.weapon.WeaponType != WT_CROSSBOW /*10*/))       continue;
+          if (condition == PS_MEDMGMISSCRIUPRATE && !flag)                     continue;
+          if (row.PS_ConditioRate <= rb_1000())                                continue;
+          abstate = as_FromName(row.PS_AbStateInx);            // by NAME, not index
+          if (!abstate || target->so_AbnormalState_Resist(abstate) == 1)       continue;
+          target->so_AbnormalState_Set_Simple(source, abstate.index, row.Strength, 1);
+      ```
+
+      Reached through `so_ply_PassiveSetAbstate`, whose base `ShineObject` implementation does nothing —
+      **only a player applies an abstate this way; a mob never does.** The abstate lands on the SECOND
+      argument (both the resist check and the set are called on it); the first is only the source. The
+      loop does not stop at the first match, so each matching row rolls independently.
+
+      ⭐ **The shipped data does not exercise all of it.** All 16 rows of `PSkillSetAbstate.shn` use
+      conditions 1, 2 and 3 — **condition 0 has no rows at all**, so the crossbow weapon gate is reachable
+      code with nothing behind it. Rows: cond 1 = `MagicDance01`..`04` + `PointAttack01`..`04` ->
+      `StaMagicDanceUseSPDown01`..`04`; cond 2 = `DeepFear01`..`04` -> `StaDeepFearMenDownRate01` at
+      strengths 1..4; cond 3 = `Shame01`..`04` -> `StaShameCRIUp01`..`04`. Every rate is **1000**, which
+      with the strict-greater rule always fires. And rank is expressed two different ways — `DeepFear` as
+      four strengths of one abstate, the others as four abstates at strength 1 — so rank does not reliably
+      live in `Strength`.
+- [x] **`mdt_ArgumentLoad`'s abstate half — READ.** `mdvba_NewState` (row +0x0C) applies when it is
+      **below 0x318** (a `jge`, so 0x318 itself applies nothing — out of range is how a row says "modify
+      the damage but apply no state", not an error value):
+
+      ```
+      abstate = as_FromIndex(row.mdvba_NewState);          // by INDEX here, unlike the passive path
+      if (defender->so_AbnormalState_Set(attacker, row.mdvba_NewState, 1, abstate, 0,-1,0, 6, 0))
+          defender->so_AbnormalState_BitSet(abstate.index);
+      ```
+
+      It lands on the DEFENDER; **strength is a hard-coded 1** (the row has no strength field, so a
+      skill's misc-data abstate is always rank 1); and it uses the FULL `so_AbnormalState_Set`
+      (vtable +0x638), not the `_Simple` overload (+0x644) the passive path uses. ⚠️ Unlike the passive
+      path it does **not** roll resistance first — it hands the decision to `so_AbnormalState_Set` and
+      only bit-sets on success.
+
+      *Tooling note, cost half an hour:* `disasm`'s VA->name map keeps ONE name per address, and this
+      binary folds identical COMDATs hard — ~70 symbols share 0x00615E70, so vtable slot +0x634 prints as
+      `GDTSO_SetDiceFix@CGambleObject` when it is also `so_AbnormalState_Resist@ShineObject`. A slot that
+      resolves to an absurd name is the lookup, not the binary; list every symbol at the VA before
+      concluding anything.
 
 **Proof:** count applications per attempt in a capture and compare to the predicted chance. Needs a capture
 with a debuff used repeatedly against the same target.

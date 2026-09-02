@@ -83,9 +83,42 @@ public sealed class MiscDataTable(IEnumerable<MiscDataVarifyByAbstate> rows)
         return Satisfies(row.Condition, defenderStates, facts) ? row : null;
     }
 
-    /// <summary>The `ABSTATEINDEX` this row applies, or <c>null</c> when it is out of range.</summary>
+    /// <summary>The `ABSTATEINDEX` this row applies, or <c>null</c> when it is out of range.
+    ///
+    /// <para>The bound is a `jge` on 0x318, so 0x318 itself does NOT apply. Out of range is how a row
+    /// says "modify the damage but apply nothing" -- it is not an error value.</para></summary>
     public static int? StateToApply(MiscDataVarifyByAbstate row)
         => row.NewState < AbstateIndexLimit ? row.NewState : null;
+
+    /// <summary>How `mdt_ArgumentLoad` applies that state, once <see cref="StateToApply"/> has given one
+    /// (+0x109..+0x14E).
+    ///
+    /// <code>
+    /// abstate = as_FromIndex(row.mdvba_NewState);      // by INDEX here, unlike the passive path's name
+    /// if (abstate == null) return;
+    /// if (defender-&gt;so_AbnormalState_Set(attacker, row.mdvba_NewState, 1, abstate,
+    ///                                    0, -1, 0, 6, 0))
+    ///     defender-&gt;so_AbnormalState_BitSet(abstate.index);
+    /// </code>
+    ///
+    /// <para>Three things worth having as constants rather than as literals buried in a call:</para>
+    /// <list type="bullet">
+    ///   <item>it lands on the <b>DEFENDER</b>, with the attacker only as the source;</item>
+    ///   <item><b>strength is a hard-coded 1</b> — the row carries no strength field, so a skill's
+    ///         misc-data abstate is always rank 1 whatever the skill;</item>
+    ///   <item>it uses the FULL `so_AbnormalState_Set` (vtable +0x638), not the `_Simple` overload
+    ///         (+0x644) that the passive path uses — different entry point, different argument shape.</item>
+    /// </list>
+    ///
+    /// <para>⚠️ Note this path does NOT roll resistance first. The passive path checks
+    /// `so_AbnormalState_Resist` before applying and this one does not: it hands the whole decision to
+    /// `so_AbnormalState_Set` and only bit-sets when that reports success.</para></summary>
+    public const int AppliedStrength = 1;
+
+    /// <summary>The literal `6` passed as `so_AbnormalState_Set`'s eighth argument on this path. Named
+    /// rather than explained, because what the parameter MEANS is not read yet — only that it is
+    /// constant here.</summary>
+    public const int AppliedSetArgument = 6;
 
     /// <summary>`so_smo_AbnormalStateAttribute@ShineMobileObject` (0x004A8010) — does any state currently
     /// on the object satisfy this attribute?</summary>
