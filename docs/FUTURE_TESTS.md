@@ -57,17 +57,62 @@ are where 0x1035's params 16 and 17 pick up their free-stat halves. What remains
       "The critical rate, measured". Still open as a TEST: crit DAMAGE has never been checked against a
       capture -- every hit validated so far is `flagWord == 0` -- so a crit-heavy capture filtered on
       `iscritical` is still wanted.
-- [ ] **Magical damage.** `roe_magical` / `roe_normalMA` never exercised — no caster has attacked in any
-      capture. Needs a Mage/Cleric capture.
+- [ ] **Magical damage.** `roe_magical` / `roe_normalMA` still never exercised. Both candidate captures
+      were checked on 2026-09-02 and NEITHER is magical:
+
+      * `CombatPriest.pcapng` is a **Paladin (class 8) at level 82** on port **9025** — 20 outgoing swings
+        at **25% crit**, plus two skills, `Wield10` (Bash) and `PsychicBlunt05` (Trip). Despite the name,
+        both carry `MinWC`/`MaxWC` and zero `MinMA`/`MaxMA`, so they are PHYSICAL.
+      * `Damage.pcapng` is the same Paladin, 55 swings at 9.09% crit, no skills.
+
+      Live capture was attempted instead and is BLOCKED: `MageZero` casts `IceBolt01` 111 times and lands
+      nothing — every cast answered `0x0FCD` "Skill has not been finished normally", because the bot
+      re-issues `CHANGEMODE -> STOP -> CAST` every ~500ms and interrupts its own cast. Filed as a P0 on
+      `ik-fiesta-bots`. **A magical capture needs that fixed, or a human casting.**
+
+      ⚠️ Tooling note, and it manufactured a false absence: `pcap_decode.py` was dying with
+      `UnicodeEncodeError` when piped on Windows, so `CombatPriest.pcapng` first read as having ZERO
+      damage packets and its zone port as 9016. It has 74 swings on port 9025 and the dump had stopped at
+      9% of its real length. Fixed at the tool (`fiesta-proxy` 81713a1).
 - [x] **Skills are bucketed** (2026-09-02). `damage_buckets.py` now decodes
       `NC_BAT_SKILLBASH_HIT_DAMAGE_CMD` and attributes each hit to its skill through
       `NC_BAT_SKILLBASH_HIT_OBJ_START_CMD`'s index: **706 attributed hits over 11 skills, 54 critical of
       706 landed (7.65%)** against 5.56% on plain swings in the same capture. Two traps are commented at
       the code: a skill hit's flag word is NOT the swing layout (an extra `isdamage` bit shifts every name
       by one), and one packet carries MANY targets.
-      Still open as a PREDICTION test: the buckets exist but no skill damage has been predicted and
-      compared. That needs `sdi_DamageRule` per skill and the `ActiveSkillInfo` bounds wired to the
-      capture's skill ids.
+      ⭐ **The capture's skill columns are READ, and they cross-check the flag decode independently.**
+      All eleven, from `ActiveSkill.shn`:
+
+      | id | skill | MinWC | MaxWC | rates |
+      | --- | --- | --- | --- | --- |
+      | 5 | TripleHit06 | 700 | 791 | 0 |
+      | 24 | SeverBone05 | 268 | 316 | 0 |
+      | 45 | RedSlash06 | 348 | 409 | 0 |
+      | 124 | PowerHit05 | 950 | 1059 | 0 |
+      | **143** | **MoraleDecrease04** | **0** | **0** | 0 |
+      | 183 | HarmDefect04 | 283 | 333 | 0 |
+      | 201 | GreatSwing02 | 826 | 922 | 0 |
+      | 221 | PowerDrain02 | 371 | 437 | 0 |
+      | 240 | BashStrike01 | 1100 | 1225 | 0 |
+      | **261** | **SnearShout02** | **0** | **0** | 0 |
+      | 300 | CrushStrike01 | 1404 | 1564 | 0 |
+
+      **143 and 261 are exactly the two skills the bucketing found with `isdamage` CLEAR on every hit**
+      (60 and 2 hits, "none damaging"). The wire flag and the game data agree without being compared —
+      a zero-WC skill sets no damage bit. That is the strongest evidence yet that the skill flag layout
+      was read correctly.
+
+      Also worth noting: **every rate column is 0** on this data, so a skill's contribution here is purely
+      the FLAT add. The independent-bounds finding (`MinWCRate` widening the range) is real in the code and
+      unexercised by this capture.
+
+- [ ] **Predict a skill hit and compare.** Everything needed now exists — 706 attributed hits, the eleven
+      rows above, and `AttackPower(..., skill:)` ported. What is missing is the harness: `BucketGroundTruth`
+      predicts SWINGS only, and a skill bucket additionally needs `sdi_DamageRule` per skill (which rule the
+      skill uses) and `mdt_ArgumentLoad`'s `damagerate`/`crirateadd` for it. ⚠️ Note the means do NOT track
+      `MinWC` linearly (skill 5 has the second-highest MinWC and the lowest mean), which is expected — the
+      flat add lands on ATTACK POWER and then goes through `roe_Damage`, not on the final figure. Any
+      prediction that looks linear in MinWC is wrong.
 
 ## Untested table coverage
 
