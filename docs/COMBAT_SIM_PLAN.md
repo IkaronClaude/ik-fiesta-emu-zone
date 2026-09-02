@@ -564,9 +564,44 @@ Extend `damage_buckets.py` to bucket skill hits by (skill id, rank, state) exact
 
 ## 5. The five damage hooks that no clean swing reaches
 
-`OPEN_QUESTIONS.md` §3, unchanged: `ChargedEffectContainer` attack/defence force rates, the crit damage
-bonus (also task 1), `so_ply_DecreaseDmgPassiveSkill`, `EventRun_IncDmgRate` item actions, and the abstate
-damage callbacks (also task 2). Each needs a capture that actually triggers it.
+Four of the five are now read; the fifth is the item-action machinery in task 1's list.
+
+- [x] **The crit damage bonus** — `2*dmg + dmg*PassiveCriDamageRatePlus/1000` (container +0xCDC). Task 1.
+- [x] **`ChargedEffectContainer` attack/defence force rates** — `ApplyChargedEffect`. Task 1.
+- [x] **The abstate damage callbacks** — all read and ported. Task 2.
+- [x] **`so_ply_DecreaseDmgPassiveSkill`** (0x005651E0) — READ and PORTED
+      (`Combat/DecreaseDamagePassive.cs`). A POSITIONAL reduction: the defender takes less from a nearby
+      monster that is facing away from them. The base `ShineObject` returns the damage unchanged, so only
+      a player is ever protected.
+
+      Four gates first: attacker non-null; `so_GetKind() == 5` (a MONSTER — PvP is unaffected);
+      `DMGMinusRate > 0` (container +0x0DAC); both objects have a position. Then:
+
+      ```
+      if (DMG_MinusArea² < distanceSquared)  return damage;   // squared, no sqrt
+      bearing = ddt_DirectSR(defender - attacker);
+      diff    = fold(|attacker.facing - bearing|)             // into 0..90 units
+      if (diff <= 45) return damage;                          // inside its forward cone
+      return damage - damage * DMGMinusRate / 1000;
+      ```
+
+      `DMG_MinusArea` comes from `CSingleDataMap` under that key, read once and cached in a global — so it
+      is server-wide, not per character.
+
+      ⚠️ **The angular unit is DIRECTION UNITS of 2° each** (the bearing halved), which is the whole
+      difficulty of this function. Confirmed against this repo's existing `sr_degree2sr` port
+      (`DamageByAngleTable.DegreesToUnits`, `(deg % 360) * 180 / 360`) and `DamageByAngle`'s `uint16[91]`
+      covering 0–90 units = 0–180°. So the fold's modulus of **180 units is a FULL TURN (360°)** and the
+      **45-unit cone is 90°**: you are protected when the monster faces more than 90° away from you.
+
+      Reading the units wrong flips the meaning entirely and silently — as plain degrees the fold looks
+      like a 90° axis and the rule like a perpendicularity test; as half-degrees the cone becomes 22.5°.
+      I went through both before the ported `sr_degree2sr` settled it. **The numeric tests were correct
+      under all three readings**, because the arithmetic never changed — only the prose was ever at risk,
+      which is exactly why the unit is now stated with its evidence.
+
+- [ ] **`EventRun_IncDmgRate` item actions** — the same item as task 1's, below. The only hook of the five
+      still unmodelled.
 
 ## 6. Instrument work these depend on
 
