@@ -80,6 +80,12 @@ SKILL_FLAGS_B0 = ["isdamage", "iscritical", "ismissed", "isshieldblock",
 SKILL_FLAGS_B1 = ["isDead", "isImmune", "IsCostumShield"]
 SKILL_DAMAGE_RECORD = 14
 
+# Flags that make a skill hit unusable as a damage sample: critical, missed, shieldblock, heal, enchant,
+# resist, and -- the one that cost 127 undershoots -- isDead, the killing blow.
+# ⚠️ isheal (0x10) and isenchant (0x20) are NOT excluded: a skill that damages AND applies an effect is
+# still a clean damage sample, and excluding them wiped four skills entirely.
+SKILL_NOT_CLEAN = 0x02 | 0x04 | 0x08 | 0x40 | 0x100
+
 
 def decode(pcap, port, cache):
     if cache and os.path.exists(cache):
@@ -88,7 +94,13 @@ def decode(pcap, port, cache):
     # --timestamps is what makes a DURATION checkable. Without it the dump carries per-direction byte
     # offsets and nothing else, so an abstate's restKeeptime cannot be expired and frame ORDER gets
     # mistaken for a clock.
-    cmd = [sys.executable, PCAP_DECODE, pcap, "--hide-movement", "--timestamps"]
+    # ⚠️ `--hex-limit` IS NOT COSMETIC -- it decides what this file can see at all. `pcap_decode`
+    # defaults to 128 bytes and the hex rows ARE the wire here, so a longer payload is silently cut off
+    # mid-struct rather than reported as truncated. `NC_CHAR_CLIENT_SKILL_CMD` is 790 bytes for a level-60
+    # fighter; at the default only the first 9 of its 65 skill records survive, which showed up as the
+    # empower allocation on `PowerHit01` simply not existing. Anything array-shaped has this shape of bug.
+    cmd = [sys.executable, PCAP_DECODE, pcap, "--hide-movement", "--timestamps",
+           "--hex-limit", "65536"]
     if port:
         cmd += ["--port", str(port)]
     out = subprocess.run(cmd, capture_output=True, env=env,
@@ -152,12 +164,17 @@ def collect(lines):
     levelups = 0
     level = None
     free_stat, chrclass, passives = {}, None, ()
+    skill_empower = {}                            # skill id -> the raw SKILL_EMPOWER word
     weapon = None                                 # item id in the weapon slot, or None if unknown
     swings, chat, hit_counts = [], [], collections.Counter()
     # A skill hit does not name its skill. `NC_BAT_SKILLBASH_HIT_OBJ_START_CMD` (0x244E) carries
     # {skill, targetobj, index} and the damage packet carries only the index, so the id has to be carried
     # forward from the cast that opened it. Keyed per conversation, like everything else here.
     skill_of_index = {}
+    # The frame ORDER at which each cast index opened. A skill's damage is resolved from the state that
+    # was true when the CAST began, and the cast's own effects are broadcast in between -- see
+    # `cast_start` in `live()`.
+    cast_started_at = {}
     skill_hits = []
     # ⚠️ RESTKEEPTIME IS THE SERVER'S JOB, AND THIS FILE IS NOT THE SERVER.
     #
@@ -184,7 +201,19 @@ def collect(lines):
         expires = None
         if keeptime_ms and now is not None:
             expires = now + keeptime_ms / 1000.0
-        abstates[(conv, handle)][ident] = (strength, expires)
+        # ⚠️ The frame ORDER is stored alongside, and it is load-bearing. `now` cannot separate an
+        # abstate a hit INHERITED from one the same hit CAUSED: the server broadcasts ABSTATESET and the
+        # damage packet in the same tick, with identical timestamps. Only the order distinguishes them.
+        #
+        # ⚠️ A REFRESH IS NOT A NEW STATE. `RedSlash` re-applies `StaRedSlash` on every cast, so the
+        # second hit on a mob is preceded by an ABSTATESET exactly like the first. Stamping that refresh
+        # with the new order would make the hit look like the cause of a debuff it merely INHERITED, and
+        # the state -- already active and already affecting the damage -- would be dropped from the tag.
+        # While the strength is unchanged the state never lapsed, so the ORIGINAL order is what counts; a
+        # strength CHANGE is a new state and takes the new order.
+        held = abstates[(conv, handle)].get(ident)
+        began = held[2] if held is not None and held[0] == strength else order
+        abstates[(conv, handle)][ident] = (strength, expires, began)
 
     def clear_abstate(conv, handle, ident):
         # An explicit ABSTATERESET. If the timer had already dropped this one, the wire has just CONFIRMED
@@ -197,13 +226,35 @@ def collect(lines):
             del timer_gone[key]
         abstates[(conv, handle)].pop(ident, None)
 
-    def live(conv, handle, now):
+    def live(conv, handle, now, cast_start=None):
         """The states still active at `now`, dropping any whose restKeeptime has run out.
 
         A state with no expiry (keeptime 0, or a dump without timestamps) is kept: "we do not know when
-        this ends" must not be silently turned into "it already ended"."""
+        this ends" must not be silently turned into "it already ended".
+
+        ⭐ `cast_start` EXCLUDES THE HIT'S OWN EFFECT, and without it a debuffing skill is unpredictable.
+        `RedSlash` applies `StaRedSlash`, whose `SubAbState` action 73 takes 78 flat off the target's AC,
+        and the server broadcasts it IMMEDIATELY BEFORE the damage packet of the very hit that applied it:
+
+            t=284.832  ABSTATESET            handle 2704, abstate 1, strength 6, keeptime 20000
+            t=284.832  ABSTATE_CHANGE        (the same, with the keeptime)
+            t=284.832  SKILLBASH_HIT_DAMAGE  handle 2704, dmg 201
+
+        Tagging that hit with the debuff hands the defender -78 AC on a hit the server resolved at FULL
+        armour, so the prediction comes out high. The next `RedSlash` on the same mob, 8.9 s later and
+        inside the 20 s keeptime, genuinely does benefit: 201 -> 284, a 1.41x jump on identical stats.
+        Measured over the capture, the second hit on a handle runs 1.30x the first (n=3, 1.216-1.413).
+
+        So a skill hit is tagged with the state as of the order its CAST opened, which is what the server
+        resolved the damage against. This was worth 68 of the 71 `RedSlash` hits: every first-hit on a mob
+        was predicted too high and every second-hit already fitted.
+
+        Swings pass no `cast_start` and keep the damage frame's own order -- an auto-attack has no cast to
+        be the boundary, and applies no state of its own here."""
         out = {}
-        for ident, (strength, expires) in abstates[(conv, handle)].items():
+        for ident, (strength, expires, set_at) in abstates[(conv, handle)].items():
+            if cast_start is not None and set_at >= cast_start:
+                continue        # this cast's OWN doing -- it cannot have changed the damage it dealt
             if expires is not None and now is not None and now >= expires:
                 key = (conv, handle, ident)
                 if key not in timer_gone:
@@ -319,9 +370,30 @@ def collect(lines):
             text = raw[2:2 + raw[1]].decode("latin-1", "replace").strip()
             if text and not text.startswith("&"):
                 chat.append({"order": order, "conv": conv, "text": text})
+        elif name == "NC_CHAR_CLIENT_SKILL_CMD" and len(raw) >= 10:
+            # ⭐ THE EMPOWER ALLOCATION -- the one input to skill damage that is per-CHARACTER and lives
+            # nowhere in the data files. `PROTO_NC_CHAR_CLIENT_SKILL_CMD` is
+            # {restempow u8, PartMark u8, nMaxNum u16} then `PROTO_NC_CHAR_SKILLCLIENT_CMD`
+            # {chrregnum u32, number u16} and finally `number` * `PROTO_SKILLREADBLOCKCLIENT` (12):
+            #   {skillid u16, cooltime u32, empow u16, mastery u32}
+            # `empow` is a `SKILL_EMPOWER` bitfield -- damage:4, sp:4, keeptime:4, cooltime:4.
+            #
+            # ⚠️ IT IS REPORTED ON THE BASE OF THE SKILL LINE, NOT THE RANK CAST. In this capture the four
+            # allocations sit on ids 20, 40, 100 and 120 -- `SeverBone01`, `RedSlash01`, and `PowerHit01` --
+            # while the character is level 60 and casts ranks 24, 45 and 124. Four of four on a line base
+            # is what says the allocation belongs to the LINE; walk `DemandSk` to the root to find it.
+            count = u16(raw, 8)
+            for i in range(count):
+                o = 10 + i * 12
+                if o + 12 > len(raw):
+                    break
+                empow = u16(raw, o + 6)
+                if empow:
+                    skill_empower[u16(raw, o)] = empow
         elif name == "NC_BAT_SKILLBASH_HIT_OBJ_START_CMD" and len(raw) >= 6:
             # {skill u16@0, targetobj u16@2, index u16@4} -- the only place the skill id appears.
             skill_of_index[(conv, u16(raw, 4))] = u16(raw, 0)
+            cast_started_at[(conv, u16(raw, 4))] = order
         elif name == "NC_BAT_SKILLBASH_HIT_DAMAGE_CMD" and len(raw) >= 5:
             # {index u16@0, caster u16@2, targetnum u8@4} then targetnum * SkillDamage(14):
             #   {handle u16, flag u16, hpchange u32, resthp u32, hpchangeorder u16}
@@ -331,6 +403,7 @@ def collect(lines):
             # undercount this capture's skill hits by a factor of two.
             index, caster, targetnum = u16(raw, 0), u16(raw, 2), raw[4]
             skill = skill_of_index.get((conv, index))
+            opened = cast_started_at.get((conv, index))
             for i in range(targetnum):
                 off = 5 + i * SKILL_DAMAGE_RECORD
                 if off + SKILL_DAMAGE_RECORD > len(raw):
@@ -348,8 +421,8 @@ def collect(lines):
                     "attackerMob": mob_of.get((conv, caster)),
                     "defenderMob": mob_of.get((conv, handle)),
                     "params": tuple(sorted(params.items())),
-                    "attackerAbstates": tuple(sorted(live(conv, caster, ts).items())),
-                    "defenderAbstates": tuple(sorted(live(conv, handle, ts).items())),
+                    "attackerAbstates": tuple(sorted(live(conv, caster, ts, opened).items())),
+                    "defenderAbstates": tuple(sorted(live(conv, handle, ts, opened).items())),
                 })
         elif name == "NC_BAT_SWING_DAMAGE_CMD" and len(raw) >= 16:
             att, dfn = u16(raw, 0), u16(raw, 2)
@@ -374,7 +447,7 @@ def collect(lines):
                 "defenderAbstates": tuple(sorted(live(conv, dfn, ts).items())),
             })
     expiry["timer_unconfirmed"] = len(timer_gone)
-    return swings, chat, hit_counts, free_stat, chrclass, expiry, skill_hits
+    return swings, chat, hit_counts, free_stat, chrclass, expiry, skill_hits, skill_empower
 
 
 def main():
@@ -387,7 +460,7 @@ def main():
     a = ap.parse_args()
 
     lines = decode(a.pcap, a.port, a.decoded)
-    swings, chat, hit_counts, free_stat, chrclass, expiry, skill_hits = collect(lines)
+    swings, chat, hit_counts, free_stat, chrclass, expiry, skill_hits, skill_empower = collect(lines)
 
     # The player, per conversation: the handle that gets hit most and was never announced as a mob.
     # Robust to relogs and to a handle number meaning different things in different conversations.
@@ -484,7 +557,18 @@ def main():
             # with 60 hits and no damage reads as a parser hole.
             tally["nodamage"] += 1
         # A clean damaging hit: isdamage set and nothing that changes the calculation.
-        if flags & 0x01 and not flags & 0x4E and s["damage"] > 0:
+        #
+        # ⭐ THE MASK MUST INCLUDE isDead (0x100). A KILLING BLOW reports the damage actually APPLIED --
+        # clamped to the target's remaining HP -- not the damage rolled. On the wire:
+        #     15:45:02  skill 6042  dmg=30   restHp=0    flag=0x2901   <- isDead, and 30 was all the mob had
+        #     15:45:17  skill 6042  dmg=102  restHp=344  flag=0x2801
+        # Bucketed together those look like a 3.4x spread from one skill against one mob, and the killing
+        # blow sits below any honest floor. The SWING path never had this bug because its filter is
+        # `flags == 0`, which excludes isDead by accident -- which is exactly why swings scored 510/510
+        # and skills did not.
+        #
+        # Also excluded: isheal (0x10) and isenchant (0x20), which are not plain damage either.
+        if flags & 0x01 and not flags & SKILL_NOT_CLEAN and s["damage"] > 0:
             skill_buckets[key].append(s["damage"])
 
     skill_rows = []
@@ -528,7 +612,9 @@ def main():
 
     json.dump({"chat": chat, "buckets": rows, "skillBuckets": skill_rows,
                "playerHandlePerConv": player,
-               "freeStat": free_stat, "chrclass": chrclass}, open(a.out, "w"), indent=1)
+               "freeStat": free_stat, "chrclass": chrclass,
+               "skillEmpower": {str(k): v for k, v in sorted(skill_empower.items())}},
+              open(a.out, "w"), indent=1)
 
     kept = [r for r in rows if r["n"] >= a.min_hits]
     total = sum(r["swings"] for r in rows)

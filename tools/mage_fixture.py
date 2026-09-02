@@ -59,7 +59,9 @@ def main(path, out):
     for h in hits:
         if h["skill"] is None or h["mob"] is None:
             continue
-        if not (h["flag"] & 0x01) or h["flag"] & 0x4E:          # clean damaging hits only
+        # ⭐ 0x100 is isDead -- a KILLING BLOW reports the damage APPLIED (clamped to the target's
+        # remaining HP), not the damage rolled, so it always sits below an honest floor.
+        if not (h["flag"] & 0x01) or h["flag"] & 0x14E:         # clean damaging hits only
             continue
         key = (h["skill"], h["mob"], tuple(sorted(h["params"].items())))
         by[key].append(h["dmg"])

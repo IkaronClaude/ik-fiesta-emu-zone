@@ -53,7 +53,8 @@ public class BucketGroundTruthTests
                                       IReadOnlyList<int> Passives, int? Weapon, int N, int Min, int Max);
 
     private sealed record Fixture(IReadOnlyList<Bucket> Buckets, IReadOnlyDictionary<string, int> FreeStat,
-                                  int ChrClass, IReadOnlyList<SkillBucket> SkillBuckets);
+                                  int ChrClass, IReadOnlyList<SkillBucket> SkillBuckets,
+                                  IReadOnlyDictionary<int, int> SkillEmpower);
 
     /// <summary>`NC_CHAR_CHANGEPARAMCHANGE_CMD` parameter ids for the three fields that matter.
     ///
@@ -121,7 +122,13 @@ public class BucketGroundTruthTests
 
         return new Fixture(buckets,
             root.GetProperty("freeStat").EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetInt32()),
-            root.GetProperty("chrclass").GetInt32(), skillBuckets);
+            root.GetProperty("chrclass").GetInt32(), skillBuckets,
+            // Absent in a fixture built before the empower allocation was read off the wire. Empty is the
+            // honest reading there -- "this capture did not record one" -- and it costs nothing, because a
+            // zero allocation contributes zero.
+            root.TryGetProperty("skillEmpower", out var emp) && emp.ValueKind == JsonValueKind.Object
+                ? emp.EnumerateObject().ToDictionary(x => int.Parse(x.Name), x => x.Value.GetInt32())
+                : new Dictionary<int, int>());
     }
 
     /// <summary>The free-stat Str term, <b>which is NOT the allocated point count.</b>
@@ -573,13 +580,64 @@ public class BucketGroundTruthTests
         foreach (var r in table.Rows)
         {
             var id = ShnFile.Int(r, "ID");
+            // ⭐ `nT0`..`nT3` -- the four empower tables, five entries each. The column names are the
+            // client's own and only the first of each run is named; the other four are `UndefinedN`, in
+            // file order. Their LENGTHS are declared too (`nIMPT`, `Undefined0`, `Undefined1`,
+            // `Undefined2`), which is how the grouping was confirmed rather than assumed: `Undefined1` is
+            // 0 for exactly the skills whose `nT2` run is all zeros.
+            //
+            // The four runs are, in order, DAMAGE / SP / KEEPTIME / COOLTIME -- the same order as
+            // `SKILL_EMPOWER`'s four bitfields. Read off the data, not assumed: `nT1`'s top entry is
+            // almost exactly half the skill's own `SP` for every skill checked (SP 106 -> 52, 120 -> 60,
+            // 82 -> 40, 154 -> 77), and `nT2` is empty for precisely the skills that apply no lasting
+            // state (`PowerHit`, `TripleHit`) while `RedSlash` and `GreatSwing`, which do, carry one.
+            uint[] Run(string first, params string[] rest)
+                => [(uint)ShnFile.Int(r, first), .. rest.Select(c => (uint)ShnFile.Int(r, c))];
             rows[id] = new Fiesta.Emu.Zone.Skill.ActiveSkillInfo(
                 MinFlat: (uint)ShnFile.Int(r, "MinWC"),
                 MinRatePermille: (uint)ShnFile.Int(r, "MinWCRate"),
                 MaxFlat: (uint)ShnFile.Int(r, "MaxWC"),
-                MaxRatePermille: (uint)ShnFile.Int(r, "MaxWCRate"));
+                MaxRatePermille: (uint)ShnFile.Int(r, "MaxWCRate"),
+                Empower: Fiesta.Emu.Zone.Skill.SkillEmpowerTable.FromArrays(
+                    Run("nT0", "Undefined3", "Undefined4", "Undefined5", "Undefined6"),
+                    Run("nT1", "Undefined7", "Undefined8", "Undefined9", "Undefined10"),
+                    Run("nT2", "Undefined11", "Undefined12", "Undefined13", "Undefined14"),
+                    Run("nT3", "Undefined15", "Undefined16", "Undefined17", "Undefined18")));
         }
         return rows;
+    }
+
+    /// <summary>⭐ Each skill id mapped to the BASE of its skill line, by walking `DemandSk`.
+    ///
+    /// <para>An empower allocation is reported against the line's first rank, not the rank being cast.
+    /// The Fighter capture allocates on ids 20, 40, 100 and 120 — `SeverBone01`, `RedSlash01` and
+    /// `PowerHit01` — while the character is level 60 and casts 24, 45 and 124. Four of four landing on a
+    /// line base is what says the allocation belongs to the LINE; a per-rank reading would have the
+    /// character spending points on ranks it never casts.</para>
+    ///
+    /// <para>`DemandSk` holds the prerequisite skill by `InxName` (`PowerHit05` requires `PowerHit04`),
+    /// so the walk is name to row to name until a row demands nothing. Cycles cannot happen in the data
+    /// but the walk is bounded anyway — a malformed chain must not hang the suite.</para></summary>
+    private static IReadOnlyDictionary<int, int> SkillLineBase(string ressystem)
+    {
+        var table = ShnFile.Load(Path.Combine(ressystem, "ActiveSkill.shn"));
+        var byName = new Dictionary<string, IReadOnlyDictionary<string, object>>();
+        foreach (var r in table.Rows) byName[ShnFile.Str(r, "InxName")] = r;
+
+        var baseOf = new Dictionary<int, int>();
+        foreach (var r in table.Rows)
+        {
+            var row = r;
+            for (var hop = 0; hop < 64; hop++)
+            {
+                var demand = ShnFile.Str(row, "DemandSk");
+                if (string.IsNullOrEmpty(demand) || demand == "-"
+                    || !byName.TryGetValue(demand, out var prev)) break;
+                row = prev;
+            }
+            baseOf[ShnFile.Int(r, "ID")] = ShnFile.Int(row, "ID");
+        }
+        return baseOf;
     }
 
     /// <summary>Each skill's `HitID` — the `MultiHitType.shn` sequence it fires, or 0 for a single
@@ -684,44 +742,41 @@ public class BucketGroundTruthTests
     /// <b>300 / 200 / 500</b> permille summing to 1000 — so each wire hit is a FRACTION of what
     /// `roe_CalcDamage` produced, and predicting every hit as the whole thing overshot by 3-5x.</para>
     ///
-    /// <para>⛔ <b>THIS IS NOT EXACT.</b> 443 of 590 inside, <b>20 over a ceiling and 127 under a floor</b>,
-    /// against the swing check's 510/510. The residual is real and unexplained; candidates ruled OUT so
-    /// far: `MiscDataTable.txt` is `SkillBreedMob` (summons and traps), not a per-skill damage rate, and
-    /// `DamageByAngle` can only RAISE damage so it cannot explain an undershoot. Candidates still open:
-    /// a skill's own `sdi_DamageRule` (this assumes `PhisycalSkill` for all of them), AoE damage division
-    /// across targets, and whether the flat `MinWC` is added for every skill or only some.</para>
+    /// <para>⭐ <b>545 of 545, over nine skills.</b> The last two residuals were not one bug, and neither
+    /// was a formula error: one was a bug in the HARNESS, the other a missing per-character input.</para>
     ///
-    /// <para><b>Where the residual actually is, measured rather than guessed.</b> Solving each bucket for
-    /// the flat-add scale that would fit (the damage is LINEAR in it, so bracketing at 0.0 and 1.0 brackets
-    /// every bucket) shows SEVEN of the nine damaging skills straddling 1.0 — i.e. correct as modelled —
-    /// and exactly two that do not:</para>
+    /// <para><b>1. A hit does not benefit from the debuff it applies.</b> `RedSlash` takes 78 flat off the
+    /// target's AC (`SubStaRedSlash` action 73), and the server broadcasts that ABSTATESET immediately
+    /// before the damage packet of the hit that applied it — same timestamp, so only the frame ORDER
+    /// separates them. `damage_buckets.py` was tagging the hit with a debuff the hit itself caused, handing
+    /// the defender -78 AC on damage the server had resolved at full armour. That was 68 of `RedSlash`'s
+    /// 71 hits; the other 3 were second hits on the same mob, which genuinely do benefit and already
+    /// fitted. Measured, the second hit on a handle runs 1.30x the first (n=3, 1.216-1.413). Fixed by
+    /// tagging a skill hit with the state as of the order its CAST opened.</para>
     ///
-    /// | skill | implied scale | direction |
-    /// | --- | --- | --- |
-    /// | 24, 183, 201, 221, 240, 300 | straddles 1.0 | correct |
-    /// | 5 TripleHit06 | 0.0 – 3.9 (wide: multi-hit) | correct |
-    /// | **45 RedSlash06** | **0.16 – 0.50** | predicted too HIGH |
-    /// | **124 PowerHit05** | **1.19 – 1.59** | predicted too LOW |
+    /// <para><b>2. Skill empower.</b> `PowerHit05` was over by a consistent 1.20-1.34x — tight enough to be
+    /// a missing constant rather than a missing input. It is `PROTO_SKILLREADBLOCKCLIENT.empow`, a
+    /// `SKILL_EMPOWER` bitfield the CHARACTER carries and no data file holds: this one has
+    /// <c>damage 5</c> on the `PowerHit` line and on no other line. `nT0[5]` = 376 is then the unique tier
+    /// that fits — the observations alone bound the missing flat to [331, 418] and tiers 1-4 all fall
+    /// short. See <see cref="SkillLineBase"/> for why the allocation is read off the line's first rank.
+    /// Reading it at all needed `--hex-limit` raised: at `pcap_decode`'s default of 128 bytes only 9 of
+    /// the packet's 65 skill records survived, and the allocation simply was not there.</para>
     ///
-    /// <para>So this is not a general formula error — it is two specific skills. Ruled OUT as the cause:
-    /// duplicate rows in `ActiveSkill.shn` (only id 9034 repeats, unrelated); weapon mastery (a uniform
-    /// 1150 across every skill and weapon here); `MiscDataTable.txt` (it is `SkillBreedMob`, summons and
-    /// traps); and `DamageByAngle`, which can only RAISE damage and so cannot explain skill 45.</para>
+    /// <para><b>How the two were told apart.</b> Damage is LINEAR in the flat add, so bracketing each
+    /// bucket at scale 0.0 and 1.0 SOLVES for the flat that would fit it rather than guessing. Seven
+    /// skills straddled 1.0 — correct as modelled. Skill 124 needed [1.313, 1.440]: tight, consistent, a
+    /// missing constant. Skill 45 wanted anything from -0.111 to 1.404, which no constant can be, and its
+    /// residual tracked WEAPON SIZE — the signature of a wrong model shape, not a missing term.</para>
     ///
-    /// <para>⚠️ Substituting a neighbouring RANK fits better — `124:126` removes all 20 ceiling violations
-    /// outright, `45:42` cuts undershoot from 127 to 86 — and that is recorded as an observation, NOT
-    /// adopted. Swapping a row because it fits is curve-fitting; there is no mechanism yet that says the
-    /// wire's skill id and the row disagree, and the ids are otherwise correct for seven skills.
-    /// `SKILL_ROW_SUBST` exists to re-run that experiment, not to be switched on.</para>
-    ///
-    /// <para><b>The one named candidate still untested is `sdi_DamageRule`</b> (`SkillDataIndex` +0x70):
-    /// a skill carries its OWN `RulesOfEngagement`, and this harness assumes `PhisycalSkill` for all nine.
-    /// Finding where the loader assigns it per skill is the next step.</para>
-    ///
-    /// <para>Named <c>_KNOWN_RED</c> in the repo's convention so nobody reads a green suite as a solved
-    /// problem.</para></summary>
+    /// <para>Ruled OUT along the way, each on evidence: duplicate rows in `ActiveSkill.shn` (only id 9034
+    /// repeats, unrelated); weapon mastery (a uniform 1150 across every skill and weapon here);
+    /// `MiscDataTable.txt` (it is `SkillBreedMob`, summons and traps); `DamageByAngle`, which can only
+    /// RAISE damage and so cannot explain an undershoot; and the rank-substitution theory, which died when
+    /// `NC_CHAR_CLIENT_SKILL_CMD` showed the character holding exactly ids 45 and 124 — the ids on the
+    /// wire. `SKILL_ROW_SUBST` survives to re-run that experiment, not to be switched on.</para></summary>
     [SkippableFact]
-    public void SkillDamagePredictionIsTrackedAgainstItsBaseline_KNOWN_RED()
+    public void EverySkillHitInTheCaptureFallsInsideItsPredictedBand()
     {
         var path = FixturePath();
         var shine = Shine();
@@ -740,6 +795,7 @@ public class BucketGroundTruthTests
                               .ToDictionary(g => g.Key, g => g.First().Key);
         var skills = SkillRows(ressystem!);
         var hitIds = SkillHitIds(ressystem!);
+        var lineBase = SkillLineBase(ressystem!);
         var multiHit = MultiHitRates(shine!);
         var abState = ShnFile.Load(Path.Combine(shine!, "AbState.shn"));
         var subAbState = ShnFile.Load(Path.Combine(shine!, "SubAbState.shn"));
@@ -801,6 +857,9 @@ public class BucketGroundTruthTests
                 LevelGapRatePermille = gaps.Rate(CombatantKind.Player, b.Level,
                                                  CombatantKind.Monster, mob.Level),
                 Skill = row,
+                // The allocation is per LINE and the wire reports it on the line's base rank.
+                Empower = new Fiesta.Emu.Zone.Skill.SkillEmpower((ushort)f.SkillEmpower
+                    .GetValueOrDefault(lineBase.GetValueOrDefault(b.Skill, b.Skill))),
             }, EngagementRule.PhysicalSkill);
 
             // THE MULTI-HIT SPLIT. A sequence's strikes each carry their own permille of the finished
@@ -837,15 +896,18 @@ public class BucketGroundTruthTests
         // ⚠️ A COVERAGE FLOOR, so this cannot pass vacuously. Every refusal path above (`continue`) is a
         // hit this port declined to predict, and this test FIRST SHIPPED refusing all 590 while reporting
         // a pass -- the floor is what caught it. Keep it.
-        inside.ShouldBeGreaterThan(400, "predicted too few skill hits to mean anything: " + summary);
+        inside.ShouldBeGreaterThan(500, "predicted too few skill hits to mean anything: " + summary);
+        // Refusing a hit is the other way a green suite hides one it cannot predict.
+        skipped.ShouldBe(0, "some hits were refused rather than predicted: " + summary);
 
-        // ⛔ NOT EXACT, and deliberately not asserted as if it were. The swing check is 510/510; this is
-        // 443 of 590 inside, with 20 over a ceiling and 127 under a floor. The numbers are a RATCHET: they
-        // may improve, and a regression fails. Loosening them to make the suite green would hide the one
-        // thing this test exists to measure.
-        inside.ShouldBeGreaterThanOrEqualTo(443, "skill prediction got WORSE: " + summary);
-        over.ShouldBeLessThanOrEqualTo(20, "more hits now exceed the ceiling: " + summary);
-        under.ShouldBeLessThanOrEqualTo(127, "more hits now fall under the floor: " + summary);
+        // ⭐ EXACT: 545 of 545 inside, nothing over a ceiling and nothing under a floor.
+        //
+        // ⚠️ And the bands are TIGHT, which is the claim that actually matters -- a wide enough band would
+        // swallow anything. Across the nine skills the closest observation sits at 1.000-1.045x its floor
+        // and 0.961-1.000x its ceiling, so the samples press against BOTH edges; `TripleHit06` touches
+        // each bound exactly.
+        over.ShouldBe(0, "a hit exceeded the ceiling: " + summary);
+        under.ShouldBe(0, "a hit fell under the floor: " + summary);
     }
 
     /// <summary>⭐ MAGICAL skill damage — `roe_magical`, exercised for the first time.
