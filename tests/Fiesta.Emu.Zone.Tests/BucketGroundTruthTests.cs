@@ -646,6 +646,33 @@ public class BucketGroundTruthTests
     /// a skill's own `sdi_DamageRule` (this assumes `PhisycalSkill` for all of them), AoE damage division
     /// across targets, and whether the flat `MinWC` is added for every skill or only some.</para>
     ///
+    /// <para><b>Where the residual actually is, measured rather than guessed.</b> Solving each bucket for
+    /// the flat-add scale that would fit (the damage is LINEAR in it, so bracketing at 0.0 and 1.0 brackets
+    /// every bucket) shows SEVEN of the nine damaging skills straddling 1.0 — i.e. correct as modelled —
+    /// and exactly two that do not:</para>
+    ///
+    /// | skill | implied scale | direction |
+    /// | --- | --- | --- |
+    /// | 24, 183, 201, 221, 240, 300 | straddles 1.0 | correct |
+    /// | 5 TripleHit06 | 0.0 – 3.9 (wide: multi-hit) | correct |
+    /// | **45 RedSlash06** | **0.16 – 0.50** | predicted too HIGH |
+    /// | **124 PowerHit05** | **1.19 – 1.59** | predicted too LOW |
+    ///
+    /// <para>So this is not a general formula error — it is two specific skills. Ruled OUT as the cause:
+    /// duplicate rows in `ActiveSkill.shn` (only id 9034 repeats, unrelated); weapon mastery (a uniform
+    /// 1150 across every skill and weapon here); `MiscDataTable.txt` (it is `SkillBreedMob`, summons and
+    /// traps); and `DamageByAngle`, which can only RAISE damage and so cannot explain skill 45.</para>
+    ///
+    /// <para>⚠️ Substituting a neighbouring RANK fits better — `124:126` removes all 20 ceiling violations
+    /// outright, `45:42` cuts undershoot from 127 to 86 — and that is recorded as an observation, NOT
+    /// adopted. Swapping a row because it fits is curve-fitting; there is no mechanism yet that says the
+    /// wire's skill id and the row disagree, and the ids are otherwise correct for seven skills.
+    /// `SKILL_ROW_SUBST` exists to re-run that experiment, not to be switched on.</para>
+    ///
+    /// <para><b>The one named candidate still untested is `sdi_DamageRule`</b> (`SkillDataIndex` +0x70):
+    /// a skill carries its OWN `RulesOfEngagement`, and this harness assumes `PhisycalSkill` for all nine.
+    /// Finding where the loader assigns it per skill is the next step.</para>
+    ///
     /// <para>Named <c>_KNOWN_RED</c> in the repo's convention so nobody reads a green suite as a solved
     /// problem.</para></summary>
     [SkippableFact]
@@ -692,6 +719,22 @@ public class BucketGroundTruthTests
                            .OrderBy(b => b.Skill).ThenBy(b => b.Mob))
         {
             if (!skills.TryGetValue(b.Skill, out var row)) { Refuse("skill not in ActiveSkill.shn", b.N); continue; }
+            // `SKILL_FLAT_SCALE` scales the skill's flat WC add. Damage is LINEAR in it (roe_Damage is
+            // (level+1)*attack/defend), so running 0.0 and 1.0 brackets every bucket and the scale that
+            // fits an observation can be solved rather than guessed.
+            if (Environment.GetEnvironmentVariable("SKILL_FLAT_SCALE") is { } sc
+                && double.TryParse(sc, System.Globalization.CultureInfo.InvariantCulture, out var scale))
+                row = row with { MinFlat = (uint)(row.MinFlat * scale), MaxFlat = (uint)(row.MaxFlat * scale) };
+            // `SKILL_ROW_SUBST=45:42,124:126` predicts skill 45 using skill 42's row -- the experiment for
+            // "the wire id and the row disagree", run per skill instead of as one global scale.
+            if (Environment.GetEnvironmentVariable("SKILL_ROW_SUBST") is { } subst)
+                foreach (var pair in subst.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var kv = pair.Split(':');
+                    if (kv.Length == 2 && int.TryParse(kv[0], out var from) && from == b.Skill
+                        && int.TryParse(kv[1], out var to) && skills.TryGetValue(to, out var other))
+                        row = other;
+                }
             if (!mobNames.TryGetValue(b.Mob, out var name)) { Refuse("mob id not named", b.N); continue; }
             var mob = MobCombatant.Build(box, name);
             if (mob is null) { Refuse("mob has no combat data", b.N); continue; }
@@ -723,6 +766,14 @@ public class BucketGroundTruthTests
                 band = new Band(Fiesta.Emu.Zone.Skill.MultiHit.HitDamage(band.Floor, span.Low),
                                 Fiesta.Emu.Zone.Skill.MultiHit.HitDamage(band.Ceiling, span.High));
 
+            // Diagnostic dump: one line per bucket, so the SHAPE of a mismatch is visible (a consistent
+            // ratio means a missing multiplier; scattered means a missing input).
+            if (Environment.GetEnvironmentVariable("SKILL_DIAG") is not null)
+                report.Add($"DIAG skill={b.Skill} hitId={hitId} mob={b.Mob} n={b.N} mastery={mastery} wpn={b.Weapon} "
+                         + $"obs={b.Min}..{b.Max} pred={band.Floor}..{band.Ceiling} "
+                         + $"loRatio={(band.Floor == 0 ? 0 : (double)b.Min / band.Floor):F3} "
+                         + $"hiRatio={(band.Ceiling == 0 ? 0 : (double)b.Max / band.Ceiling):F3}");
+
             hits += b.N;
             if (b.Max > band.Ceiling) { over += b.N; report.Add($"skill {b.Skill} mob {b.Mob}: max {b.Max} > ceiling {band.Ceiling}"); }
             else if (b.Min < band.Floor) { under += b.N; report.Add($"skill {b.Skill} mob {b.Mob}: min {b.Min} < floor {band.Floor}"); }
@@ -733,6 +784,10 @@ public class BucketGroundTruthTests
                     + $"(of {hits + skipped})"
                     + (why.Count > 0 ? "  [" + string.Join("; ", why.Select(k => $"{k.Key}={k.Value}")) + "]" : "");
         report.Insert(0, summary);
+        // `SKILL_DIAG=<path>` writes the whole per-bucket dump out, because a PASSING test never surfaces
+        // its report and the dump is the point when hunting a residual.
+        if (Environment.GetEnvironmentVariable("SKILL_DIAG") is { } diag && diag.Length > 1)
+            File.WriteAllLines(diag, report);
 
         // ⚠️ A COVERAGE FLOOR, so this cannot pass vacuously. Every refusal path above (`continue`) is a
         // hit this port declined to predict, and this test FIRST SHIPPED refusing all 590 while reporting
