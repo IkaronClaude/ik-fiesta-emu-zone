@@ -669,6 +669,48 @@ Nothing exists. `SkillDataBox` reads `CastTime`/`DlyTime` for attack intervals o
 never been looked at, plus `SKILLBASH_CAST_SUC_ACK` / `CAST_FAIL_ACK` / `HIT_OBJ_START` / `HIT_BLAST`.
 Extend `damage_buckets.py` to bucket skill hits by (skill id, rank, state) exactly as it does swings.
 
+## 4b. Every source that feeds a stat — which are accounted for, and which are not
+
+Operator's list, 2026-09-02: *"Weapon Enchants, Weapon crit rate upgrades through licenses, weapon
+socketed bonus stones, set bonuses, character title bonuses, skill empower."*
+
+The container has SEVEN modifier clusters (`Item`, `ItemPowerRate`, `Upgrade`, `WeaponTitle`,
+`PassiveSkill`, `AbnormalState`, `LastTune`), each with a Plus and a Rate half, and the accessors read
+specific ones. So "is source X accounted for" is really "does X land in a cluster the accessor reads".
+
+**Settled, with evidence:**
+
+| source | lands in | evidence |
+| --- | --- | --- |
+| skill empower | neither — added straight to both weapon bounds | read at `roe_AttackPower+0x17E`, oracle-confirmed |
+| weapon base crit, jewellery, costumes | `Item.Rate[CriDamRate]`, SUMMED | live container: axe 90 + mask 70 + earrings 40 = exactly 200 |
+| crit buff scrolls | `AbnormalState.Rate[CriDamRate]` | live container: `HighCriScroll` = 40 |
+| MEN | no cluster at all — a table lookup in `roe_FreeStatCriRate` | live table, 25 MEN = 50 |
+| weapon enchant (+N) | `Upgrade` cluster | the weapon-damage accessors read `Upgrade.Plus`, fuzz-verified |
+
+**NOT established — and deliberately not guessed:**
+
+- **Licenses.** `iac_wptitle_Setlicense@ItemAttrCls_Weapon` names the WEAPON TITLE system, and
+  `roe_CriticalRate` does read `WeaponTitle.Rate[CriDamRate]` — so the path plausibly exists end to end.
+  The symbol name is not proof that a license writes that slot.
+- **Socketed stones.** `EnchantSocketRateTable` / `NC_ITEM_ENCHANT_ADD_GEM` exist; which cluster they
+  land in is unread. ⚠️ `so_FirstActionAfterSocketConnect` is a NETWORK socket and a false friend here.
+- **Character titles.** `CCharacterTitle` / `CCharacterTitleZone` are a separate system from
+  `CWeaponTitle`; whether they reach a cluster the damage accessors read is unknown.
+
+⭐ **Set bonuses do NOT reach `roe_CriticalRate` at all.** That formula reads exactly three clusters
+(`Item.Rate`, `WeaponTitle.Rate`, `AbnormalState.Rate`) plus the MEN table, and touches no set-item data.
+The set buffer reaches combat only through `smo_SkillBlast`'s slot reads — so a set bonus can scale skill
+damage and skill hit rate but cannot add critical chance by that path.
+
+**How to settle the three open ones:** the same way the crit model was settled — equip the item on a live
+character and read the container ([[fiesta-live-container-read]]). One read per source answers it exactly,
+where a displacement scan cannot: a loop writing `cluster[slot]` with a computed index is invisible to it,
+and this binary's COMDAT folding makes such a scan actively misleading.
+
+- [ ] **Read a live container with a licensed weapon, a socketed weapon, and a character title equipped**,
+      and record which cluster each moves.
+
 ## 5. The five damage hooks that no clean swing reaches
 
 Four of the five are now read; the fifth is the item-action machinery in task 1's list.
