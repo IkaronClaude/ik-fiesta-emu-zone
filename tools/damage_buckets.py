@@ -70,6 +70,16 @@ FLAGS_B0 = ["iscritical", "isresist", "ismissed", "isshieldblock",
             "isCostumCharged", "isDead", "isDamege2Heal", "isImmune"]
 FLAGS_B1 = ["isCostumShieldCharged"]
 
+# ⚠️ A SKILL HIT'S FLAGS ARE NOT LAID OUT LIKE A SWING'S, and the difference is exactly the kind that
+# produces a confident wrong answer: `PROTO_NC_BAT_SKILLBASH_HIT_DAMAGE_CMD::SkillDamage` opens with an
+# `isdamage` bit that `PROTO_NC_BAT_SWING_DAMAGE_CMD` does not have, so EVERY name after it is shifted by
+# one. Reading a skill hit with the swing mask calls every damaging hit critical -- bit 0 is set on all of
+# them -- and reports a critical rate near 100%. Both lists are from the PDB.
+SKILL_FLAGS_B0 = ["isdamage", "iscritical", "ismissed", "isshieldblock",
+                  "isheal", "isenchant", "isresist", "IsCostumWeapon"]
+SKILL_FLAGS_B1 = ["isDead", "isImmune", "IsCostumShield"]
+SKILL_DAMAGE_RECORD = 14
+
 
 def decode(pcap, port, cache):
     if cache and os.path.exists(cache):
@@ -144,6 +154,11 @@ def collect(lines):
     free_stat, chrclass, passives = {}, None, ()
     weapon = None                                 # item id in the weapon slot, or None if unknown
     swings, chat, hit_counts = [], [], collections.Counter()
+    # A skill hit does not name its skill. `NC_BAT_SKILLBASH_HIT_OBJ_START_CMD` (0x244E) carries
+    # {skill, targetobj, index} and the damage packet carries only the index, so the id has to be carried
+    # forward from the cast that opened it. Keyed per conversation, like everything else here.
+    skill_of_index = {}
+    skill_hits = []
     # ⚠️ RESTKEEPTIME IS THE SERVER'S JOB, AND THIS FILE IS NOT THE SERVER.
     #
     # Expiring a state here means INFERRING what the server did instead of observing it, and the server
@@ -304,6 +319,38 @@ def collect(lines):
             text = raw[2:2 + raw[1]].decode("latin-1", "replace").strip()
             if text and not text.startswith("&"):
                 chat.append({"order": order, "conv": conv, "text": text})
+        elif name == "NC_BAT_SKILLBASH_HIT_OBJ_START_CMD" and len(raw) >= 6:
+            # {skill u16@0, targetobj u16@2, index u16@4} -- the only place the skill id appears.
+            skill_of_index[(conv, u16(raw, 4))] = u16(raw, 0)
+        elif name == "NC_BAT_SKILLBASH_HIT_DAMAGE_CMD" and len(raw) >= 5:
+            # {index u16@0, caster u16@2, targetnum u8@4} then targetnum * SkillDamage(14):
+            #   {handle u16, flag u16, hpchange u32, resthp u32, hpchangeorder u16}
+            #
+            # ONE packet, MANY targets -- an AoE lands on ten mobs in a single frame, and each target is
+            # its own outcome with its own flags. Counting the packet rather than the records would
+            # undercount this capture's skill hits by a factor of two.
+            index, caster, targetnum = u16(raw, 0), u16(raw, 2), raw[4]
+            skill = skill_of_index.get((conv, index))
+            for i in range(targetnum):
+                off = 5 + i * SKILL_DAMAGE_RECORD
+                if off + SKILL_DAMAGE_RECORD > len(raw):
+                    break
+                handle = u16(raw, off)
+                hit_counts[(conv, handle)] += 1
+                skill_hits.append({
+                    "order": order, "conv": conv, "attacker": caster, "defender": handle,
+                    "skill": skill, "index": index,
+                    "damage": u32(raw, off + 4), "restHp": u32(raw, off + 8),
+                    "flagWord": raw[off + 2] | (raw[off + 3] << 8),
+                    "flags": [n for j, n in enumerate(SKILL_FLAGS_B0) if raw[off + 2] & (1 << j)]
+                             + [n for j, n in enumerate(SKILL_FLAGS_B1) if raw[off + 3] & (1 << j)],
+                    "levelups": levelups, "level": level, "passives": passives, "weapon": weapon,
+                    "attackerMob": mob_of.get((conv, caster)),
+                    "defenderMob": mob_of.get((conv, handle)),
+                    "params": tuple(sorted(params.items())),
+                    "attackerAbstates": tuple(sorted(live(conv, caster, ts).items())),
+                    "defenderAbstates": tuple(sorted(live(conv, handle, ts).items())),
+                })
         elif name == "NC_BAT_SWING_DAMAGE_CMD" and len(raw) >= 16:
             att, dfn = u16(raw, 0), u16(raw, 2)
             hit_counts[(conv, dfn)] += 1
@@ -327,7 +374,7 @@ def collect(lines):
                 "defenderAbstates": tuple(sorted(live(conv, dfn, ts).items())),
             })
     expiry["timer_unconfirmed"] = len(timer_gone)
-    return swings, chat, hit_counts, free_stat, chrclass, expiry
+    return swings, chat, hit_counts, free_stat, chrclass, expiry, skill_hits
 
 
 def main():
@@ -340,7 +387,7 @@ def main():
     a = ap.parse_args()
 
     lines = decode(a.pcap, a.port, a.decoded)
-    swings, chat, hit_counts, free_stat, chrclass, expiry = collect(lines)
+    swings, chat, hit_counts, free_stat, chrclass, expiry, skill_hits = collect(lines)
 
     # The player, per conversation: the handle that gets hit most and was never announced as a mob.
     # Robust to relogs and to a handle number meaning different things in different conversations.
@@ -395,6 +442,70 @@ def main():
         if flags == 0 and s["damage"] > 0:
             buckets[key].append(s["damage"])
 
+    # THE SKILL BUCKETS. Same state key as a swing, plus the skill id -- a skill's damage depends on the
+    # same parameter vector and the same abstates, and additionally on WHICH skill. The id is per-row in
+    # `ActiveSkill.shn`, so a rank is already a distinct id; there is no separate rank field on the wire
+    # and none is invented here.
+    skill_buckets = collections.defaultdict(list)
+    skill_outcomes = collections.defaultdict(collections.Counter)
+    skill_unattributed = 0
+    for s in skill_hits:
+        me = player.get(s["conv"])
+        if s["attacker"] == me:
+            side, mob, own_weapon = "OUT", s["defenderMob"], s["weapon"]
+            own_ab, foe_ab = s["attackerAbstates"], s["defenderAbstates"]
+        elif s["defender"] == me:
+            side, mob, own_weapon = "IN", s["attackerMob"], s["weapon"]
+            own_ab, foe_ab = s["defenderAbstates"], s["attackerAbstates"]
+        else:
+            skill_unattributed += 1
+            continue
+        if mob is None or s["skill"] is None:
+            # No roster entry, or a damage packet whose opening cast was never seen (the capture can
+            # start mid-cast). Counted, never guessed at.
+            skill_unattributed += 1
+            continue
+        key = (side, s["skill"], mob, s["level"], s["params"], own_ab, foe_ab, s["passives"], own_weapon)
+        flags, tally = s["flagWord"], skill_outcomes[key]
+        tally["hits"] += 1
+        # The SKILL bit order -- see SKILL_FLAGS_B0. bit 1 is critical here, not bit 0.
+        if flags & 0x04:
+            tally["missed"] += 1
+        if flags & 0x08:
+            tally["blocked"] += 1
+        if flags & 0x02:
+            tally["critical"] += 1
+            tally["criticalDamage"] += s["damage"]
+        if flags & 0x40:
+            tally["resisted"] += 1
+        if not flags & 0x01:
+            # `isdamage` clear. A skill that lands without dealing damage is a buff, a heal or an
+            # enchant -- a real outcome, not a dropped record, and it must be visible as such or a skill
+            # with 60 hits and no damage reads as a parser hole.
+            tally["nodamage"] += 1
+        # A clean damaging hit: isdamage set and nothing that changes the calculation.
+        if flags & 0x01 and not flags & 0x4E and s["damage"] > 0:
+            skill_buckets[key].append(s["damage"])
+
+    skill_rows = []
+    for key, tally in skill_outcomes.items():
+        (side, skill, mob, level, params, own_ab, foe_ab, passives, own_weapon) = key
+        dmg = skill_buckets.get(key, [])
+        row = {"side": side, "skill": skill, "mob": mob, "level": level, "passives": list(passives),
+               "weapon": own_weapon,
+               "selfAbstates": [list(p) for p in own_ab],
+               "enemyAbstates": [list(p) for p in foe_ab],
+               "params": dict(params),
+               "n": len(dmg), "hits": tally["hits"], "missed": tally["missed"],
+               "blocked": tally["blocked"], "critical": tally["critical"],
+               "criticalDamage": tally["criticalDamage"], "resisted": tally["resisted"],
+               "nodamage": tally["nodamage"],
+               "damage": sorted(dmg)}
+        if dmg:
+            row.update({"min": min(dmg), "max": max(dmg), "mean": round(sum(dmg) / len(dmg), 1)})
+        skill_rows.append(row)
+    skill_rows.sort(key=lambda r: (r["side"], r["skill"], r["mob"], -r["n"]))
+
     rows = []
     for key, tally in outcomes.items():
         (side, mob, level, params, own_ab, foe_ab, passives, own_weapon) = key
@@ -415,7 +526,8 @@ def main():
         rows.append(row)
     rows.sort(key=lambda r: (r["side"], r["mob"], r["level"], -r["n"]))
 
-    json.dump({"chat": chat, "buckets": rows, "playerHandlePerConv": player,
+    json.dump({"chat": chat, "buckets": rows, "skillBuckets": skill_rows,
+               "playerHandlePerConv": player,
                "freeStat": free_stat, "chrclass": chrclass}, open(a.out, "w"), indent=1)
 
     kept = [r for r in rows if r["n"] >= a.min_hits]
@@ -441,10 +553,50 @@ def main():
         blk = sum(r["blocked"] for r in rs)
         crit = sum(r["critical"] for r in rs)
         landed = n - miss
+        # Percentages, not permille. The engine works in 1/1000 internally, but a rate printed as
+        # "55.6 permille" reads as a percentage at a glance and has been misread as one; 5.6% cannot be.
         print("\n  %s  %d swings: %d missed (%.1f%%), %d blocked (%.1f%%), "
-              "%d critical of %d landed (%.1f permille)"
+              "%d critical of %d landed (%.2f%%)"
               % (side, n, miss, 100.0 * miss / n, blk, 100.0 * blk / n,
-                 crit, landed, 1000.0 * crit / landed if landed else 0.0))
+                 crit, landed, 100.0 * crit / landed if landed else 0.0))
+
+    # THE SKILL SIDE. Reported separately rather than folded in, because a skill hit is a different
+    # calculation with a different rules object and its own accuracy constant -- pooling the two would
+    # produce a "hit rate" belonging to neither.
+    for side in ("OUT", "IN"):
+        rs = [r for r in skill_rows if r["side"] == side]
+        n = sum(r["hits"] for r in rs)
+        if not n:
+            continue
+        miss = sum(r["missed"] for r in rs)
+        blk = sum(r["blocked"] for r in rs)
+        crit = sum(r["critical"] for r in rs)
+        res = sum(r["resisted"] for r in rs)
+        landed = n - miss
+        print("\n  %s  %d SKILL hits over %d skills: %d missed (%.1f%%), %d blocked (%.1f%%), "
+              "%d resisted, %d critical of %d landed (%.2f%%)"
+              % (side, n, len({r["skill"] for r in rs}), miss, 100.0 * miss / n,
+                 blk, 100.0 * blk / n, res, crit, landed,
+                 100.0 * crit / landed if landed else 0.0))
+        for skill in sorted({r["skill"] for r in rs}):
+            srs = [r for r in rs if r["skill"] == skill]
+            dmg = [d for r in srs for d in r["damage"]]
+            hits = sum(r["hits"] for r in srs)
+            if dmg:
+                print("      skill %-6d %4d hits, %4d clean: %5d..%-5d mean %.1f  (%d buckets)"
+                      % (skill, hits, len(dmg), min(dmg), max(dmg),
+                         sum(dmg) / len(dmg), len(srs)))
+            else:
+                nod = sum(r["nodamage"] for r in srs)
+                print("      skill %-6d %4d hits, none damaging%s"
+                      % (skill, hits,
+                         " (all %d carry isdamage clear -- a buff, heal or enchant)" % nod
+                         if nod == hits else " (%d carry isdamage clear)" % nod))
+    if skill_unattributed:
+        # Never silent: a hit dropped for want of a roster entry or an opening cast is a hole in the
+        # ground truth, not a tidy zero.
+        print("\n  %d skill hits unattributed (no roster entry, or the opening cast was not captured)"
+              % skill_unattributed)
     # LOUD on purpose. restKeeptime is SERVER state, and this file is not the server: expiring a state
     # here infers what the server did instead of observing it, and the server is meant to broadcast the
     # end every time. So a timer-expiry the wire never confirms is either our arithmetic being wrong or

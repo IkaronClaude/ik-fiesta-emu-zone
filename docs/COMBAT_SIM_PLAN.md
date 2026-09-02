@@ -497,8 +497,34 @@ damage callbacks (also task 2). Each needs a capture that actually triggers it.
 
       A state with no expiry (keeptime 0, or a dump made without the flag) is KEPT. "We do not know when
       this ends" must not quietly become "it already ended".
-- [ ] **Bucket misses and blocks**, not just clean hits — the rates are the ground truth for task 1.
-- [ ] **Bucket skill hits** by skill and rank — the ground truth for task 4.
+- [x] **Bucket misses and blocks** — already done and the item was stale. `damage_buckets.py` keeps two
+      accumulators per bucket: `damage` (clean hits, the damage-band check) and `outcomes` (EVERY swing
+      whatever its flags, the rate denominator). Measured on `FighterDamageLvl60.pcapng`, split per
+      direction because pooling them describes neither: **OUT 234 swings, 0 missed, 0 blocked, 13 critical
+      of 234 landed (5.56%); IN 516 swings, 79 missed (15.3%), 15 blocked (2.9%), 0 critical.**
+      Rates are now printed as PERCENT — "55.6 permille" reads as a percentage at a glance and has been
+      misread as one.
+- [x] **Bucket skill hits** — done, and it is the ground truth task 4 was missing.
+      `NC_BAT_SKILLBASH_HIT_DAMAGE_CMD` is `{index, caster, targetnum}` + `targetnum * SkillDamage(14)`,
+      and the skill id is NOT in it: it comes from `NC_BAT_SKILLBASH_HIT_OBJ_START_CMD` (0x244E)
+      `{skill, targetobj, index}`, carried forward by index per conversation.
+
+      ⚠️ **A skill hit's flags are NOT laid out like a swing's.** `SkillDamage::flag` opens with an
+      `isdamage` bit that `SWING_DAMAGE::flag` does not have, so every name after it shifts by one —
+      critical is bit 1 here and bit 0 there. Using the swing mask marks every damaging skill hit critical
+      and reports a rate near 100%.
+
+      ⚠️ **One packet, MANY targets.** An AoE lands on ten mobs in a single frame and each target is its
+      own outcome; counting packets rather than records undercounts this capture roughly twofold.
+
+      Measured: **706 attributed skill hits over 11 skills, 54 critical of 706 landed (7.65%)** — against
+      5.56% on plain swings in the same capture. 16 hits unattributed (no roster entry, or the opening
+      cast not captured) and reported rather than dropped silently. Two skills (143, 60 hits; 261, 2 hits)
+      carry `isdamage` CLEAR on every hit — buffs/heals/enchants, reported as such so they do not read as
+      a parser hole.
+
+      Rank needs no separate field: `ActiveSkill.shn` rows are per-rank, so a rank is already a distinct
+      id. None is invented.
 - [x] **Free-stat tables for Dex / Int / Men / Con**, read in full the way Str was — done, see task 1.
 
 ## The critical-rate seed: settled by reading the live server
