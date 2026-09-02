@@ -59,10 +59,15 @@ are where 0x1035's params 16 and 17 pick up their free-stat halves. What remains
       `iscritical` is still wanted.
 - [ ] **Magical damage.** `roe_magical` / `roe_normalMA` never exercised — no caster has attacked in any
       capture. Needs a Mage/Cleric capture.
-- [ ] **Skills.** `FighterDamageLvl60.pcapng` contains **633** `NC_BAT_SKILLBASH_HIT_DAMAGE_CMD` frames,
-      entirely unanalysed; only normal swings (`NC_BAT_SWING_DAMAGE_CMD`) are bucketed. Skills bring their
-      own rule via `SkillDataIndex::sdi_DamageRule` and their own `damagerate`/`crirateadd` via
-      `MiscDataTable::mdt_ArgumentLoad`.
+- [x] **Skills are bucketed** (2026-09-02). `damage_buckets.py` now decodes
+      `NC_BAT_SKILLBASH_HIT_DAMAGE_CMD` and attributes each hit to its skill through
+      `NC_BAT_SKILLBASH_HIT_OBJ_START_CMD`'s index: **706 attributed hits over 11 skills, 54 critical of
+      706 landed (7.65%)** against 5.56% on plain swings in the same capture. Two traps are commented at
+      the code: a skill hit's flag word is NOT the swing layout (an extra `isdamage` bit shifts every name
+      by one), and one packet carries MANY targets.
+      Still open as a PREDICTION test: the buckets exist but no skill damage has been predicted and
+      compared. That needs `sdi_DamageRule` per skill and the `ActiveSkillInfo` bounds wired to the
+      capture's skill ids.
 
 ## Untested table coverage
 
@@ -145,11 +150,12 @@ are where 0x1035's params 16 and 17 pick up their free-stat halves. What remains
       - [ ] **Which struct holds those cancel flags is NOT pinned.** `[element+0x70]` is not an
             `AbnormalStateInfo` (its +2 is `InxName`), so bits 0x04/0x08 live in something else. Name it
             before porting, or the cancel rules will be guesses.
-      - [ ] **`damage_buckets.py` never expires an abstate.** It only removes on an explicit
-            `ABSTATERESET`, so a state that lapses on `restKeeptime` is held forever. It happens not to
-            matter for StaImmortal (no actions) and rarely for combat debuffs (the server re-applies them
-            constantly), but `SubStaMoraleDecreaseWC` has a 15 s keeptime and a real WC effect. Frame
-            ORDER is not a clock — this needs pcap timestamps, which the decoded dump does not carry.
+      - [x] **`damage_buckets.py` expires abstates now**, on real pcap timestamps
+            (`pcap_decode.py --timestamps`). Expiry is COUNTED rather than silent, because inferring what
+            the server did is not the same as observing it: on `FighterDamageLvl60.pcapng` **7 states were
+            dropped by `restKeeptime` and all 7 were later confirmed by an explicit `ABSTATERESET`, 0
+            unconfirmed**, out of 178 resets. So the server does broadcast every expiry, and the timer is
+            a cross-check rather than a substitute.
 
       It also arrives at **strength 1** while its only table row is **Strength 999**, so the server's
       row-selection rule when the strength does not match is unread. `BucketGroundTruthTests` sidesteps that
