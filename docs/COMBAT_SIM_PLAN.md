@@ -596,12 +596,30 @@ Nothing exists. `SkillDataBox` reads `CastTime`/`DlyTime` for attack intervals o
       zeroes the index, which a pre-existing test in this repo already pinned. The descending walk governs
       mob-versus-NON-player attacks. `smo_SkillBlastOption() == 2` (blocked from casting) also forces 0.
 
-- [ ] **The rest of mob skill use** — `AttackElement4Mob::ae4m_NextSkill` (0x004A9730) and its 500-entry
-      sequence, and the `sm_SkillExchange_*` predicates (`HPLow` 0x004BB100, `HPLow_ChangeOrder`
-      0x004BB600, `OutOfRange` 0x004BAEF0, `TargetState` 0x004BB390), which decide when a mob switches
-      away from the sequence's current entry. `so_mob_SelectWeapon` calls `ae4m_NextSkill` before the
-      descending walk, so the sequence chooses a candidate and the walk is the fallback path — that
-      relationship is read, the sequence's own contents are not.
+- [x] **`ae4m_NextSkill` — READ and PORTED** (`Mob/MobAttackSequence.cs`). The "500-entry sequence" is a
+      flat `u16[]` of SKILL IDS at `this+0x04`, and the mob does not own its position in it: the caller
+      passes an `int*` step and the function reads `sequence[step]` without advancing it, which is what
+      lets two mobs share one sequence.
+
+      Resolving a step to a weapon is a **SEARCH, not an index** — the weapon list is scanned for the
+      entry naming that skill, **starting at index 1**, so a sequence can never propose the basic swing.
+      A blank record is skipped before its skill is compared.
+
+      ⚠️ **`0xFFFF` is the terminator and "nothing queued", and it is NOT a skill id** — which is exactly
+      what leaves skill id 0 free to be a real one.
+
+      There is also a **one-shot override**: with the caller's flag set, `sm_GetNextSkillID` is consulted
+      and anything but 0xFFFF is CONSUMED (`sm_SetNextSkillID(0xFFFF)` runs immediately, BEFORE the
+      search) — so a script that queues a skill the mob has no weapon for loses it silently rather than
+      having it retried. That is the hook for making a boss cast a specific thing next.
+
+      The function returns -1 for a target that is not a `ShineMob`: it opens with a type walk against a
+      specific RTTI pointer.
+
+- [ ] **The `sm_SkillExchange_*` predicates** — `HPLow` (0x004BB100), `HPLow_ChangeOrder` (0x004BB600),
+      `OutOfRange` (0x004BAEF0), `TargetState` (0x004BB390): when a mob abandons the sequence's current
+      entry. `so_mob_SelectWeapon` calls `sm_SkillExchange_OutOfRange` at +0x14D, so at least that one is
+      on the selection path. Still placeholders.
 
 **Proof:** `FighterDamageLvl60.pcapng` contains **633 `NC_BAT_SKILLBASH_HIT_DAMAGE_CMD` frames** that have
 never been looked at, plus `SKILLBASH_CAST_SUC_ACK` / `CAST_FAIL_ACK` / `HIT_OBJ_START` / `HIT_BLAST`.
