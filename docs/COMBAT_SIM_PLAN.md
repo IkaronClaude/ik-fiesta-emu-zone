@@ -572,17 +572,38 @@ Nothing exists. `SkillDataBox` reads `CastTime`/`DlyTime` for attack intervals o
       i.e. no set bonus staged at rest. That is why the port defaults them to 1000, and it is now a
       measured default rather than an assumed one.
 
-- [ ] **The rest of `smo_SkillBlast`** — 6.6KB, of which this read covers the EngageArgument construction
-      (+0x52), the hit/miss rolls through `sdi_DamageRule`, and the damage arithmetic. Target selection
-      (`alsst_SkillBlast`, `alsst_SkillBlast_RandomTarget`), the effect container
-      (`SkillBlastEffectContainer::sbec_Store` / `sbec_Routine`, which is what makes a sequence land over
-      TIME) and `mdt_PostSkillBlast` are not read.
-- [x] **Mob weapon selection — READ and PORTED** (`Mob/MobWeaponSelection.cs`).
-      `so_mob_SelectWeapon` (0x004AB720) walks the weapon list from the **HIGHEST index DOWN to 0** and
-      takes the first that passes, so higher indices are the special attacks and get first refusal; index
-      0 catches what none of them wanted. Each candidate clears three gates BEFORE any roll — its skill
-      resolves in `SkillDataBox`, the mob's SP covers `ActiveSkillInfo.SP`, and the weapon is off cooldown
-      — and only then rolls `well512_GetRandom(1000) <= sm_GetUseWeaponRate(i)`.
+- [x] **The rest of `smo_SkillBlast` — the part that matters for a simulation is READ and PORTED**
+      (`Skill/SkillBlastEffectContainer.cs`). The question worth answering was how a multi-hit sequence
+      lands over TIME, and `sbec_Routine` (0x00437FC0) answers it:
+
+      ⭐ **The queue is TICK-ORDERED and the loop BREAKS at the first effect not yet due** — it does not
+      continue past it. A later-but-due effect behind an earlier-but-not-due one does NOT fire, so
+      "scan all, fire the due ones" gives a different firing order under any out-of-order insertion.
+
+      ⭐ **The caster is re-validated by REGISTRATION NUMBER**, not by pointer: null-checked, liveness-
+      checked, then `GetRegistNumber()` compared against the number stored at queue time. A recycled
+      object at the same address cannot inherit a queued strike.
+
+      ⚠️ A due effect that fails validation is still CONSUMED, so a caller must remove everything the pass
+      REACHED, not only what it fired, or a dead caster's strike blocks the queue forever.
+
+      `SkillBlastEffect` (108 bytes) carries the empower allocation and its own `MultiHitArgument` **by
+      value** at +0x2C — each queued strike owns its copy, which is why one sequence's strikes can carry
+      different damage rates without interfering. The routine also snapshots the 17-dword
+      `setitemskilleffect` buffer on entry, confirming it is a global scratch area rebuilt per caster.
+
+      Not read, and not needed by the damage engine: target selection (`alsst_SkillBlast`,
+      `alsst_SkillBlast_RandomTarget`) and `mdt_PostSkillBlast`. Those choose WHO is hit; everything about
+      what the hit does is now ported.
+
+- [ ] **`setitemskilleffect`'s slot NAMES are not established.** The buffer is understood (a per-caster
+      set-bonus staging area, 17 `unsigned long`, all 1000 at rest, read by `smo_SkillBlast` at slots 1,
+      2, 9, 12, 13) and slot 2's and 13's USES are read directly from the code — slot 2 multiplies the
+      damage, slot 13 feeds the hit-rate path. But the obvious index enum does **not** fit:
+      `SkillEffectIncreaseType` has **15** values against **17** slots, and its slot 2 is
+      `SEIT_KEEPTIME_RATE_INCREASE` where the code plainly uses slot 2 as a damage multiplier. So the
+      index space is something else. **Do not label the slots from that enum** — find the writer's index
+      source first (`smo_ply_SetItemEffect` -> `siel_AppendEffect`'s `add [idx*4 + base]`).
 
       `sm_GetUseWeaponRate` (0x004AA060) reads a **per-instance override vector first** and falls back to
       `MobWeapon.BlastRate` (+0x47), so two mobs of the same kind can disagree about their weights without
@@ -616,36 +637,33 @@ Nothing exists. `SkillDataBox` reads `CastTime`/`DlyTime` for attack intervals o
       The function returns -1 for a target that is not a `ShineMob`: it opens with a type walk against a
       specific RTTI pointer.
 
-- [ ] **The `sm_SkillExchange_*` predicates** — `OutOfRange` (0x004BAEF0), `HPLow` (0x004BB100),
-      `TargetState` (0x004BB390), `HPLow_ChangeOrder` (0x004BB600): when a mob abandons the sequence's
-      current entry. `so_mob_SelectWeapon` calls `sm_SkillExchange_OutOfRange` at +0x14D, so at least that
-      one is on the selection path.
+- [x] **The `sm_SkillExchange_*` predicates — READ and PORTED** (`Mob/SkillExchange.cs`), and the
+      blocker that held them open is resolved.
 
-      **The surrounding structure IS now read**, which is most of the work — `AttackElement4Mob` is 7148
-      bytes and lays out as:
+      **The offset that "did not fit" was the wrong element type.** `l_Array` is a
+      `ListStruct<SkillChange>[]` of 12-byte NODES — `ls_Content` (a `SkillChange*`) at +0, `ls_Next` at
+      +4, `ls_IsActiv` at +8 — not a flat `SkillChange[]`. So the u16 at +4 is `ls_Next`, an intrusive
+      LINKED LIST, and the change itself is reached through `ls_Content`. Read as a flat array it lands on
+      `sc_Value`'s low half and produces nonsense, which is exactly what it did.
+
+      The shared shape, walking from `l_Finger.store` (+0x0E) until the next index reaches `l_MaxSize`
+      (+0x04):
 
       ```
-      +0x0000  ae4m_BossMob         u16
-      +0x0002  ae4m_SequenceLength  u8
-      +0x0004  ae4m_skillID         u16[500]        <- THE sequence, confirmed
-      +0x03EC  ae4m_OutOfRangeBody  SkillChangeList (1224 bytes, SkillChange[1200] at +0x18)
-      +0x08B4  ae4m_HPLowBody       SkillChangeList
-      +0x0D7C  ae4m_TargetStateBody SkillChangeList
-      +0x1244  ae4m_OutOfRange      SkillChangeList*    <- what the predicates dereference
-      +0x1248  ae4m_HPLow           SkillChangeList*
-      +0x124C  ae4m_TargetState     SkillChangeList*
-      +0x1250  ae4m_SaveNextSkill   SkillChangeList*
+      if (!node.ls_IsActiv) continue;
+      change = node.ls_Content;
+      if (change->sc_From != currentSkillId) continue;
+      if (!ConditionHolds(change)) continue;              // the only per-predicate part
+      if (change->sc_To == 0xFFFF) { weapon = 0; return true; }   // drop to the basic swing
+      weapon = search weapons from index 1 for sc_To;     return true;
       ```
 
-      and `SkillChange` is 12 bytes: `sc_From u16, sc_To u16, sc_Value u32, sc_ASIndex u32` — a
-      from-skill/to-skill swap with a threshold. Each predicate opens by testing its POINTER (not the
-      body) for null and returning immediately, so a mob with no rule of that kind costs nothing.
+      `HPLow`'s condition is read in full: `hp < (uint)(maxHp * sc_Value) / 1000` — so **`sc_Value` is a
+      PERMILLE of max HP**, not an absolute, and the test is strict. `OutOfRange` and `TargetState` share
+      the traversal with their own conditions; the port takes the condition as a predicate.
 
-      What is NOT read is the comparison itself: each reads a u16 at `[list+0x0E]` as an index and a u16
-      at `[list+0x04]`, then indexes `[list+0x08]` with a 12-byte stride reading a u16 at +4 — and that
-      last offset lands on `sc_Value`'s low half rather than on `sc_From`/`sc_To`, which does not fit the
-      obvious reading. **Do not guess it**; the mismatch is exactly the sort that produces a confident
-      wrong port. Resolve `List<SkillChange>`'s base layout first.
+      Each predicate tests its POINTER (+0x1244..+0x1250), not the embedded body (+0x03EC..+0x0D7C), so a
+      mob with no rule of that kind costs nothing.
 
 **Proof:** `FighterDamageLvl60.pcapng` contains **633 `NC_BAT_SKILLBASH_HIT_DAMAGE_CMD` frames** that have
 never been looked at, plus `SKILLBASH_CAST_SUC_ACK` / `CAST_FAIL_ACK` / `HIT_OBJ_START` / `HIT_BLAST`.
