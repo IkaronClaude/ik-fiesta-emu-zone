@@ -572,6 +572,33 @@ public class BucketGroundTruthTests
     /// ⚠️ Two types carry this game struct's name: `Data.ActiveSkillInfo` (id/name/cast timing, loaded
     /// by `SkillDataBox`) and `Skill.ActiveSkillInfo` (the four DAMAGE columns `roe_AttackPower` reads).
     /// They model different halves of one row and both are legitimately named; qualify at every use.
+    /// <summary>`nT0`..`nT3` — the four empower tables, five entries each, as the one flat run of twenty
+    /// the engine indexes.
+    ///
+    /// <para>⚠️ SHARED BY BOTH SKILL LOADERS ON PURPOSE. It began as a local function inside
+    /// <see cref="SkillRows"/> and <see cref="SkillRowsMagical"/> simply never got one, so every magical
+    /// prediction silently dropped the empower term — visible only as `MagicBall01` needing a bigger
+    /// correction than every other skill, since it is the one skill in the capture that carries an
+    /// allocation.</para>
+    ///
+    /// <para>The column names are the client's own: only the first of each run is named, the other four
+    /// are `UndefinedN` in file order. The grouping is confirmed rather than assumed — the declared
+    /// lengths (`nIMPT`, `Undefined0`, `Undefined1`, `Undefined2`) are all 5, and `Undefined1` is 0 for
+    /// exactly the skills whose `nT2` run is all zeros. The four runs are DAMAGE / SP / KEEPTIME /
+    /// COOLTIME, matching `SKILL_EMPOWER`'s four bitfields: `nT1`'s top entry is almost exactly half the
+    /// skill's own `SP` for every skill checked, and `nT2` is empty for precisely the skills that apply no
+    /// lasting state.</para></summary>
+    private static Fiesta.Emu.Zone.Skill.SkillEmpowerTable EmpowerTable(IReadOnlyDictionary<string, object> r)
+    {
+        uint[] Run(string first, params string[] rest)
+            => [(uint)ShnFile.Int(r, first), .. rest.Select(c => (uint)ShnFile.Int(r, c))];
+        return Fiesta.Emu.Zone.Skill.SkillEmpowerTable.FromArrays(
+            Run("nT0", "Undefined3", "Undefined4", "Undefined5", "Undefined6"),
+            Run("nT1", "Undefined7", "Undefined8", "Undefined9", "Undefined10"),
+            Run("nT2", "Undefined11", "Undefined12", "Undefined13", "Undefined14"),
+            Run("nT3", "Undefined15", "Undefined16", "Undefined17", "Undefined18"));
+    }
+
     private static IReadOnlyDictionary<int, Fiesta.Emu.Zone.Skill.ActiveSkillInfo> SkillRows(string ressystem)
     {
         var table = ShnFile.Load(Path.Combine(ressystem, "ActiveSkill.shn"));
@@ -590,18 +617,12 @@ public class BucketGroundTruthTests
             // almost exactly half the skill's own `SP` for every skill checked (SP 106 -> 52, 120 -> 60,
             // 82 -> 40, 154 -> 77), and `nT2` is empty for precisely the skills that apply no lasting
             // state (`PowerHit`, `TripleHit`) while `RedSlash` and `GreatSwing`, which do, carry one.
-            uint[] Run(string first, params string[] rest)
-                => [(uint)ShnFile.Int(r, first), .. rest.Select(c => (uint)ShnFile.Int(r, c))];
             rows[id] = new Fiesta.Emu.Zone.Skill.ActiveSkillInfo(
                 MinFlat: (uint)ShnFile.Int(r, "MinWC"),
                 MinRatePermille: (uint)ShnFile.Int(r, "MinWCRate"),
                 MaxFlat: (uint)ShnFile.Int(r, "MaxWC"),
                 MaxRatePermille: (uint)ShnFile.Int(r, "MaxWCRate"),
-                Empower: Fiesta.Emu.Zone.Skill.SkillEmpowerTable.FromArrays(
-                    Run("nT0", "Undefined3", "Undefined4", "Undefined5", "Undefined6"),
-                    Run("nT1", "Undefined7", "Undefined8", "Undefined9", "Undefined10"),
-                    Run("nT2", "Undefined11", "Undefined12", "Undefined13", "Undefined14"),
-                    Run("nT3", "Undefined15", "Undefined16", "Undefined17", "Undefined18")));
+                Empower: EmpowerTable(r));
         }
         return rows;
     }
@@ -715,7 +736,8 @@ public class BucketGroundTruthTests
                 MinFlat: (uint)ShnFile.Int(r, "MinMA"),
                 MinRatePermille: (uint)ShnFile.Int(r, "MinMARate"),
                 MaxFlat: (uint)ShnFile.Int(r, "MaxMA"),
-                MaxRatePermille: (uint)ShnFile.Int(r, "MaxMARate"));
+                MaxRatePermille: (uint)ShnFile.Int(r, "MaxMARate"),
+                Empower: EmpowerTable(r));
         return rows;
     }
 
