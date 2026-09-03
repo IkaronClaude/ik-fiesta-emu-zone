@@ -372,7 +372,24 @@ public static class DamageCalculator
     /// enhancement; magic does not share it.</para>
     ///
     /// <para>What does carry over: the item bonus is scaled rather than added raw, and the scale is taken
-    /// from the MAX slot's weapon-title rate even when computing the minimum.</para></summary>
+    /// from the MAX slot's weapon-title rate even when computing the minimum.</para>
+    ///
+    /// <para>⭐ <b>THE WEAPON'S MAGIC ATTACK IS COUNTED TWICE HERE, AND THAT IS THE SERVER'S BEHAVIOUR,
+    /// NOT A BUG IN THIS PORT.</b> It arrives once through <see cref="Chain"/> — which sums
+    /// <c>Item.Plus[bound]</c> — and again through the scaled item bonus below, which at the neutral
+    /// 1000/1000 rates is just <c>Item.Plus[bound]</c> over again. A level-60 Enchanter with 288 Int, a
+    /// `FairyWand` (MinMA 240 / MaxMA 320) and `WandMastery05` (+34) has
+    /// <c>roe_MinMA</c> = 288 + 240 + 240 + 34 = <b>802</b>, not 562.</para>
+    ///
+    /// <para>⚠️ <b>Which is why the wire's magic-attack pair is not this number.</b>
+    /// `so_mobile_NotifyParameterChange@ShinePlayer` (0x00503C10) reports
+    /// <c>ftol(roe_MinMA) + FreeStatInt.MAAbsolute - equippedMinMA</c>, subtracting one copy back out so
+    /// the client can show the weapon's own line separately — and it does that for the MA pair ALONE. The
+    /// WC pair, AC, MR, TH and TB are all reported as <c>accessor + freeStat</c> with nothing taken away.
+    /// Anything rebuilding a container from `NC_CHAR_CHANGEPARAMCHANGE_CMD` has to add the equipped
+    /// items' `ItemInfo.MinMA`/`MaxMA` back in, or it under-states magic attack by exactly the weapon and
+    /// under-predicts every magical hit by 10-24%. See `BucketGroundTruthTests.EveryMagicalSkillHit…`.
+    /// </para></summary>
     private static double MagicAttack(ParameterContainer s, Stat bound)
     {
         // ONE divide by 1e6, not two by 1000 -- the physical equivalent divides after each multiply and

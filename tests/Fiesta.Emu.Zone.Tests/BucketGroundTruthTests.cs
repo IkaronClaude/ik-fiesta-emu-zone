@@ -425,10 +425,26 @@ public class BucketGroundTruthTests
     private static Band Through(ICombatant attacker, ICombatant defender, AttackModifiers mods,
                                 EngagementRule rule = EngagementRule.NormalPhysical)
     {
-        var rng = new System.Random(1);
-        var lo = DamageCalculator.ResolveDamage(attacker, defender, mods with { RollPermille = 0 }, rng, rule);
-        var hi = DamageCalculator.ResolveDamage(attacker, defender, mods with { RollPermille = 1000 }, rng, rule);
+        // ⚠️ THE JOB-CHANGE DRAW IS PINNED AT EACH BOUND, NOT LEFT TO THE SEED.
+        // `so_ply_JobChangeDamageUp` multiplies by `rate + rndbox(0..1)` — a real 0-or-1 the server takes
+        // per hit — so the widest clean outcome uses `rate + 1` and the narrowest uses `rate + 0`. Letting
+        // a seeded Random decide made the ceiling 0.06% too low whenever it happened to draw 0, which is
+        // one whole point of damage and is exactly what left `FireBolt08`'s 908 sitting one over a 907
+        // ceiling. Everything else `Resolve` draws is already pinned here (the roll and the critical).
+        var lo = DamageCalculator.ResolveDamage(attacker, defender, mods with { RollPermille = 0 },
+                                                new PinnedDraw(0), rule);
+        var hi = DamageCalculator.ResolveDamage(attacker, defender, mods with { RollPermille = 1000 },
+                                                new PinnedDraw(1), rule);
         return new Band(Math.Min(lo, hi), Math.Max(lo, hi));
+    }
+
+    /// <summary>A `Random` that always returns the same value, so a band bound can pin the engine's own
+    /// coin flips instead of inheriting a seed.</summary>
+    private sealed class PinnedDraw(int value) : System.Random
+    {
+        public override int Next(int minValue, int maxValue) => Math.Clamp(value, minValue, maxValue - 1);
+        public override int Next(int maxValue) => Math.Clamp(value, 0, maxValue - 1);
+        public override int Next() => value;
     }
 
     private static Band? Predict(Fixture f, Bucket b, MobDataBox box, LevelGapTable gaps,
@@ -736,6 +752,20 @@ public class BucketGroundTruthTests
     ///
     /// <para>Int governs magic attack the way Str governs weapon damage, and Men governs magic resistance
     /// the way Con governs armour — so the same floor-at-1 trick applies to the other pair.</para></summary>
+    /// <summary>The equipped weapon's own `MinMA`/`MaxMA` from `ItemInfo.shn` — the term
+    /// `so_mobile_NotifyParameterChange` subtracts out of the reported magic-attack pair, and the one that
+    /// has to go back in to recover `roe_MinMA`/`roe_MaxMA`.
+    ///
+    /// <para>Null when the bucket carries no weapon id, which is a refusal and not a zero: "no weapon
+    /// known" and "a weapon with no magic attack" are different states and only the second is a reading.
+    /// A weapon id that is not in `ItemInfo.shn` is the same kind of unknown.</para></summary>
+    private static (int Min, int Max)? EquipMagicAttack(ShnFile items, int? weapon)
+    {
+        if (weapon is not { } id) return null;
+        var row = items.Rows.FirstOrDefault(r => ShnFile.Int(r, "ID") == id);
+        return row is null ? null : (ShnFile.Int(row, "MinMA"), ShnFile.Int(row, "MaxMA"));
+    }
+
     private static Combatant ExactlyMagical(int level, int minMa, int maxMa, int magicResist)
     {
         var p = new ParameterContainer();
@@ -961,264 +991,112 @@ public class BucketGroundTruthTests
         under.ShouldBe(0, "a hit fell under the floor: " + summary);
     }
 
-    /// <summary>⭐ MAGICAL skill damage — `roe_magical`, exercised for the first time.
+    /// <summary>⭐ MAGICAL skill damage — <b>37 of 37 clean hits and 8 of 8 criticals inside their
+    /// predicted bands</b>, against a real level-60 client capture (`MageDamageLvl60.pcapng`, class 18
+    /// `Enchanter`) over 8 skills, nothing refused.
     ///
     /// <para>Every mage skill in the capture is `SkillHitType=1`, which `sdb_Load` maps to
-    /// <c>roe_magical</c> (the jump table at 0x587CC8 selects the rule from that field). So this runs
-    /// <see cref="EngagementRule.MagicalSkill"/>, which draws on Int/MAmin/MAmax, defends on the mob's
-    /// magic resistance, and — unlike every other rule — applies NO weapon mastery.</para>
+    /// <see cref="EngagementRule.MagicalSkill"/> — the jump table at 0x587CC8 writes `sdi_DamageRule`
+    /// (+0x70) from that field, 0 to `PhisycalSkill` (0x858EDC) and 1 to `MagicalSkill` (0x858EE0). So
+    /// this draws on Int/MAmin/MAmax, defends on the mob's magic resistance, and — unlike every other
+    /// rule — applies NO weapon mastery.</para>
+    ///
+    /// <para>⭐⭐ <b>WHAT WAS WRONG FOR THREE SESSIONS: the wire's magic-attack pair is not the accessor's
+    /// output.</b> This test read `NC_CHAR_CHANGEPARAMCHANGE_CMD` ids 11/12, subtracted the free stat, and
+    /// treated the result as `roe_MinMA`/`roe_MaxMA` — the same move that makes the physical side exact.
+    /// It is wrong for magic and only for magic. `so_mobile_NotifyParameterChange@ShinePlayer`
+    /// (0x00503C10) reports:</para>
+    ///
+    /// <code>
+    /// MinWC (6)  = ftol(roe_MinWC) + FreeStatStr.WCAbsolute
+    /// MaxWC (7)  = ftol(roe_MaxWC) + FreeStatStr.WCAbsolute
+    /// MinMA (11) = ftol(roe_MinMA) + FreeStatInt.MAAbsolute - [this+0x10B4]
+    /// MaxMA (12) = ftol(roe_MaxMA) + FreeStatInt.MAAbsolute - [this+0x10B8]
+    /// AC    (8)  = ftol(roe_AC)    + FreeStatCon.ACAbsoulte
+    /// MR    (13) = ftol(roe_MR)    + FreeStatMen.MRAbsolute
+    /// </code>
+    ///
+    /// <para>and `so_RecalcEquipParam@ShinePlayer` (0x004CAB70) is what fills those two slots — it walks
+    /// the equipped items doing <c>[+0x10B4] += ItemInfo.MinMA</c> (+0x93) and
+    /// <c>[+0x10B8] += ItemInfo.MaxMA</c> (+0x97), beside <c>[+0x10A0] += MinWC</c> and
+    /// <c>[+0x10A8] += AC</c>. <b>The MA pair is the only reported stat with a third term, and the term is
+    /// the equipped weapon's own magic attack.</b></para>
+    ///
+    /// <para><b>The server subtracts it because `roe_MinMA` counts it twice</b> — once through
+    /// <c>Chain</c> over <c>Item.Plus[bound]</c> and again through the scaled item bonus, which at the
+    /// neutral 1000/1000 rates is that same number over again (see
+    /// <see cref="DamageCalculator.MinMagicAttack"/>). The display takes one copy off so the client can
+    /// show the weapon's line separately; the damage engine keeps both. It falls out to the unit here:
+    /// 288 Int + 240 wand + 240 again + 34 `WandMastery05` = <c>roe_MinMA</c> <b>802</b>, reported as
+    /// 802 + 60 - 240 = <b>622</b>; and 288 + 320 + 320 + 34 = <b>962</b> reported as 962 + 60 - 320 =
+    /// <b>702</b>. Both wire numbers, exactly.</para>
+    ///
+    /// <para>⭐ <b>This is the operator's own theory, confirmed.</b> "Free stat STR applies like twice in
+    /// 2 separate situations, I don't trust you've fully wired INT free stat correctly" — the doubling is
+    /// real, it is the WEAPON rather than the free stat, and it is on the magical side. Every attempt to
+    /// find it in the formula failed because the formula was already right; the error was in the
+    /// harness's reading of the wire.</para>
+    ///
+    /// <para><b>The bands are tight, which is the claim that matters.</b> `FireBolt08`'s 908 sits exactly
+    /// on its 908 ceiling, `ChainLightning01`'s 841 sits at 1.002x its floor, `MagicBall01`'s critical
+    /// 1485 lands on its 1484 floor, and `MagicMissile08`'s 778 is 0.999 of its ceiling. Observations
+    /// press against BOTH bounds across independent skills — a band wide enough to swallow anything would
+    /// not do that.</para>
     ///
     /// <para>Fixture is `MageDamageLvl60.pcapng` through `tools/damage_buckets.py`. A second, older
     /// fixture shape comes from a live MageZero packet log rather than a pcap — see `tools/mage_fixture.py`,
     /// which walks the bot's own log format and emits the same JSON.</para>
     ///
-    /// <para>⛔ <b>RED: 1 of 37 clean hits inside, and 0 of 8 criticals.</b> Fixture is a real level-60
-    /// client capture (`MageDamageLvl60.pcapng`, class 18 `Enchanter`) over 8 skills, nothing refused.
-    /// Every miss is ABOVE the ceiling and the miss runs <b>1.02x to 1.24x</b> on the final damage.</para>
-    ///
-    /// <para>⚠️ <b>Express the residual on the DAMAGE, not on the attack power.</b> `roe_Damage`'s
-    /// per-rule override adds the attacker's free stat AFTER the divide, so a multiplier on attack and a
-    /// multiplier on damage are different numbers — on the `LightningBolt08`/Pinky hit they are 1.263 and
-    /// 1.203. An earlier pass conflated them and reported a larger, differently-shaped miss.</para>
-    ///
-    /// <para><b>THE CONTROL THAT MATTERS PASSES.</b> This same capture's mob→player physical swings run
-    /// through <see cref="NoBucketExceedsWhatAMaximumRollCanProduce"/> with ZERO overshooting buckets
-    /// (`FIESTA_BUCKETS=mage60.json`). Same character, same session, same decode, same bucket tool — so
-    /// the miss is not the capture, the decode, the level or the harness. It is specific to the OUTGOING
-    /// MAGICAL direction.</para>
-    ///
-    /// <para><b>No constant fits, and that is now measured rather than argued.</b> With the criticals in
-    /// (see below) the admissible multiplier is pinned per skill, and the pins contradict:
-    /// `FireBolt08` needs at least <b>1.182</b> while `ChainLightning01` allows at most <b>1.146</b>.
-    /// Solved as a 2-variable LP, no affine transform `m * band + D` satisfies both; the 3-variable
-    /// version over the attack range is infeasible unless the container's min-to-max spread roughly
-    /// doubles, which is a fit and not a reading. So either something varies per hit, or those two skills
-    /// genuinely differ.</para>
-    ///
-    /// <para>The required multiplier does fall monotonically as the skill's own `MinMA` rises — 1.240 at
-    /// 327, 1.218 at 515, 1.185 at 675, 1.182 at 775, 1.134 at 899 — which is the signature of a missing
-    /// ADDITIVE term on the base magic attack. The implied constant is not constant either (161, 215, 206,
-    /// 323, 145 across those five), and one large enough for `FireBolt08` puts `ChainLightning01`'s lowest
-    /// hit below its own floor.</para>
-    ///
-    /// <para>Ruled OUT on data:</para>
-    /// <list type="bullet">
-    /// <item><b>Job-change damage-up.</b> Wired now, and this character is class 18 whose
-    /// `JobChangeDmgUp` is 1700 permille at level 60 — a real 1.7x that the Fighter capture could never
-    /// exercise, since class 1 is 1000. It is NOT the cause: the level-21 base-Mage bot log, whose rate is
-    /// 1000 and so applies nothing at all, under-predicts by the same ~1.3x.</item>
-    /// <item><b>Weapon mastery.</b> The weapon is a `FairyWand` (WeaponType 11, two-hand), and the mage's
-    /// `WandMastery05` gives `MstPlWand2` = +34 — a flat PLUS, not a rate, and already inside the 622 the
-    /// wire reports, since that number is the accessor's OUTPUT.</item>
-    /// <item><b>The MA parameter mapping.</b> Ids 11/12 read 622/702 against a weapon pair (6/7) of 85/98
-    /// and an Int (3) of 288 — the only pair that can be a level-60 mage's magic attack.</item>
-    /// <item><b>Multi-hit, AoE division, empower.</b> Every skill carries `HitID` 0; `TargetNumber` is 1
-    /// except `MagicBurst03`; the empower allocation is read from the wire.</item>
-    /// <item><b>The mob's magic resistance — now READ, not argued from symmetry.</b>
-    /// `Parameter::Container::c_StoreMob` (0x0043C550) writes cluster slot 0x1C from `MobInfoServer`+0x25
-    /// (AC), 0x24 from +0x27 (TB), <b>0x30 from +0x29 (MR)</b> and 0x38 from +0x2B (MB), with the same
-    /// Str/Con/Dex crossover the port already models. Orc's 239 is Men 112 + MR 127 and that is what the
-    /// port builds.</item>
-    /// <item><b>The angle, from the wire.</b> `tools/skill_angle.py` reconstructs every hit's
-    /// `DamageByAngle` index out of this capture — 83 of 86 hits get one, spread 0 to 78 — and the
-    /// correlation between the stock table's rate and the multiplier each hit needs is <b>-0.011 over 43
-    /// clean hits</b>. Hits at index 0 still need up to 1.240. See OPEN_QUESTIONS §4.</item>
-    /// <item><b>The free-stat slot identity</b>, which was genuinely ambiguous and is now named from the
-    /// PDB: object vtable +0x468 `so_ply_FreeStatStr`, +0x46C `FreeStatInt`, +0x474 `FreeStatCon`,
-    /// +0x478 `FreeStatMen`. `NormalMA::roe_Damage` reads `att->+0x46C` and `def->+0x478` — Int minus Men,
-    /// which is what this test passes. The closed forms below match the real 181-entry tables at every
-    /// entry.</item>
-    /// <item><b>The whole post-`roe_CalcDamage` cascade in `smo_SkillBlast`</b> — set-item damage rate,
-    /// multi-hit rate, `TARGETHPDOWNDMGUPRATE`, `DMGDOWNRATE`, `UNDEADTODMG`. All neutral here, each
-    /// checked against the data: no `SetItemIndex` on any of the five equipped items, `HitID` 0, and
-    /// `SpecialIndexA..E` zero for every skill in both captures. See OPEN_QUESTIONS §5.</item>
-    /// </list>
-    ///
-    /// <para>⭐ <b>EVERY LINK IN THE MAGICAL CHAIN HAS NOW BEEN RUN AGAINST THE REAL FUNCTION, AND EVERY
-    /// ONE IS EXACT.</b> `tools/oracle_magical.py` and `tools/oracle_magical_skill.py` execute the
-    /// server's own code under emulation rather than fitting coefficients:</para>
-    ///
-    /// <list type="bullet">
-    /// <item>`roe_MinMA` / `roe_MaxMA` / `roe_MR` — mage 622 / 702 / 468, Orc MR 239, Pinky MR 319. All
-    /// match.</item>
-    /// <item>`roe_AttackPower@MagicalSkill` — eight cases from the capture: plain, four real skill rows,
-    /// the empower allocation, and each rate scaled alone. All match, including that `MinMARate` moves
-    /// only the low bound and `MaxMARate` only the high.</item>
-    /// <item>`roe_DefendPower@MagicalSkill` — Orc 239, Pinky 319. Matches.</item>
-    /// <item>`roe_Damage` — ⚠️ the two paths do NOT share it: `MagicalSkill` inherits
-    /// `NormalMA::roe_Damage` while `PhisycalSkill` inherits `NormalPY::roe_Damage`. Run side by side they
-    /// return identical values for these inputs, and both equal the port's <c>(level+1)*attack/defend</c>.</item>
-    /// <item>`roe_LevelGapDamageRevision` — returns 1000 for every level pair in the capture.</item>
-    /// <item>`JobChangeDmgUp` — exact by its own oracle, and NOT magic-specific: the Fighter capture's
-    /// character is class 3 `Warrior`, whose rate at level 60 is <b>1700, the same as `Enchanter`</b>. So
-    /// the physical side exercises the 1.7x multiply too and is exact at 545/545 with it.</item>
-    /// <item>`DamageByAngle` — the deployed table is flat 1000 (read live from two zones) and spans only
-    /// 1000-1200 even in the stock file. `tools/skill_angle.py` now confirms that from the WIRE on this
-    /// very capture: no correlation, and hits reconstructed at index 0 still need up to 1.240.</item>
-    /// </list>
-    ///
-    /// <para>⭐ <b>THE CRITICALS ARE A SECOND SAMPLE AND THEY ARE THE TIGHTER ONE.</b> A critical is
+    /// <para>⭐ <b>THE CRITICALS ARE A SECOND SAMPLE.</b> A critical is
     /// `2*d + d * PassiveCriDamageRatePlus / 1000` over the SAME roll a clean hit draws, so
-    /// `damage_buckets.py` now emits each one individually and this test predicts a `ForceCritical` band
-    /// for it. Nothing is assumed about the passive — it comes off the attacker's container and is 0 here,
+    /// `damage_buckets.py` emits each one individually and this test predicts a `ForceCritical` band for
+    /// it. Nothing is assumed about the passive — it comes off the attacker's container and is 0 here,
     /// which the data agrees with (`MagicBall01`'s criticals 1504 and 1522 halve to 752 and 761, both
-    /// inside its clean 753..810). Worth 8 more observations, and they move `ChainLightning01`'s ceiling
-    /// requirement from 1.078 to <b>1.133</b>, which is what makes the contradiction with `FireBolt08`
-    /// sharp instead of arguable.</para>
+    /// inside its clean 753..810). Worth 8 more observations, and they are the ones that pinned
+    /// `ChainLightning01` tightly enough to prove no constant could ever have reconciled it with
+    /// `FireBolt08` — which is what said the miss was an INPUT and not a coefficient.</para>
     ///
-    /// <para>Also eliminated from the FIXTURE side: the mage carries no self-buffs (every bucket's
-    /// `selfAbstates` is empty); its free-stat allocation is Int 50 / Men 25 and constant across every
-    /// bucket that has a hit (an earlier note here said "all zeros", which was the FIRST conversation's
-    /// reading, not the one the hits are in); the level parses as 60 from `+25`; the parameter vector
-    /// `11/12/3/13` = 622/702/288/468 is identical on all 86 hits; and the SAME fixture's 56 incoming
-    /// swings pass
-    /// <see cref="NoBucketExceedsWhatAMaximumRollCanProduce"/>, which independently validates the player's
-    /// level and defence and the mob data.</para>
+    /// <para>Everything below was ruled out on the way, each positively, and each is still worth keeping:
+    /// they are the reason the answer was findable at all.</para>
     ///
-    /// <para>⭐ <b>So the residual is an INPUT this harness does not have, not a formula error.</b> Solving
-    /// each bucket for the attack power that would reproduce it gives a strikingly consistent
-    /// <b>+460 to +490 on attack</b> across most Orc buckets — a constant ADD, not a multiplier, on a
-    /// quantity the oracle has already proved the engine computes correctly from `roe_MinMA`. Which means
-    /// the wire's magic-attack pair is not the whole input: something contributes ~470 that
-    /// `NC_CHAR_CHANGEPARAMCHANGE_CMD` ids 11/12 do not report.</para>
+    /// <list type="bullet">
+    /// <item><b>Job-change damage-up.</b> Class 18's `JobChangeDmgUp` is 1700 permille at level 60 — a
+    /// real 1.7x. Wired, and NOT the cause: the Fighter capture's class 3 `Warrior` is also 1700, so the
+    /// physical side exercises the same multiply and was exact throughout.</item>
+    /// <item><b>Weapon mastery.</b> `roe_AttackPower@MagicalSkill` genuinely omits the trailing
+    /// `container[+0x858]` multiply the physical twin has — verified under emulation WITH a control
+    /// (`tools/oracle_magical_mastery.py`: physical 949 to 1898, magical stays 949).</item>
+    /// <item><b>The mob's magic resistance.</b> `Parameter::Container::c_StoreMob` (0x0043C550) writes
+    /// cluster slot 0x1C from `MobInfoServer`+0x25 (AC), 0x24 from +0x27 (TB), 0x30 from +0x29 (MR) and
+    /// 0x38 from +0x2B (MB), with the same Str/Con/Dex crossover the port already models. Orc's 239 is
+    /// Men 112 + MR 127, which is what the port builds.</item>
+    /// <item><b>The angle, from the wire.</b> `tools/skill_angle.py` reconstructs every hit's
+    /// `DamageByAngle` index out of this capture — 83 of 86 get one, spread 0 to 78 — and the correlation
+    /// with the multiplier each hit needed was -0.011 over 43 clean hits.</item>
+    /// <item><b>The free-stat slot identity</b>, named from the PDB: object vtable +0x468
+    /// `so_ply_FreeStatStr`, +0x46C `FreeStatInt`, +0x474 `FreeStatCon`, +0x478 `FreeStatMen`.
+    /// `NormalMA::roe_Damage` reads the attacker's +0x46C and the defender's +0x478 — Int minus Men. The
+    /// closed forms below match the real 181-entry tables at every entry.</item>
+    /// <item><b>The post-`roe_CalcDamage` cascade in `smo_SkillBlast`</b> — set-item damage rate,
+    /// multi-hit rate, `TARGETHPDOWNDMGUPRATE`, `DMGDOWNRATE`, `UNDEADTODMG`. All neutral here, each
+    /// checked against the data: no `SetItemIndex` on any equipped item, `HitID` 0, and
+    /// `SpecialIndexA..E` zero for every skill in both captures. See OPEN_QUESTIONS §5 — none of it is
+    /// neutral in general, and none of it is modelled.</item>
+    /// <item><b>The skill row mapping</b>, from the PDB: `ActiveSkillInfo` +0xEB `MinMA`, +0xEF
+    /// `MinMARate`, +0xF3 `MaxMA`, +0xF7 `MaxMARate`, which is what `roe_AttackPower@MagicalSkill`
+    /// reads.</item>
+    /// <item><b>`ActiveSkillInfoServer.DmgIncRate`/`DmgIncValue`</b> — 0 for all 2791 rows.</item>
+    /// <item><b>`EngageArgument`'s constructor</b> (0x0042ABF0) sets `damagerate` (+0x1C) and
+    /// `nBMPDamageRate` (+0x28) to 1000; `mdt_ArgumentLoad`'s override table is
+    /// `World/MiscDataTable.txt` `#Table ExpandSkill`, four rows, none of them ours.</item>
+    /// </list>
     ///
-    /// <para>⚠️ Recorded as an OBSERVATION and explicitly not adopted: the character's id 13 is 468, and
-    /// 622 + 468 = 1090 sits inside the required 1082-1112. That is a coincidence of one number until a
-    /// mechanism says otherwise — adding a defensive stat to attack power makes no sense — and fitting it
-    /// would be exactly the curve-fitting the oracles exist to avoid.</para>
-    ///
-    /// <para>⭐ <b>LEADING HYPOTHESIS: ITEM ACTIONS.</b> `roe_CalcDamage` calls `EventRun` and
-    /// <c>GetPlusAppliValue</c> against BOTH combatants' item-action managers, and
-    /// <see cref="DamageCalculator.AttackPower"/> already models the result as applying to EACH BOUND
-    /// before the roll rather than to the rolled figure. `AttackModifiers.ItemActions` is the input, and
-    /// BOTH ground-truth tests pass it as <c>null</c> — a pcap does not state a character's item actions,
-    /// so nothing has ever populated it.</para>
-    ///
-    /// <para>That is the right SHAPE for this residual: a per-character constant, added to both bounds,
-    /// invisible to every stat packet, and identical across skills because the gear does not change
-    /// between them. It also explains why the physical capture is unaffected — a different character with
-    /// different equipment. The capture carries the character's items
-    /// (`NC_CHAR_CLIENT_ITEM_CMD`, and `NC_ITEM_EQUIPCHANGE_CMD` for swaps), so one route is to read the
-    /// equipped set and its options out of the wire and drive `ItemActionResults` from them.</para>
-    ///
-    /// <para>⭐ <b>FREE STAT IS STATE AND IT CHANGES MID-CAPTURE</b> (operator, 2026-09-03: "we do give
-    /// free stats and change weapons etc during the capture"). `damage_buckets.py` read it ONCE — "first
-    /// one only" — and in `MageDamageLvl60.pcapng` the first two conversations report
-    /// <c>Int=0, Men=0</c> while the last three report <c>Int=50, Men=25</c>, and EVERY damaging hit is
-    /// in the last one. So the fixture described a character that had not been built yet. It is now
-    /// snapshotted per hit and part of the bucket key, and this test applies BOTH halves of the term the
-    /// way the physical one always has: the wire's magic-attack pair is an accessor OUTPUT and already
-    /// contains the free-stat contribution, so it comes OUT of the container and
-    /// `roe_Damage@NormalMA`'s per-rule override adds it back to the damage.</para>
-    ///
-    /// <para>Real, and small: `FreeStatInt` contributes only `MAAbsolute` = <c>n + n/5</c> = 60 for 50
-    /// points, which moved this from 0 to 1 of 37 inside. `FreeStatMen`'s other terms are MR, MaxSP and
-    /// CriRate, and criticals are excluded from the clean set. The Fighter capture is unaffected — its
-    /// allocation is a constant 17/0 across all 309 of its skill buckets — and stays 545/545.</para>
-    ///
-    /// <para>⚠️ <b>A LEAD THAT READING THE ASM KILLED.</b> The clean hits split cleanly by the
-    /// `SkillDamage` record's byte at +3 (0x28 vs 0x00), the split tracked skill id perfectly, and one
-    /// half fitted a tight 1.273-1.276 multiplier. It is an ARTEFACT. `sds_TemplateStore@SkillDamageSender`
-    /// (0x5803C0) builds the record at <c>[ebp-0x20]</c> and writes only bits 0-2 of byte +3 — bit0 is
-    /// "this hit kills" (set from <c>cmp HP, damage</c> at 0x580544, i.e. `isDead`), bits 1-2 come from
-    /// the result buffer — and it PRESERVES bits 3-7 with <c>and dl, 0xfa</c> from a stack local that is
-    /// never initialised. The 0x28 was stale stack. Chasing it as a mechanism would have been a
-    /// fabricated finding; the operator's "prefer reading source asm when unsure" is what stopped it.</para>
-    ///
-    /// <para>The same disassembly settles the layout: +2 and +3 are two separate BYTE fields, not one
-    /// <c>u16</c> flag, and byte +2 packs eight one-bit flags out of `SkillResultBuffer` at +8..+0x11
-    /// (bit0 from +8, bit7 from +9, bits 1-6 from +0xb..+0x10). ⚠️ The REAL discriminator is byte +2
-    /// <b>bit5</b> (from +0xf, our `isenchant`), not the garbage byte +3 — it gives the identical split,
-    /// so the two populations are genuine even though the byte I first found them with was not. And
-    /// bit1 IS critical, confirmed behaviourally: those hits run 1.5x-2.2x larger per skill and are
-    /// correctly excluded, so criticals are NOT leaking into the clean set.</para>
-    ///
-    /// <para>With the free-stat term applied the two groups are:</para>
-    /// <code>
-    /// bit5 set    6261, 6300                   9 hits   FITS a multiplier of 1.120-1.146
-    /// bit5 clear  6007 6047 6067 6142 6240 6280  28 hits  needs >=1.240 and &lt;=1.182 (5% apart)
-    /// </code>
-    ///
-    /// <para>⭐⭐ <b>NEXT, AND IT IS A SPECIFIC INPUT BOTH TESTS HARDCODE: `nBMPDamageRate`.</b>
-    /// `roe_Damage` computes <c>v = nBMPDamageRate * attack / 1000</c>, and
-    /// <see cref="AttackModifiers.BaseDamageRatePermille"/> is left at 1000 by every caller here. It is
-    /// NOT a constant in the server: `smo_SkillBlast` fills `EngageArgument+0x28` from its own
-    /// caller-supplied parameter — <c>mov dword ptr [ebp-0x124], ecx</c> at 0x00581A7A, with
-    /// <c>ecx = [ebp+0x20]</c>. ⚠️ RULED OUT: `sbe_BlastObject` passes <c>push 0x3e8</c> = <b>1000</b>
-    /// (0x00584029), so it is neutral for the skill-blast path after all.</para>
-    ///
-    /// <para>Also ruled out this round: the CLIENT and SERVER copies of `ActiveSkill.shn` are the same
-    /// file (identical size and identical MinMA/MaxMA/nT0 for every skill in both captures), so loading
-    /// skill rows from `ressystem` is not a stale-data bug; and no skill-group column separates the two
-    /// populations (`DlyGroupNum` and `SkillClassifierA` both vary WITHIN each group), so
-    /// `EventRunBySkillGroupIndex` has no candidate key.</para>
-    ///
-    /// <para><b>Where a fitted constant would get to, recorded so nobody has to re-derive it — and
-    /// deliberately NOT adopted.</b> A single multiplier on final damage reaches 25 of 37 inside at
-    /// 1.103; per group it is 9/9 at 1.087 for the bit5 half and only 17/28 at 1.116 for the plain half.
-    /// Adopting either would turn this test green by construction while the mechanism stayed unknown,
-    /// which is the one thing the oracles exist to prevent. The plain half still needs something that
-    /// varies with the skill's own `MinMA` — `LightningBolt08` (327) wants ~5% more than
-    /// `FireBolt08` (775) and `MagicBall01` (447+228), which both pin at ~1.182.</para>
-    ///
-    /// <para><b>`ItemActions` was the last unmodelled input, and the equipment does not supply one.</b>
-    /// The character wears the `Nature` set (1520-1523) plus a `FairyWand` (1804): no `SetItemIndex` on
-    /// any of them, and every `MARate` is a neutral 1000. The wand's own MinMA/MaxMA of 240/320 has
-    /// exactly the 80-point spread the wire reports between 622 and 702, so the reconstruction is
-    /// consistent with the gear.</para>
-    ///
-    /// <para>⚠️ <b>AND THE DEPLOYED DATA IS NOT THE PROBLEM EITHER</b> — checked because `DamageByAngle`
-    /// set the precedent that `Z:/ServerSource` can disagree with what actually runs. MD5 against the
-    /// live zone00 pod: `ParamEnchanterServer.txt` (the 1700 job-change rate), `MobInfoServer.shn` (the
-    /// mob MR only the magical path reads, where a wrong value would be invisible to the exact physical
-    /// side), `MobInfo.shn` and `DamageLvGapPVE.shn` are all IDENTICAL to the reference tree.</para>
-    ///
-    /// <para>So: every formula link verified against the real binary, every data file verified against
-    /// the deployed server, the record layout verified against the wire, the container verified to
-    /// reproduce the wire's accessor outputs, criticals confirmed excluded, free stat applied,
-    /// `nBMPDamageRate` read as 1000 from the caller, and weapon mastery confirmed absent from the
-    /// magical rule WITH a working control (`tools/oracle_magical_mastery.py`).</para>
-    ///
-    /// <para>⭐⭐ <b>AND IT IS NOT A PER-CHARACTER INPUT — that reading, which earlier notes here stated,
-    /// was wrong.</b> Two independent characters give nearly the same residual:</para>
-    ///
-    /// <code>
-    /// lvl21 base Mage   job x1.000   10 hits   residual needs >= 1.278 and &lt;= 1.176
-    /// lvl60 Enchanter   job x1.700   37 hits   residual needs >= 1.184 and &lt;= 1.105
-    /// </code>
-    ///
-    /// <para>Different level, different gear, different job-change rate, different skills — and both want
-    /// roughly <b>1.18</b>. The two windows miss each other by 0.7%, which is inside the noise of bounds
-    /// each set by a single extreme observation. A per-character term could not do that; a CONSTANT
-    /// factor in the magical path is exactly what does.</para>
-    ///
-    /// <para>Since every step from `roe_MinMA` through `roe_AttackPower`, `roe_DefendPower`,
-    /// `roe_Damage`, the level-gap revision and the job-change multiply has been run against the real
-    /// function and matches, the factor must live in the one part that has never been runnable:
-    /// <b>`roe_CalcDamage` itself</b>. That is not a gap in this port's reading — the pre-existing
-    /// `tools/oracle_accessors.py` fails on it too, catching the exception and printing FAILED. Making
-    /// `roe_CalcDamage` run under emulation (it reads object state past +0x60 — position, item-action
-    /// managers) is therefore THE next piece of work, and it is a project rather than a probe.</para>
-    ///
-    /// <para>⛔ A constant is exactly what a fit would produce, which is why one is NOT adopted here. The
-    /// difference between finding 1.18 and fitting 1.18 is knowing which instruction applies it.</para>
-    ///
-    /// <para><b>And the constant is NOT a literal in `roe_CalcDamage`.</b> Every numeric it references is
-    /// accounted for: the 4.29e9 unsigned fixup, a divide by a global at 0x00870DD8 that holds 1.0, and
-    /// the 1024 / 0.0009765625 / 1000 trio belonging to the angle and permille arithmetic. All of them are
-    /// on the path the PHYSICAL side takes too, and that side is exact — so nothing in that function's own
-    /// body singles magic out.</para>
-    ///
-    /// <para><b>The rule vtables were diffed slot by slot</b> to find what magic does differently. Only
-    /// the expected overrides differ, and the two that looked promising resolve to nothing: `+0x30`
-    /// `roe_FreeStateAttackPower` and `+0x34` `roe_FreeStateDefendPower` are per-rule, but disassembling
-    /// all four shows they are structurally identical — one virtual call on the object (slot +0x468
-    /// magical-attack against +0x46C physical-attack, +0x474 against +0x478 for defence) and then
-    /// <c>movzx ecx, word ptr [eax + 1]</c>, i.e. the `MAAbsolute` / `WCAbsolute` field of the 4-byte
-    /// free-stat record. Pure additive terms, exactly as this port models them. `+0x14` differs only
-    /// because magic has no shield block.</para></summary>
+    /// <para><b>The control that made this findable:</b> this same capture's mob→player physical swings
+    /// pass <see cref="NoBucketExceedsWhatAMaximumRollCanProduce"/> with zero overshooting buckets
+    /// (`FIESTA_BUCKETS=mage60.json`). Same character, same session, same decode — which localised the
+    /// miss to the outgoing magical direction and, in the end, to its one unshared input.</para></summary>
     [SkippableFact]
-    public void MagicalSkillDamageIsTrackedAgainstItsBaseline_KNOWN_RED()
+    public void EveryMagicalSkillHitInTheCaptureFallsInsideItsPredictedBand()
     {
         var path = Environment.GetEnvironmentVariable("MAGE_BUCKETS");
         var shine = Shine();
@@ -1239,6 +1117,7 @@ public class BucketGroundTruthTests
         var lineBase = SkillLineBase(ressystem!);
         var abState = ShnFile.Load(Path.Combine(shine!, "AbState.shn"));
         var subAbState = ShnFile.Load(Path.Combine(shine!, "SubAbState.shn"));
+        var items = ShnFile.Load(Path.Combine(shine!, "ItemInfo.shn"));
         // ⭐ THE JOB-CHANGE MULTIPLIER IS NOT OPTIONAL HERE. This capture's character is class 18,
         // `Enchanter`, whose `JobChangeDmgUp` at level 60 is 1700 permille — a 1.7x on every hit it deals
         // to a monster. Passing `null` (as this test did while it only had a base-Mage bot log, where the
@@ -1273,12 +1152,44 @@ public class BucketGroundTruthTests
                 ?? (b.FreeStat.Count > 0 ? b.FreeStat.GetValueOrDefault("Intelligence")
                                          : f.FreeStat.GetValueOrDefault("Intelligence")));
 
+            // ⭐⭐ THE WIRE'S MAGIC-ATTACK PAIR IS NOT THE ACCESSOR'S OUTPUT. It is the output plus the
+            // free stat MINUS THE EQUIPPED WEAPON'S OWN MA, and no other reported stat has that third
+            // term. Read from `so_mobile_NotifyParameterChange@ShinePlayer` (0x00503C10):
+            //
+            //     MinWC (6)  = ftol(roe_MinWC) + FreeStatStr.WCAbsolute            <- no subtraction
+            //     MinMA (11) = ftol(roe_MinMA) + FreeStatInt.MAAbsolute - [this+0x10B4]
+            //     MaxMA (12) = ftol(roe_MaxMA) + FreeStatInt.MAAbsolute - [this+0x10B8]
+            //     AC (8)     = ftol(roe_AC)    + FreeStatCon.ACAbsoulte            <- no subtraction
+            //
+            // and `so_RecalcEquipParam@ShinePlayer` (0x004CAB70) is what fills those two slots: it walks
+            // the equipped items and does `[+0x10B4] += ItemInfo.MinMA` (+0x93), `[+0x10B8] += MaxMA`
+            // (+0x97), alongside `[+0x10A0] += MinWC` and `[+0x10A8] += AC`.
+            //
+            // WHY THE SERVER DOES IT: `roe_MinMA` counts the weapon TWICE. The weapon's MA is in
+            // `Item.Plus[MAmin]`, which `Chain` sums, AND it is multiplied in again by the
+            // `ScaledWeaponItemBonus` term -- `WeaponTitle.rate[MAmax] * Item.Plus[bound] *
+            // PassiveSkill.rate[MagicalWeaponMastery] / 1e6`, which at the neutral 1000/1000 is just
+            // `Item.Plus[bound]`. The display subtracts one copy back out so the client can show the
+            // weapon's own line separately. **The damage engine keeps both.**
+            //
+            // For this character it reads exactly: 288 Int + 240 wand + 240 again + 34 `WandMastery05`
+            // = roe_MinMA 802, reported as 802 + 60 - 240 = 622; and 288 + 320 + 320 + 34 = 962 reported
+            // as 962 + 60 - 320 = 702. Both wire values fall out to the unit.
+            //
+            // ⚠️ ONLY THE WEAPON IS ADDED BACK HERE, and that is a fixture limit rather than a claim:
+            // `so_RecalcEquipParam` sums EVERY equipped item, and the bucket records only the weapon id.
+            // It is exact for this capture because the four Nature armour pieces carry MinMA/MaxMA 0 --
+            // checked in `ItemInfo.shn`, not assumed -- and it will be wrong for a character wearing MA
+            // jewellery. The fix is for `damage_buckets.py` to record the whole equipment set.
+            var equip = EquipMagicAttack(items, b.Weapon);
+            if (equip is not { } wpnMa) { skipped += b.N; continue; }
+
             // ⚠️ The MAGICAL skill row is MinMA/MaxMA, not MinWC/MaxWC -- `roe_AttackPower@MagicalSkill`
             // reads +0xEB/+0xEF/+0xF3/+0xF7 where the physical one reads +0xDB..+0xE7.
             // MAGE_KEEP_FREESTAT_IN_MA: probe for whether the DISPLAYED magic-attack pair already
             // contains the free-stat term (as the physical pair provably does) or not.
             var sub = Environment.GetEnvironmentVariable("MAGE_KEEP_FREESTAT_IN_MA") is null ? freeInt : 0;
-            var me = ExactlyMagical(b.Level, amin - sub, amax - sub, 1);
+            var me = ExactlyMagical(b.Level, amin - sub + wpnMa.Min, amax - sub + wpnMa.Max, 1);
             var band = Through(me, mob, new AttackModifiers
             {
                 ForceCritical = false,
