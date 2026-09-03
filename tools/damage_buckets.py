@@ -339,9 +339,16 @@ def collect(lines):
             # 60, is cheated down to 59, and is levelled back to 60 mid-session, so a single reading at the
             # front is wrong for every swing that matters.
             level = raw[25]
-            if not free_stat:
-                free_stat = dict(zip(["Strength", "Constitute", "Dexterity", "Intelligence",
-                                      "MentalPower", "RedistributePoint"], raw[0x57:0x5D]))
+            # ⚠️ FREE STAT IS STATE, NOT A CONSTANT -- it was read ONCE ("first one only") and that is
+            # wrong: the operator allocates points DURING a capture. `MageDamageLvl60.pcapng` reports
+            # Int=0 Men=0 in its first two conversations and Int=50 Men=25 in the last three, and every
+            # damaging hit is in the LAST one. Taking the first reading therefore described a character
+            # that had not been built yet, and the damage prediction lost the whole free-stat term.
+            #
+            # Tracked like `params`: current value, snapshotted onto each hit, and part of the bucket key
+            # so hits taken under different allocations cannot be pooled.
+            free_stat = dict(zip(["Strength", "Constitute", "Dexterity", "Intelligence",
+                                  "MentalPower", "RedistributePoint"], raw[0x57:0x5D]))
         elif name == "NC_ITEM_EQUIPCHANGE_CMD" and len(raw) >= 5:
             # location u8@2 is the EQUIP SLOT and item u16@3 the item id -- our own character's equipment,
             # sent to us, unlike NC_BRIEFINFO_CHANGEWEAPON_CMD which broadcasts appearance to others and
@@ -424,6 +431,7 @@ def collect(lines):
                     "attackerMob": mob_of.get((conv, caster)),
                     "defenderMob": mob_of.get((conv, handle)),
                     "params": tuple(sorted(params.items())),
+                    "freeStat": tuple(sorted(free_stat.items())),
                     "attackerAbstates": tuple(sorted(live(conv, caster, ts, opened).items())),
                     "defenderAbstates": tuple(sorted(live(conv, handle, ts, opened).items())),
                 })
@@ -445,6 +453,7 @@ def collect(lines):
                 # Snapshots, not references: the state moves on and a bucket must remember what was true
                 # AT THE SWING.
                 "params": tuple(sorted(params.items())),
+                "freeStat": tuple(sorted(free_stat.items())),
                 # (id, strength) pairs -- strength is part of the state, not decoration.
                 "attackerAbstates": tuple(sorted(live(conv, att, ts).items())),
                 "defenderAbstates": tuple(sorted(live(conv, dfn, ts).items())),
@@ -500,7 +509,7 @@ def main():
             # or the relog started. Counted, never guessed at.
             unattributed += 1
             continue
-        key = (side, mob, s["level"], s["params"], own_ab, foe_ab, s["passives"], own_weapon)
+        key = (side, mob, s["level"], s["params"], s["freeStat"], own_ab, foe_ab, s["passives"], own_weapon)
 
         flags, tally = s["flagWord"], outcomes[key]
         tally["swings"] += 1
@@ -541,7 +550,7 @@ def main():
             # start mid-cast). Counted, never guessed at.
             skill_unattributed += 1
             continue
-        key = (side, s["skill"], mob, s["level"], s["params"], own_ab, foe_ab, s["passives"], own_weapon)
+        key = (side, s["skill"], mob, s["level"], s["params"], s["freeStat"], own_ab, foe_ab, s["passives"], own_weapon)
         flags, tally = s["flagWord"], skill_outcomes[key]
         tally["hits"] += 1
         # The SKILL bit order -- see SKILL_FLAGS_B0. bit 1 is critical here, not bit 0.
@@ -576,13 +585,15 @@ def main():
 
     skill_rows = []
     for key, tally in skill_outcomes.items():
-        (side, skill, mob, level, params, own_ab, foe_ab, passives, own_weapon) = key
+        (side, skill, mob, level, params, free, own_ab, foe_ab, passives, own_weapon) = key
         dmg = skill_buckets.get(key, [])
         row = {"side": side, "skill": skill, "mob": mob, "level": level, "passives": list(passives),
                "weapon": own_weapon,
                "selfAbstates": [list(p) for p in own_ab],
                "enemyAbstates": [list(p) for p in foe_ab],
                "params": dict(params),
+               # The allocation IN FORCE AT THESE HITS, not the first one the capture ever showed.
+               "freeStat": dict(free),
                "n": len(dmg), "hits": tally["hits"], "missed": tally["missed"],
                "blocked": tally["blocked"], "critical": tally["critical"],
                "criticalDamage": tally["criticalDamage"], "resisted": tally["resisted"],
@@ -595,13 +606,14 @@ def main():
 
     rows = []
     for key, tally in outcomes.items():
-        (side, mob, level, params, own_ab, foe_ab, passives, own_weapon) = key
+        (side, mob, level, params, free, own_ab, foe_ab, passives, own_weapon) = key
         dmg = buckets.get(key, [])
         row = {"side": side, "mob": mob, "level": level, "passives": list(passives),
                "weapon": own_weapon,
                "selfAbstates": [list(p) for p in own_ab],
                "enemyAbstates": [list(p) for p in foe_ab],
                "params": dict(params),
+               "freeStat": dict(free),
                # `n` stays the count of CLEAN hits, so the damage-band check keeps reading the field it
                # always read. `swings` is the denominator for the rates.
                "n": len(dmg), "swings": tally["swings"],

@@ -51,7 +51,9 @@ public class BucketGroundTruthTests
     private sealed record SkillBucket(string Side, int Skill, int Mob, int Level,
                                       IReadOnlyList<Abstate> EnemyAbstates,
                                       IReadOnlyDictionary<string, int> Params,
-                                      IReadOnlyList<int> Passives, int? Weapon, int N, int Min, int Max);
+                                      IReadOnlyList<int> Passives, int? Weapon,
+                                      IReadOnlyDictionary<string, int> FreeStat,
+                                      int N, int Min, int Max);
 
     private sealed record Fixture(IReadOnlyList<Bucket> Buckets, IReadOnlyDictionary<string, int> FreeStat,
                                   int ChrClass, IReadOnlyList<SkillBucket> SkillBuckets,
@@ -116,6 +118,12 @@ public class BucketGroundTruthTests
                 b.GetProperty("passives").EnumerateArray().Select(x => x.GetInt32()).ToList(),
                 b.GetProperty("weapon").ValueKind == JsonValueKind.Number
                     ? b.GetProperty("weapon").GetInt32() : null,
+                // ⚠️ PER-BUCKET, because the allocation CHANGES mid-capture. `MageDamageLvl60.pcapng`
+                // reports Int=0 in its first conversations and Int=50 in the one every hit is in; a
+                // single top-level reading described a character that had not been built yet.
+                b.TryGetProperty("freeStat", out var fs) && fs.ValueKind == JsonValueKind.Object
+                    ? fs.EnumerateObject().ToDictionary(x => x.Name, x => x.Value.GetInt32())
+                    : new Dictionary<string, int>(),
                 b.GetProperty("n").GetInt32(),
                 b.GetProperty("min").GetInt32(),
                 b.GetProperty("max").GetInt32())).ToList()
@@ -867,7 +875,9 @@ public class BucketGroundTruthTests
             var rate = MasteryRate(passiveTable, items, b.Passives, b.Weapon);
             if (rate is not { } mastery) { Refuse("no weapon known, so no mastery rate", b.N); continue; }
 
-            var freeStr = FreeStatStr(f.FreeStat.GetValueOrDefault("Strength"));
+            var freeStr = FreeStatStr(b.FreeStat.Count > 0
+                ? b.FreeStat.GetValueOrDefault("Strength")
+                : f.FreeStat.GetValueOrDefault("Strength"));
             var me = Exactly(b.Level, dmin - freeStr, dmax - freeStr, 1, mastery);
             var band = Through(me, mob, new AttackModifiers
             {
@@ -1025,27 +1035,34 @@ public class BucketGroundTruthTests
     /// (`NC_CHAR_CLIENT_ITEM_CMD`, and `NC_ITEM_EQUIPCHANGE_CMD` for swaps), so one route is to read the
     /// equipped set and its options out of the wire and drive `ItemActionResults` from them.</para>
     ///
-    /// <para>⭐ <b>BUT THE SHARPER LEAD IS A SPLIT IN THE WIRE ITSELF.</b> The clean hits fall into two
-    /// populations by the `SkillDamage` record's byte at <b>+3</b>, and the two need DIFFERENT
-    /// corrections — which is why no single transform has ever fitted all 37:</para>
+    /// <para>⭐ <b>FREE STAT IS STATE AND IT CHANGES MID-CAPTURE</b> (operator, 2026-09-03: "we do give
+    /// free stats and change weapons etc during the capture"). `damage_buckets.py` read it ONCE — "first
+    /// one only" — and in `MageDamageLvl60.pcapng` the first two conversations report
+    /// <c>Int=0, Men=0</c> while the last three report <c>Int=50, Men=25</c>, and EVERY damaging hit is
+    /// in the last one. So the fixture described a character that had not been built yet. It is now
+    /// snapshotted per hit and part of the bucket key, and this test applies BOTH halves of the term the
+    /// way the physical one always has: the wire's magic-attack pair is an accessor OUTPUT and already
+    /// contains the free-stat contribution, so it comes OUT of the container and
+    /// `roe_Damage@NormalMA`'s per-rule override adds it back to the damage.</para>
     ///
-    /// <code>
-    /// flag 0x0021  (byte+3 = 0x00)   6261, 6300          9 hits   fits a multiplier of 1.273-1.276
-    /// flag 0x2801  (byte+3 = 0x28)   6007 6047 6067      28 hits  fits NEITHER a multiplier nor an add
-    ///                                6142 6240 6280
-    /// </code>
+    /// <para>Real, and small: `FreeStatInt` contributes only `MAAbsolute` = <c>n + n/5</c> = 60 for 50
+    /// points, which moved this from 0 to 1 of 37 inside. `FreeStatMen`'s other terms are MR, MaxSP and
+    /// CriRate, and criticals are excluded from the clean set. The Fighter capture is unaffected — its
+    /// allocation is a constant 17/0 across all 309 of its skill buckets — and stays 545/545.</para>
     ///
-    /// <para>The `0x0021` window is 1.273-1.276 across five independent buckets — far too tight to be an
-    /// accident. `0x0021` is `isdamage|isenchant` with a zero high byte; `0x2801` is `isdamage` plus bits
-    /// 11 and 13, which nothing in this project names. <see cref="SKILL_FLAGS_B1"/> covers only bits 8-10
-    /// (`isDead`, `isImmune`, `IsCostumShield`).</para>
+    /// <para>⚠️ <b>A LEAD THAT READING THE ASM KILLED.</b> The clean hits split cleanly by the
+    /// `SkillDamage` record's byte at +3 (0x28 vs 0x00), the split tracked skill id perfectly, and one
+    /// half fitted a tight 1.273-1.276 multiplier. It is an ARTEFACT. `sds_TemplateStore@SkillDamageSender`
+    /// (0x5803C0) builds the record at <c>[ebp-0x20]</c> and writes only bits 0-2 of byte +3 — bit0 is
+    /// "this hit kills" (set from <c>cmp HP, damage</c> at 0x580544, i.e. `isDead`), bits 1-2 come from
+    /// the result buffer — and it PRESERVES bits 3-7 with <c>and dl, 0xfa</c> from a stack local that is
+    /// never initialised. The 0x28 was stale stack. Chasing it as a mechanism would have been a
+    /// fabricated finding; the operator's "prefer reading source asm when unsure" is what stopped it.</para>
     ///
-    /// <para>⚠️ The record layout itself is NOT the problem — verified against the wire, consecutive hits
-    /// on one handle satisfy <c>restHp_before - restHp_after == damage</c> exactly (the exceptions are
-    /// handle reuse and killing blows, both already excluded). And the nested `SkillDamage` type is absent
-    /// from BOTH the PDB extract and FiestaLib, which is why byte +3 was never decoded. Decoding it — from
-    /// the client binary, the way `tools/decode_error_table.py` decoded the error codes — is the next
-    /// step, because it is what separates the two populations.</para></summary>
+    /// <para>The same disassembly settles the layout: +2 and +3 are two separate BYTE fields, not one
+    /// <c>u16</c> flag, and byte +2 packs eight one-bit flags out of `SkillResultBuffer` at +8..+0x11
+    /// (bit0 from +8, bit7 from +9, bits 1-6 from +0xb..+0x10). Our NAMES for those bits are still a
+    /// guess inherited from FiestaLib; only bit0/bit1 are confirmed by behaviour on the wire.</para></summary>
     [SkippableFact]
     public void MagicalSkillDamageIsTrackedAgainstItsBaseline_KNOWN_RED()
     {
@@ -1075,11 +1092,9 @@ public class BucketGroundTruthTests
         var jobByLevel = f.SkillBuckets.Select(b => b.Level).Distinct()
                                        .ToDictionary(l => l, l => JobChangeRate(f, shine!, l));
 
-        // `FreeStat` is read from the fixture, which reads it from `NC_CHAR_CLIENT_BASE_CMD` +0x57.
-        // `MAGE_FREE_INT` remains only as a probe for a fixture that predates that being captured; it
-        // must never be used to make numbers fit — the wire reports the allocation.
-        var freeInt = int.TryParse(Environment.GetEnvironmentVariable("MAGE_FREE_INT"), out var fi)
-            ? fi : f.FreeStat.GetValueOrDefault("Intelligence");
+        // `MAGE_FREE_INT` survives only as a probe; the allocation comes off the wire per bucket.
+        var freeIntOverride = int.TryParse(Environment.GetEnvironmentVariable("MAGE_FREE_INT"), out var fi)
+            ? (int?)fi : null;
 
         int inside = 0, over = 0, under = 0, skipped = 0;
         var report = new List<string>();
@@ -1094,16 +1109,25 @@ public class BucketGroundTruthTests
             if (!b.Params.TryGetValue(MaMin, out var amin) || !b.Params.TryGetValue(MaMax, out var amax))
             { skipped += b.N; continue; }
 
+            // ⭐ THE FREE-STAT INT TERM, BOTH HALVES OF IT — and it was missing entirely. The wire's
+            // magic-attack pair is an accessor OUTPUT and already contains the free-stat contribution, so
+            // it has to come OUT of the container; `roe_Damage@NormalMA`'s per-rule override then adds it
+            // back to the damage. Exactly what the physical test does with Str, which is why that one is
+            // exact and this one was not.
+            var freeInt = FreeStatInt(freeIntOverride
+                ?? (b.FreeStat.Count > 0 ? b.FreeStat.GetValueOrDefault("Intelligence")
+                                         : f.FreeStat.GetValueOrDefault("Intelligence")));
+
             // ⚠️ The MAGICAL skill row is MinMA/MaxMA, not MinWC/MaxWC -- `roe_AttackPower@MagicalSkill`
             // reads +0xEB/+0xEF/+0xF3/+0xF7 where the physical one reads +0xDB..+0xE7.
-            var me = ExactlyMagical(b.Level, amin, amax, 1);
+            var me = ExactlyMagical(b.Level, amin - freeInt, amax - freeInt, 1);
             var band = Through(me, mob, new AttackModifiers
             {
                 ForceCritical = false,
                 // `roe_Damage@NormalMA`'s per-rule override adds the attacker's FreeStatInt and subtracts
                 // the defender's FreeStatMen; MagicalSkill shares that override. A mob's free-stat
                 // accessors return table[0] = 0, so only the attacker's term is live.
-                AttackerFreeStat = FreeStatInt(freeInt),
+                AttackerFreeStat = freeInt,
                 DefenderFreeStat = 0,
                 JobChangeDamageUpPermille = jobByLevel.GetValueOrDefault(b.Level),
                 LevelGapRatePermille = gaps.Rate(CombatantKind.Player, b.Level,
