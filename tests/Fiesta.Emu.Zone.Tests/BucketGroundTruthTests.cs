@@ -1135,7 +1135,22 @@ public class BucketGroundTruthTests
     /// managers) is therefore THE next piece of work, and it is a project rather than a probe.</para>
     ///
     /// <para>⛔ A constant is exactly what a fit would produce, which is why one is NOT adopted here. The
-    /// difference between finding 1.18 and fitting 1.18 is knowing which instruction applies it.</para></summary>
+    /// difference between finding 1.18 and fitting 1.18 is knowing which instruction applies it.</para>
+    ///
+    /// <para><b>And the constant is NOT a literal in `roe_CalcDamage`.</b> Every numeric it references is
+    /// accounted for: the 4.29e9 unsigned fixup, a divide by a global at 0x00870DD8 that holds 1.0, and
+    /// the 1024 / 0.0009765625 / 1000 trio belonging to the angle and permille arithmetic. All of them are
+    /// on the path the PHYSICAL side takes too, and that side is exact — so nothing in that function's own
+    /// body singles magic out.</para>
+    ///
+    /// <para><b>The rule vtables were diffed slot by slot</b> to find what magic does differently. Only
+    /// the expected overrides differ, and the two that looked promising resolve to nothing: `+0x30`
+    /// `roe_FreeStateAttackPower` and `+0x34` `roe_FreeStateDefendPower` are per-rule, but disassembling
+    /// all four shows they are structurally identical — one virtual call on the object (slot +0x468
+    /// magical-attack against +0x46C physical-attack, +0x474 against +0x478 for defence) and then
+    /// <c>movzx ecx, word ptr [eax + 1]</c>, i.e. the `MAAbsolute` / `WCAbsolute` field of the 4-byte
+    /// free-stat record. Pure additive terms, exactly as this port models them. `+0x14` differs only
+    /// because magic has no shield block.</para></summary>
     [SkippableFact]
     public void MagicalSkillDamageIsTrackedAgainstItsBaseline_KNOWN_RED()
     {
