@@ -532,6 +532,7 @@ def main():
     # `ActiveSkill.shn`, so a rank is already a distinct id; there is no separate rank field on the wire
     # and none is invented here.
     skill_buckets = collections.defaultdict(list)
+    skill_crits = collections.defaultdict(list)
     skill_outcomes = collections.defaultdict(collections.Counter)
     skill_unattributed = 0
     for s in skill_hits:
@@ -561,6 +562,18 @@ def main():
         if flags & 0x02:
             tally["critical"] += 1
             tally["criticalDamage"] += s["damage"]
+            # ⭐ EACH CRITICAL'S OWN DAMAGE, not just the total. A critical is `2*d + d*plus/1000` over the
+            # SAME roll distribution as a clean hit, so it is a second sample of that distribution and the
+            # band it must sit in is computable. Summing them threw that evidence away: on
+            # `MageDamageLvl60` it is the difference between 37 usable hits and 43, and the extra six are
+            # what pin `ChainLightning01` to a 1.2% window instead of a 6% one.
+            #
+            # Same exclusions as a clean hit, `isDead` above all -- a critical killing blow is clamped to
+            # the target's remaining HP exactly as a plain one is.
+            # `SKILL_NOT_CLEAN` includes the critical bit itself, so drop that one and keep the rest:
+            # missed, shieldblock, resist and above all isDead still disqualify.
+            if not flags & (SKILL_NOT_CLEAN & ~0x02) and flags & 0x01 and s["damage"] > 0:
+                skill_crits[key].append(s["damage"])
         if flags & 0x40:
             tally["resisted"] += 1
         if not flags & 0x01:
@@ -598,7 +611,8 @@ def main():
                "blocked": tally["blocked"], "critical": tally["critical"],
                "criticalDamage": tally["criticalDamage"], "resisted": tally["resisted"],
                "nodamage": tally["nodamage"],
-               "damage": sorted(dmg)}
+               "damage": sorted(dmg),
+               "criticalDamages": sorted(skill_crits.get(key, []))}
         if dmg:
             row.update({"min": min(dmg), "max": max(dmg), "mean": round(sum(dmg) / len(dmg), 1)})
         skill_rows.append(row)

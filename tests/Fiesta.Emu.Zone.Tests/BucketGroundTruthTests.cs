@@ -53,7 +53,8 @@ public class BucketGroundTruthTests
                                       IReadOnlyDictionary<string, int> Params,
                                       IReadOnlyList<int> Passives, int? Weapon,
                                       IReadOnlyDictionary<string, int> FreeStat,
-                                      int N, int Min, int Max);
+                                      int N, int Min, int Max,
+                                      IReadOnlyList<int> CriticalDamages);
 
     private sealed record Fixture(IReadOnlyList<Bucket> Buckets, IReadOnlyDictionary<string, int> FreeStat,
                                   int ChrClass, IReadOnlyList<SkillBucket> SkillBuckets,
@@ -84,6 +85,13 @@ public class BucketGroundTruthTests
     private static Abstate Pair(JsonElement e)
         => new(e[0].GetInt32(), e[1].GetInt32());
 
+    /// <summary>Each critical's own damage, or empty for a fixture built before `damage_buckets.py`
+    /// recorded them individually rather than as a sum.</summary>
+    private static IReadOnlyList<int> Crits(JsonElement b)
+        => b.TryGetProperty("criticalDamages", out var c) && c.ValueKind == JsonValueKind.Array
+            ? c.EnumerateArray().Select(x => x.GetInt32()).ToList()
+            : [];
+
     private static Fixture Load(string path)
     {
         var root = JsonDocument.Parse(File.ReadAllText(path)).RootElement;
@@ -107,8 +115,13 @@ public class BucketGroundTruthTests
             b.GetProperty("min").GetInt32(),
             b.GetProperty("max").GetInt32())).ToList();
 
+        // ⚠️ A bucket with no CLEAN hits is kept when it has CRITICALS. A critical is a second sample of
+        // the same roll distribution -- `2*d + d*plus/1000` over the same `d` -- so a crit-only bucket is
+        // evidence, and dropping it on `n == 0` threw away four of this capture's eleven criticals.
         var skillBuckets = root.TryGetProperty("skillBuckets", out var sb)
-            ? sb.EnumerateArray().Where(b => b.GetProperty("n").GetInt32() > 0).Select(b => new SkillBucket(
+            ? sb.EnumerateArray()
+                .Where(b => b.GetProperty("n").GetInt32() > 0 || Crits(b).Count > 0)
+                .Select(b => new SkillBucket(
                 b.GetProperty("side").GetString()!,
                 b.GetProperty("skill").GetInt32(),
                 b.GetProperty("mob").GetInt32(),
@@ -125,8 +138,11 @@ public class BucketGroundTruthTests
                     ? fs.EnumerateObject().ToDictionary(x => x.Name, x => x.Value.GetInt32())
                     : new Dictionary<string, int>(),
                 b.GetProperty("n").GetInt32(),
-                b.GetProperty("min").GetInt32(),
-                b.GetProperty("max").GetInt32())).ToList()
+                // A crit-only bucket has no min/max; the band check skips it and the critical check does
+                // not need one.
+                b.TryGetProperty("min", out var mn) ? mn.GetInt32() : 0,
+                b.TryGetProperty("max", out var mx) ? mx.GetInt32() : 0,
+                Crits(b))).ToList()
             : [];
 
         return new Fixture(buckets,
@@ -848,6 +864,10 @@ public class BucketGroundTruthTests
         foreach (var b in f.SkillBuckets.Where(b => b.Side == "OUT")
                            .OrderBy(b => b.Skill).ThenBy(b => b.Mob))
         {
+            // A crit-only bucket carries no clean band to check. The magical test predicts a CRITICAL band
+            // for these; this one does not yet, so skip them explicitly rather than let them fall through
+            // the `b.Min < floor` branch with a weight of zero, where they would be invisible.
+            if (b.N == 0) continue;
             if (!skills.TryGetValue(b.Skill, out var row)) { Refuse("skill not in ActiveSkill.shn", b.N); continue; }
             // `SKILL_FLAT_SCALE` scales the skill's flat WC add. Damage is LINEAR in it (roe_Damage is
             // (level+1)*attack/defend), so running 0.0 and 1.0 brackets every bucket and the scale that
@@ -948,20 +968,38 @@ public class BucketGroundTruthTests
     /// <see cref="EngagementRule.MagicalSkill"/>, which draws on Int/MAmin/MAmax, defends on the mob's
     /// magic resistance, and — unlike every other rule — applies NO weapon mastery.</para>
     ///
-    /// <para>Fixture comes from a live MageZero packet log rather than a pcap; see `tools/mage_fixture.py`,
+    /// <para>Fixture is `MageDamageLvl60.pcapng` through `tools/damage_buckets.py`. A second, older
+    /// fixture shape comes from a live MageZero packet log rather than a pcap — see `tools/mage_fixture.py`,
     /// which walks the bot's own log format and emits the same JSON.</para>
     ///
-    /// <para>⛔ <b>RED: the magical path under-predicts, 37 of 37 above the ceiling.</b> Fixture is a real
-    /// level-60 client capture (`MageDamageLvl60.pcapng`, class 18 `Enchanter`), 37 clean hits over 8
-    /// skills, nothing refused. The miss runs 1.28x to 1.76x.</para>
+    /// <para>⛔ <b>RED: 1 of 37 clean hits inside, and 0 of 8 criticals.</b> Fixture is a real level-60
+    /// client capture (`MageDamageLvl60.pcapng`, class 18 `Enchanter`) over 8 skills, nothing refused.
+    /// Every miss is ABOVE the ceiling and the miss runs <b>1.02x to 1.24x</b> on the final damage.</para>
     ///
-    /// <para><b>The shape says an INPUT is wrong, not a coefficient.</b> The multiplier each skill needs
-    /// varies INVERSELY with its own `MinMA` — `FireBall01` (MinMA 2840) needs ~1.07-1.31 while
-    /// `LightningBolt08` (327) needs ~1.31-1.70 — which is what a missing ADDITIVE term on the base magic
-    /// attack looks like. But a pure additive does not fit either (`MagicBall01` wants C in [722, 975]
-    /// where every other skill wants [320, 500]), and a grid search over combined (additive C,
-    /// multiplier M) against all 19 buckets returns NO solution. Several buckets need the predicted band
-    /// to span a range wider than any (C, M) produces.</para>
+    /// <para>⚠️ <b>Express the residual on the DAMAGE, not on the attack power.</b> `roe_Damage`'s
+    /// per-rule override adds the attacker's free stat AFTER the divide, so a multiplier on attack and a
+    /// multiplier on damage are different numbers — on the `LightningBolt08`/Pinky hit they are 1.263 and
+    /// 1.203. An earlier pass conflated them and reported a larger, differently-shaped miss.</para>
+    ///
+    /// <para><b>THE CONTROL THAT MATTERS PASSES.</b> This same capture's mob→player physical swings run
+    /// through <see cref="NoBucketExceedsWhatAMaximumRollCanProduce"/> with ZERO overshooting buckets
+    /// (`FIESTA_BUCKETS=mage60.json`). Same character, same session, same decode, same bucket tool — so
+    /// the miss is not the capture, the decode, the level or the harness. It is specific to the OUTGOING
+    /// MAGICAL direction.</para>
+    ///
+    /// <para><b>No constant fits, and that is now measured rather than argued.</b> With the criticals in
+    /// (see below) the admissible multiplier is pinned per skill, and the pins contradict:
+    /// `FireBolt08` needs at least <b>1.182</b> while `ChainLightning01` allows at most <b>1.146</b>.
+    /// Solved as a 2-variable LP, no affine transform `m * band + D` satisfies both; the 3-variable
+    /// version over the attack range is infeasible unless the container's min-to-max spread roughly
+    /// doubles, which is a fit and not a reading. So either something varies per hit, or those two skills
+    /// genuinely differ.</para>
+    ///
+    /// <para>The required multiplier does fall monotonically as the skill's own `MinMA` rises — 1.240 at
+    /// 327, 1.218 at 515, 1.185 at 675, 1.182 at 775, 1.134 at 899 — which is the signature of a missing
+    /// ADDITIVE term on the base magic attack. The implied constant is not constant either (161, 215, 206,
+    /// 323, 145 across those five), and one large enough for `FireBolt08` puts `ChainLightning01`'s lowest
+    /// hit below its own floor.</para>
     ///
     /// <para>Ruled OUT on data:</para>
     /// <list type="bullet">
@@ -974,11 +1012,26 @@ public class BucketGroundTruthTests
     /// wire reports, since that number is the accessor's OUTPUT.</item>
     /// <item><b>The MA parameter mapping.</b> Ids 11/12 read 622/702 against a weapon pair (6/7) of 85/98
     /// and an Int (3) of 288 — the only pair that can be a level-60 mage's magic attack.</item>
-    /// <item><b>Multi-hit, AoE division, empower, free-stat INT.</b> Every skill carries `HitID` 0;
-    /// `TargetNumber` is 1 except `MagicBurst03`; the empower allocation is read from the wire; and the
-    /// free-stat block is all zeros on this character.</item>
-    /// <item><b>The mob's magic resistance</b>, by symmetry: `roe_AC` is Con-chain + AC and the physical
-    /// side is exact at 545/545 with it, so `roe_MR` = Men-chain + MR should be sound the same way.</item>
+    /// <item><b>Multi-hit, AoE division, empower.</b> Every skill carries `HitID` 0; `TargetNumber` is 1
+    /// except `MagicBurst03`; the empower allocation is read from the wire.</item>
+    /// <item><b>The mob's magic resistance — now READ, not argued from symmetry.</b>
+    /// `Parameter::Container::c_StoreMob` (0x0043C550) writes cluster slot 0x1C from `MobInfoServer`+0x25
+    /// (AC), 0x24 from +0x27 (TB), <b>0x30 from +0x29 (MR)</b> and 0x38 from +0x2B (MB), with the same
+    /// Str/Con/Dex crossover the port already models. Orc's 239 is Men 112 + MR 127 and that is what the
+    /// port builds.</item>
+    /// <item><b>The angle, from the wire.</b> `tools/skill_angle.py` reconstructs every hit's
+    /// `DamageByAngle` index out of this capture — 83 of 86 hits get one, spread 0 to 78 — and the
+    /// correlation between the stock table's rate and the multiplier each hit needs is <b>-0.011 over 43
+    /// clean hits</b>. Hits at index 0 still need up to 1.240. See OPEN_QUESTIONS §4.</item>
+    /// <item><b>The free-stat slot identity</b>, which was genuinely ambiguous and is now named from the
+    /// PDB: object vtable +0x468 `so_ply_FreeStatStr`, +0x46C `FreeStatInt`, +0x474 `FreeStatCon`,
+    /// +0x478 `FreeStatMen`. `NormalMA::roe_Damage` reads `att->+0x46C` and `def->+0x478` — Int minus Men,
+    /// which is what this test passes. The closed forms below match the real 181-entry tables at every
+    /// entry.</item>
+    /// <item><b>The whole post-`roe_CalcDamage` cascade in `smo_SkillBlast`</b> — set-item damage rate,
+    /// multi-hit rate, `TARGETHPDOWNDMGUPRATE`, `DMGDOWNRATE`, `UNDEADTODMG`. All neutral here, each
+    /// checked against the data: no `SetItemIndex` on any of the five equipped items, `HitID` 0, and
+    /// `SpecialIndexA..E` zero for every skill in both captures. See OPEN_QUESTIONS §5.</item>
     /// </list>
     ///
     /// <para>⭐ <b>EVERY LINK IN THE MAGICAL CHAIN HAS NOW BEEN RUN AGAINST THE REAL FUNCTION, AND EVERY
@@ -1000,12 +1053,25 @@ public class BucketGroundTruthTests
     /// character is class 3 `Warrior`, whose rate at level 60 is <b>1700, the same as `Enchanter`</b>. So
     /// the physical side exercises the 1.7x multiply too and is exact at 545/545 with it.</item>
     /// <item>`DamageByAngle` — the deployed table is flat 1000 (read live from two zones) and spans only
-    /// 1000-1200 even in the stock file, so it cannot account for 1.28x-1.76x.</item>
+    /// 1000-1200 even in the stock file. `tools/skill_angle.py` now confirms that from the WIRE on this
+    /// very capture: no correlation, and hits reconstructed at index 0 still need up to 1.240.</item>
     /// </list>
     ///
+    /// <para>⭐ <b>THE CRITICALS ARE A SECOND SAMPLE AND THEY ARE THE TIGHTER ONE.</b> A critical is
+    /// `2*d + d * PassiveCriDamageRatePlus / 1000` over the SAME roll a clean hit draws, so
+    /// `damage_buckets.py` now emits each one individually and this test predicts a `ForceCritical` band
+    /// for it. Nothing is assumed about the passive — it comes off the attacker's container and is 0 here,
+    /// which the data agrees with (`MagicBall01`'s criticals 1504 and 1522 halve to 752 and 761, both
+    /// inside its clean 753..810). Worth 8 more observations, and they move `ChainLightning01`'s ceiling
+    /// requirement from 1.078 to <b>1.133</b>, which is what makes the contradiction with `FireBolt08`
+    /// sharp instead of arguable.</para>
+    ///
     /// <para>Also eliminated from the FIXTURE side: the mage carries no self-buffs (every bucket's
-    /// `selfAbstates` is empty); its free-stat block really is all zeros in the packet, not a parse
-    /// failure; the level parses as 60 from `+25`; and the SAME fixture's 56 incoming swings pass
+    /// `selfAbstates` is empty); its free-stat allocation is Int 50 / Men 25 and constant across every
+    /// bucket that has a hit (an earlier note here said "all zeros", which was the FIRST conversation's
+    /// reading, not the one the hits are in); the level parses as 60 from `+25`; the parameter vector
+    /// `11/12/3/13` = 622/702/288/468 is identical on all 86 hits; and the SAME fixture's 56 incoming
+    /// swings pass
     /// <see cref="NoBucketExceedsWhatAMaximumRollCanProduce"/>, which independently validates the player's
     /// level and defence and the mob data.</para>
     ///
@@ -1185,6 +1251,7 @@ public class BucketGroundTruthTests
             ? (int?)fi : null;
 
         int inside = 0, over = 0, under = 0, skipped = 0;
+        int critHits = 0, critInside = 0, critOver = 0, critUnder = 0;
         var report = new List<string>();
 
         foreach (var b in f.SkillBuckets.Where(b => b.Side == "OUT").OrderBy(b => b.Skill))
@@ -1229,6 +1296,42 @@ public class BucketGroundTruthTests
                     .GetValueOrDefault(lineBase.GetValueOrDefault(b.Skill, b.Skill))),
             }, EngagementRule.MagicalSkill);
 
+            // ⭐ THE CRITICALS ARE A SECOND SAMPLE, and they are the tighter one. `roe_CalcDamage+0x4C2`
+            // makes a critical `2*d + d * PassiveCriDamageRatePlus / 1000` over the SAME `d` a clean hit
+            // draws, so pinning `ForceCritical` gives a band the observed criticals must sit in, computed
+            // from the same inputs and assuming nothing about the passive -- it comes off the attacker's
+            // container, and it is 0 here.
+            //
+            // Worth the wiring: on `MageDamageLvl60` it takes the sample from 37 hits to 43 and pulls
+            // `ChainLightning01`'s admissible multiplier from a 6% window down to 1.2%, which is what
+            // showed that no single constant can reconcile it with `FireBolt08`.
+            var critBand = Through(me, mob, new AttackModifiers
+            {
+                ForceCritical = true,
+                AttackerFreeStat = freeInt,
+                DefenderFreeStat = 0,
+                JobChangeDamageUpPermille = jobByLevel.GetValueOrDefault(b.Level),
+                LevelGapRatePermille = gaps.Rate(CombatantKind.Player, b.Level,
+                                                 CombatantKind.Monster, mob.Level),
+                Skill = row,
+                Empower = new Fiesta.Emu.Zone.Skill.SkillEmpower((ushort)f.SkillEmpower
+                    .GetValueOrDefault(lineBase.GetValueOrDefault(b.Skill, b.Skill))),
+            }, EngagementRule.MagicalSkill);
+
+            foreach (var c in b.CriticalDamages)
+            {
+                critHits++;
+                if (c > critBand.Ceiling) { critOver++; report.Add($"CRIT skill={b.Skill} mob={b.Mob} {c} > ceiling {critBand.Ceiling}"); }
+                else if (c < critBand.Floor) { critUnder++; report.Add($"CRIT skill={b.Skill} mob={b.Mob} {c} < floor {critBand.Floor}"); }
+                else critInside++;
+            }
+
+            if (b.CriticalDamages.Count > 0)
+                report.Add($"DIAGCRIT skill={b.Skill} mob={b.Mob} obs={string.Join(",", b.CriticalDamages)} "
+                         + $"pred={critBand.Floor}..{critBand.Ceiling}");
+
+            if (b.N == 0) continue;      // crit-only bucket: nothing for the clean band to check
+
             report.Add($"DIAG skill={b.Skill} mob={b.Mob} n={b.N} obs={b.Min}..{b.Max} "
                      + $"pred={band.Floor}..{band.Ceiling} "
                      + $"loRatio={(band.Floor == 0 ? 0 : (double)b.Min / band.Floor):F3} "
@@ -1239,7 +1342,8 @@ public class BucketGroundTruthTests
             else inside += b.N;
         }
 
-        var summary = $"magical hits: {inside} inside, {over} over, {under} under, {skipped} unpredictable";
+        var summary = $"magical hits: {inside} inside, {over} over, {under} under, {skipped} unpredictable"
+                    + $"; criticals: {critInside} inside, {critOver} over, {critUnder} under of {critHits}";
         report.Insert(0, summary);
         if (Environment.GetEnvironmentVariable("SKILL_DIAG") is { } diag && diag.Length > 1)
             File.WriteAllLines(diag, report);
@@ -1249,6 +1353,11 @@ public class BucketGroundTruthTests
         // is, because a weaker assertion is how this went unnoticed: the previous version asserted only
         // "more than 20 hits were predicted" and passed while 28 of 28 sat outside the band.
         skipped.ShouldBe(0, "some magical hits were refused rather than predicted: " + summary);
+        // The criticals are asserted the same way and for the same reason: they are the same engine over
+        // the same roll, and a check that only looked at clean hits would let half the evidence pass
+        // unexamined.
+        critOver.ShouldBe(0, "a magical CRITICAL exceeded the ceiling: " + summary);
+        critUnder.ShouldBe(0, "a magical CRITICAL fell under the floor: " + summary);
         over.ShouldBe(0, "a magical hit exceeded the ceiling: " + summary);
         under.ShouldBe(0, "a magical hit fell under the floor: " + summary);
     }
