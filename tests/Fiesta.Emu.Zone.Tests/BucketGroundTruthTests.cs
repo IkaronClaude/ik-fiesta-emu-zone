@@ -766,6 +766,51 @@ public class BucketGroundTruthTests
         return row is null ? null : (ShnFile.Int(row, "MinMA"), ShnFile.Int(row, "MaxMA"));
     }
 
+    /// <summary>Every skill's `SpecialIndex`/`SpecialValue` pairs, resolved as `sdi_SetArgument` resolves
+    /// them. Feeds <see cref="Fiesta.Emu.Zone.Skill.SkillBlastCascade"/>.</summary>
+    private static IReadOnlyDictionary<int, Fiesta.Emu.Zone.Skill.SkillSpecialArguments> SkillSpecials(
+        string ressystem)
+    {
+        var table = ShnFile.Load(Path.Combine(ressystem, "ActiveSkill.shn"));
+        var by = new Dictionary<int, Fiesta.Emu.Zone.Skill.SkillSpecialArguments>();
+        foreach (var r in table.Rows)
+            by[ShnFile.Int(r, "ID")] = Fiesta.Emu.Zone.Skill.SkillSpecialArguments.FromRow(r, ShnFile.Int);
+        return by;
+    }
+
+    /// <summary>⭐ Put a predicted band through `smo_SkillBlast`'s post-`roe_CalcDamage` cascade.
+    ///
+    /// <para>`DamageCalculator` stops at `roe_CalcDamage`. The server does not: `smo_SkillBlast` scales the
+    /// result by the caster's set-item damage rate and by the strike's multi-hit rate, floors it, and then
+    /// applies whichever of the skill's `TARGETHPDOWNDMGUPRATE` / `DMGDOWNRATE` / `UNDEADTODMG` specials
+    /// are set. Running the band through it rather than asserting in prose that it is neutral means a
+    /// capture containing one of those skills changes the prediction instead of quietly not.</para>
+    ///
+    /// <para>⚠️ <b>The set-item rate is passed neutral, and that is a fixture limit.</b> It is staged per
+    /// cast from the caster's matched equipment, and a bucket records only the weapon id — so this is
+    /// correct for both captures (neither character's items carry a `SetItemIndex`, checked in
+    /// `ItemInfo.shn`) and would be wrong for a character in a set. See OPEN_QUESTIONS.</para></summary>
+    private static Band ThroughSkillBlast(Band band, Fiesta.Emu.Zone.Skill.SkillSpecialArguments special,
+                                          Fiesta.Emu.Zone.Data.MobType targetType,
+                                          int multiHitLowPermille = 1000, int multiHitHighPermille = 1000)
+    {
+        int Run(int damage, int rate) => Fiesta.Emu.Zone.Skill.SkillBlastCascade.Apply(
+            damage, new Fiesta.Emu.Zone.Skill.SkillBlastInputs
+            {
+                MultiHitDamageRatePermille = rate,
+                Special = special,
+                TargetType = targetType,
+            }).Damage;
+
+        return new Band(Run(band.Floor, multiHitLowPermille), Run(band.Ceiling, multiHitHighPermille));
+    }
+
+    /// <summary>Whether a bucket can be predicted at all once the cascade is in play: the execute bonus
+    /// needs the target's HP AT THE STRIKE, which a bucket aggregates away. Refusing is the honest
+    /// answer — predicting without it would silently drop a term worth up to 2x.</summary>
+    private static bool CascadeIsPredictable(Fiesta.Emu.Zone.Skill.SkillSpecialArguments special)
+        => special[Fiesta.Emu.Zone.Skill.SkillSpecial.TargetHpDownDmgUpRate] is null;
+
     private static Combatant ExactlyMagical(int level, int minMa, int maxMa, int magicResist)
     {
         var p = new ParameterContainer();
@@ -869,6 +914,7 @@ public class BucketGroundTruthTests
                               .GroupBy(kv => kv.Value.Id)
                               .ToDictionary(g => g.Key, g => g.First().Key);
         var skills = SkillRows(ressystem!);
+        var specials = SkillSpecials(ressystem!);
         var hitIds = SkillHitIds(ressystem!);
         var lineBase = SkillLineBase(ressystem!);
         var multiHit = MultiHitRates(shine!);
@@ -925,6 +971,9 @@ public class BucketGroundTruthTests
             var rate = MasteryRate(passiveTable, items, b.Passives, b.Weapon);
             if (rate is not { } mastery) { Refuse("no weapon known, so no mastery rate", b.N); continue; }
 
+            var special = specials.GetValueOrDefault(b.Skill, Fiesta.Emu.Zone.Skill.SkillSpecialArguments.None);
+            if (!CascadeIsPredictable(special)) { Refuse("skill scales with the target's HP, which a bucket loses", b.N); continue; }
+
             var freeStr = FreeStatStr(b.FreeStat.Count > 0
                 ? b.FreeStat.GetValueOrDefault("Strength")
                 : f.FreeStat.GetValueOrDefault("Strength"));
@@ -943,13 +992,16 @@ public class BucketGroundTruthTests
                     .GetValueOrDefault(lineBase.GetValueOrDefault(b.Skill, b.Skill))),
             }, EngagementRule.PhysicalSkill);
 
-            // THE MULTI-HIT SPLIT. A sequence's strikes each carry their own permille of the finished
-            // damage, so a hit from a multi-hit skill is a FRACTION of what roe_CalcDamage produced.
-            // HitID 0 means a single strike and leaves the band alone.
+            // ⭐ THE WHOLE `smo_SkillBlast` CASCADE, of which the multi-hit split is one step.
+            //
+            // A sequence's strikes each carry their own permille of the finished damage, so a hit from a
+            // multi-hit skill is a FRACTION of what roe_CalcDamage produced -- `TripleHit06` fires three
+            // strikes at 300/200/500. HitID 0 means a single strike and passes 1000 through. The same call
+            // applies the skill's `DMGDOWNRATE` / `UNDEADTODMG` specials, which no skill in this capture
+            // has and every future one might.
             var hitId = hitIds.GetValueOrDefault(b.Skill);
-            if (hitId != 0 && multiHit.TryGetValue(hitId, out var span))
-                band = new Band(Fiesta.Emu.Zone.Skill.MultiHit.HitDamage(band.Floor, span.Low),
-                                Fiesta.Emu.Zone.Skill.MultiHit.HitDamage(band.Ceiling, span.High));
+            var span = hitId != 0 && multiHit.TryGetValue(hitId, out var s) ? s : (Low: 1000, High: 1000);
+            band = ThroughSkillBlast(band, special, box.Info[name].Type, span.Low, span.High);
 
             // Diagnostic dump: one line per bucket, so the SHAPE of a mismatch is visible (a consistent
             // ratio means a missing multiplier; scattered means a missing input).
@@ -1114,6 +1166,7 @@ public class BucketGroundTruthTests
                               .GroupBy(kv => kv.Value.Id)
                               .ToDictionary(g => g.Key, g => g.First().Key);
         var skills = SkillRowsMagical(ressystem!);
+        var specials = SkillSpecials(ressystem!);
         var lineBase = SkillLineBase(ressystem!);
         var abState = ShnFile.Load(Path.Combine(shine!, "AbState.shn"));
         var subAbState = ShnFile.Load(Path.Combine(shine!, "SubAbState.shn"));
@@ -1184,6 +1237,9 @@ public class BucketGroundTruthTests
             var equip = EquipMagicAttack(items, b.Weapon);
             if (equip is not { } wpnMa) { skipped += b.N; continue; }
 
+            var special = specials.GetValueOrDefault(b.Skill, Fiesta.Emu.Zone.Skill.SkillSpecialArguments.None);
+            if (!CascadeIsPredictable(special)) { skipped += b.N; continue; }
+
             // ⚠️ The MAGICAL skill row is MinMA/MaxMA, not MinWC/MaxWC -- `roe_AttackPower@MagicalSkill`
             // reads +0xEB/+0xEF/+0xF3/+0xF7 where the physical one reads +0xDB..+0xE7.
             // MAGE_KEEP_FREESTAT_IN_MA: probe for whether the DISPLAYED magic-attack pair already
@@ -1206,6 +1262,7 @@ public class BucketGroundTruthTests
                 Empower = new Fiesta.Emu.Zone.Skill.SkillEmpower((ushort)f.SkillEmpower
                     .GetValueOrDefault(lineBase.GetValueOrDefault(b.Skill, b.Skill))),
             }, EngagementRule.MagicalSkill);
+            band = ThroughSkillBlast(band, special, box.Info[name].Type);
 
             // ⭐ THE CRITICALS ARE A SECOND SAMPLE, and they are the tighter one. `roe_CalcDamage+0x4C2`
             // makes a critical `2*d + d * PassiveCriDamageRatePlus / 1000` over the SAME `d` a clean hit
@@ -1228,6 +1285,7 @@ public class BucketGroundTruthTests
                 Empower = new Fiesta.Emu.Zone.Skill.SkillEmpower((ushort)f.SkillEmpower
                     .GetValueOrDefault(lineBase.GetValueOrDefault(b.Skill, b.Skill))),
             }, EngagementRule.MagicalSkill);
+            critBand = ThroughSkillBlast(critBand, special, box.Info[name].Type);
 
             foreach (var c in b.CriticalDamages)
             {

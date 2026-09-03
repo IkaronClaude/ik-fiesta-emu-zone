@@ -105,39 +105,79 @@ gated on `arg->sklinfo` being non-null, so a normal attack never reaches it.
 
 ---
 
-## 4. `smo_SkillBlast` runs a whole damage cascade AFTER `roe_CalcDamage`, and none of it is modelled
+## 4. `smo_SkillBlast`'s post-`roe_CalcDamage` cascade — MODELLED 2026-09-03; two inputs still missing
 
-**Status:** open. Read end to end on 2026-09-03 from `ShineMobileObject::smo_SkillBlast` (0x00581160),
-which is the function that builds the `EngageArgument` for a skill, calls `roe_CalcDamage` through rules
-vtable slot 0x1C at +0x939, and then does six more things to the integer it gets back. `DamageCalculator`
-stops at `roe_CalcDamage`, so **the port's skill damage is the input to this cascade, not its output.**
+**Status:** the six damage steps are ported and composed; what is left is FEEDING two of them.
 
-In order, on the value that eventually reaches the `SkillDamage` record:
+`ShineMobileObject::smo_SkillBlast` (0x00581160) is the function that builds the `EngageArgument` for a
+skill, calls `roe_CalcDamage` through rules vtable slot 0x1C at +0x939, and then does six more things to
+the integer it gets back before it reaches the `SkillDamage` record. `DamageCalculator` stops at
+`roe_CalcDamage`, so the port's skill damage was the INPUT to this cascade rather than its output.
 
-| where | what | data |
-|---|---|---|
-| +0x93B | `dmg = dmg * setitemskilleffect.se_Argument[SET_DAMEGERATE] / 1000` | `SetItemData::SkillEffect`, the global at 0x1325EDB0 — a `unsigned long[17]` indexed by the `SetIndex` enum (2 = `SET_DAMEGERATE`). `se_Clear` fills all 17 with **1000**; `smo_ply_SetItemEffect(skillId)` clears it and then calls `siel_AppendEffect(setIndex, skillId)` for every set the player wears, each doing `arg[i] += Argument; arg[i] -= 1000`. The rows are `SetItemEffect.shn` — `Effect / SkillGroup / From / To / Index / Argument`, e.g. `IceDameg` = SkillGroup `IceBolt`, Index 2, Argument 1200. **A set item is a per-skill-group damage multiplier and this port has no concept of it.** |
-| +0x94D | `dmg = dmg * MultiHitArgument.mha_DamageRate / 1000`, floored at 1 when it truncates to 0 and the rate was positive | Modelled — but only in the physical test, as a post-hoc band scale. It belongs here. |
-| +0x9A9 | if `sdi_TARGETHPDOWNDMGUPRATE.exist`: `dmg += hpMissingPermille(target) * dmg / 1000` | `SkillDataIndex` +0x1F8. The rate at +0x1FC cancels out of the arithmetic — `(miss*rate/1000)*dmg/rate` — which looks like a server bug and is what the instructions do. |
-| +0xA3C | if `sdi_DMGDOWNRATE.exist`: `dmg += min(value * arg6, sdi_MAXDMGDOWNRATE) * dmg / 10000` | `SkillDataIndex` +0x1E0 / +0x1E8. |
-| +0xAAF | if `sdi_UNDEADTODMG.exist` and the target's race is 5: `dmg += rate * dmg / 1000` | `SkillDataIndex` +0xA8. |
-| +0xC98 | if `caster[+0x1E7C] > 0`: `dmg = caster[+0x1E7C]` — an outright override | Not yet identified; a GM/scenario fixed-damage slot. |
+`Skill/SkillBlastCascade.cs` now runs all six, in order, with `Skill/SkillSpecialArguments.cs` supplying
+the per-skill parameters. Both bucket tests put their predicted bands through it, so its neutrality on the
+two captures is demonstrated by construction instead of asserted in prose — 545/545 and 37/37 both survive
+the change.
 
-The three `sdi_*` gates come from `ActiveSkill.shn`'s `SpecialIndexA..E` / `SpecialValueA..E` pairs, which
-fill the `SkillDataIndex` `EnumStruct` array (`{unsigned char exist; int value}` every 8 bytes from +0x78,
-so index = `(offset - 0x78) / 8`). **All five are 0 for every skill in both captures**, which is why the
-cascade costs nothing today; 73 distinct indices are used across the file, so it costs plenty elsewhere.
+| # | where | what | modelled by |
+|---|---|---|---|
+| 1 | +0x93B | `dmg = (uint)(dmg * se_Argument[SET_DAMEGERATE]) / 1000` — UNSIGNED divide | `MultiHit.HitDamage`, called through the cascade |
+| 2 | +0x94D | `dmg = (dmg * mha_DamageRate) / 1000` — SIGNED, truncating toward zero | as above |
+| 3 | +0x97B | the floor at 1, and the `isdamage` CLEAR when the rate is zero | `SkillBlastOutcome.IsDamage` |
+| 4 | +0x9A9 | `SS_TARGETHPDOWNDMGUPRATE` — an execute bonus on the target's missing HP | `SkillBlastCascade` |
+| 5 | +0xA3C | `SS_DMGDOWNRATE` x the blast's wave counter, capped by `SS_MAXDMGDOWNRATE`. It SUBTRACTS | `SkillBlastCascade` |
+| 6 | +0xAAF | `SS_UNDEADTODMG` against a `MobType.Undead` target | `SkillBlastCascade` |
+| 7 | +0xC98 | the caster's `so_smo_StaticDamage` slot, which REPLACES the result | `SkillBlastCascade` |
 
-`SET_DAMEGERATE` is 1000 for the level-60 Enchanter because none of its five items carries a
-`SetItemIndex` — checked in `ItemInfo.shn`, not assumed.
+Three things worth keeping from reading it:
 
-Also read while here: `MiscDataTable::mdt_ArgumentLoad`'s table (§3's last paragraph) is
-`MiscData_VarifyByAbstate` — `{Skill u16, Condition (NONE/STUN/SLOW/ACMRMINUS), DamageRate s16,
-NewState ABSTATEINDEX, Crirate s16}` — so a skill can deal a different damage rate and crit rate against a
-target that is stunned, slowed or armour-debuffed. Its file is `World/MiscDataTable.txt` `#Table
-ExpandSkill`, four rows.
+- **Step 5 divides by MINUS a thousand.** The magic constant at +0xA5D is `0xEF9DB22D`, which is
+  `-0x10624DD3` — the /1000 magic negated, same shift, same truncate-toward-zero fixup. That is what makes
+  "damage DOWN rate" go down, and reading the constant as unsigned makes it go up by a factor of 68.
+- **Step 4's configured rate cancels out of its own arithmetic** — `((missing*rate)/1000 * dmg) / rate` —
+  so it changes nothing except through the truncations it sits between, and a rate of 0 would divide by
+  zero. That reads as a bug in the original; the shape is preserved rather than simplified.
+- **The names line up with the data and confirm each other.** `LightningWave01` is the skill carrying
+  `DMGDOWNRATE` 100 capped at 900, and the counter that multiplies it is `sbe_nLightningWaveCnt` — each
+  bounce of the chain loses another 10%, to a floor of 90% off. `HolySmite01..08` carry `UNDEADTODMG`
+  150 to 500. `Judge01` carries the execute bonus. Six skills use step 4, eight use step 5, thirteen use
+  step 6.
+
+The `SpecialIndex` -> `EnumStruct` map is read out of `sdi_SetArgument`'s 73-entry jump table (0x00584800),
+not computed: **the obvious arithmetic is wrong.** `offset = 0x78 + (index-1)*8` holds for nine entries and
+then breaks — `SS_THHPUP` (10) writes +0x0F0 where it predicts +0x0C0. Ten indices store nothing at all,
+and `SS_DASH` aliases `SS_WARPING`'s slot. Across `ActiveSkill.shn` that matters on real rows: 114 of the
+file's (index, value) pairs name an index the table discards.
+
+### What is still missing
+
+1. **Nothing loads a character's set-item damage rate.** `SetItemSkillEffect` models `siel_AppendEffect`'s
+   accumulate rule (`arg[index] += Argument - 1000` over a 1000 seed, from `se_Clear`) and the cascade
+   consumes the result, but no loader turns `ItemInfo.SetItemIndex` + `SetItem.shn` + `SetItemEffect.shn`
+   into that list. Both bucket tests pass the neutral 1000, which is right for both captures — neither
+   character's equipment carries a `SetItemIndex` — and wrong for anyone in a set.
+
+   ⚠️ **And the membership rule is NOT read.** `siel_AppendEffect` gates each effect on a sorted `u16`
+   skill list at `EffectDescription+0x28` (null = applies to every skill), but nothing found so far builds
+   that list from the row's `SkillGroup` / `From` / `To`. The DATA shows two shapes — 222 of 235
+   `SkillGroup` values are an `InxName` prefix (`IceBolt` -> `IceBolt01`..`IceBolt99`, and `From`/`To` are
+   `01`/`99` throughout), and the other 13 are four-letter codes that appear in `SkillClassifierA`
+   (`SBBF`, `GDHM`, `HHMM`, `HDMC`, `BBDI`). Which of those the builder uses, and whether it uses both, is
+   an inference from the data and not a reading. Find the builder before writing the loader.
+
+2. **A bucket cannot feed step 4.** The execute bonus needs the target's HP AT THE STRIKE, and a bucket
+   aggregates its hits. Both tests now REFUSE such a bucket rather than predicting without the term —
+   correct, and it means a future capture containing `Judge01` will report a refusal instead of a
+   confident wrong answer. Fixing it means `damage_buckets.py` keeping `restHp` per hit, which it already
+   parses.
+
+3. **Two branches are deliberately absent.** The damage REFLECT at +0xAF3 (`Parameter::Container+0xCD2`,
+   returning a share of the damage to the caster, range-gated by +0xDA8) and the HP drain at +0xBC0 both
+   read the running damage and act on the CASTER. Neither changes what the target takes, so neither is in
+   the cascade — but both are real and neither is modelled anywhere.
 
 ---
+
 
 # Resolved
 
