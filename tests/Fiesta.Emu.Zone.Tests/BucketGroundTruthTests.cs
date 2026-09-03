@@ -1095,9 +1095,23 @@ public class BucketGroundTruthTests
     /// varies with the skill's own `MinMA` — `LightningBolt08` (327) wants ~5% more than
     /// `FireBolt08` (775) and `MagicBall01` (447+228), which both pin at ~1.182.</para>
     ///
-    /// <para>The remaining unmodelled input in <see cref="DamageCalculator.AttackPower"/> is
-    /// `ItemActions`, which every caller here passes as null and which the capture's equipment
-    /// (`NC_ITEM_EQUIPCHANGE_CMD` on nine slots) could populate.</para></summary>
+    /// <para><b>`ItemActions` was the last unmodelled input, and the equipment does not supply one.</b>
+    /// The character wears the `Nature` set (1520-1523) plus a `FairyWand` (1804): no `SetItemIndex` on
+    /// any of them, and every `MARate` is a neutral 1000. The wand's own MinMA/MaxMA of 240/320 has
+    /// exactly the 80-point spread the wire reports between 622 and 702, so the reconstruction is
+    /// consistent with the gear.</para>
+    ///
+    /// <para>⚠️ <b>AND THE DEPLOYED DATA IS NOT THE PROBLEM EITHER</b> — checked because `DamageByAngle`
+    /// set the precedent that `Z:/ServerSource` can disagree with what actually runs. MD5 against the
+    /// live zone00 pod: `ParamEnchanterServer.txt` (the 1700 job-change rate), `MobInfoServer.shn` (the
+    /// mob MR only the magical path reads, where a wrong value would be invisible to the exact physical
+    /// side), `MobInfo.shn` and `DamageLvGapPVE.shn` are all IDENTICAL to the reference tree.</para>
+    ///
+    /// <para>So: every formula link verified against the real binary, every data file verified against
+    /// the deployed server, the record layout verified against the wire, the container verified to
+    /// reproduce the wire's accessor outputs, criticals confirmed excluded, free stat applied,
+    /// `nBMPDamageRate` read as 1000 from the caller — and the observations are still 1.10x-1.27x high.
+    /// The missing term is an input this harness does not have and this pass did not find.</para></summary>
     [SkippableFact]
     public void MagicalSkillDamageIsTrackedAgainstItsBaseline_KNOWN_RED()
     {
