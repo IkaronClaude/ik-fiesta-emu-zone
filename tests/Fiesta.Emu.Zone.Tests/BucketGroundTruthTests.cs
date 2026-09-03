@@ -1022,9 +1022,30 @@ public class BucketGroundTruthTests
     /// invisible to every stat packet, and identical across skills because the gear does not change
     /// between them. It also explains why the physical capture is unaffected — a different character with
     /// different equipment. The capture carries the character's items
-    /// (`NC_CHAR_CLIENT_ITEM_CMD`, and `NC_ITEM_EQUIPCHANGE_CMD` for swaps), so the next step is to read
-    /// the equipped set and its options out of the wire and drive `ItemActionResults` from them —
-    /// evidence, not another fit.</para></summary>
+    /// (`NC_CHAR_CLIENT_ITEM_CMD`, and `NC_ITEM_EQUIPCHANGE_CMD` for swaps), so one route is to read the
+    /// equipped set and its options out of the wire and drive `ItemActionResults` from them.</para>
+    ///
+    /// <para>⭐ <b>BUT THE SHARPER LEAD IS A SPLIT IN THE WIRE ITSELF.</b> The clean hits fall into two
+    /// populations by the `SkillDamage` record's byte at <b>+3</b>, and the two need DIFFERENT
+    /// corrections — which is why no single transform has ever fitted all 37:</para>
+    ///
+    /// <code>
+    /// flag 0x0021  (byte+3 = 0x00)   6261, 6300          9 hits   fits a multiplier of 1.273-1.276
+    /// flag 0x2801  (byte+3 = 0x28)   6007 6047 6067      28 hits  fits NEITHER a multiplier nor an add
+    ///                                6142 6240 6280
+    /// </code>
+    ///
+    /// <para>The `0x0021` window is 1.273-1.276 across five independent buckets — far too tight to be an
+    /// accident. `0x0021` is `isdamage|isenchant` with a zero high byte; `0x2801` is `isdamage` plus bits
+    /// 11 and 13, which nothing in this project names. <see cref="SKILL_FLAGS_B1"/> covers only bits 8-10
+    /// (`isDead`, `isImmune`, `IsCostumShield`).</para>
+    ///
+    /// <para>⚠️ The record layout itself is NOT the problem — verified against the wire, consecutive hits
+    /// on one handle satisfy <c>restHp_before - restHp_after == damage</c> exactly (the exceptions are
+    /// handle reuse and killing blows, both already excluded). And the nested `SkillDamage` type is absent
+    /// from BOTH the PDB extract and FiestaLib, which is why byte +3 was never decoded. Decoding it — from
+    /// the client binary, the way `tools/decode_error_table.py` decoded the error codes — is the next
+    /// step, because it is what separates the two populations.</para></summary>
     [SkippableFact]
     public void MagicalSkillDamageIsTrackedAgainstItsBaseline_KNOWN_RED()
     {
