@@ -971,24 +971,60 @@ public class BucketGroundTruthTests
     /// side is exact at 545/545 with it, so `roe_MR` = Men-chain + MR should be sound the same way.</item>
     /// </list>
     ///
-    /// <para>⭐ <b>THE WHOLE MAGICAL ATTACK SIDE IS NOW VERIFIED AGAINST THE REAL FUNCTIONS, and it is
-    /// exact.</b> Two new oracles run the server's own code under emulation rather than fitting:</para>
+    /// <para>⭐ <b>EVERY LINK IN THE MAGICAL CHAIN HAS NOW BEEN RUN AGAINST THE REAL FUNCTION, AND EVERY
+    /// ONE IS EXACT.</b> `tools/oracle_magical.py` and `tools/oracle_magical_skill.py` execute the
+    /// server's own code under emulation rather than fitting coefficients:</para>
     ///
     /// <list type="bullet">
-    /// <item>`tools/oracle_magical.py` — `roe_MinMA` / `roe_MaxMA` / `roe_MR`. The captured mage returns
-    /// 622 / 702 / 468 and the Orc returns MR 239, every one agreeing with this port. So the container
-    /// reconstruction is right and <see cref="ExactlyMagical"/> is right.</item>
-    /// <item>`tools/oracle_magical_skill.py` — `roe_AttackPower@RulesOfEngagementMagicalSkill` over eight
-    /// cases taken from the capture: plain, four real skill rows, the empower allocation, and each rate
-    /// scaled on its own. <b>All eight match exactly</b>, including that `MinMARate` moves only the low
-    /// bound and `MaxMARate` only the high, and including `MagicBall01`'s empower term (1069/1260 →
-    /// 1297/1488). `oracle_empower.py` had only ever covered NormalPY and PhisycalSkill.</item>
+    /// <item>`roe_MinMA` / `roe_MaxMA` / `roe_MR` — mage 622 / 702 / 468, Orc MR 239, Pinky MR 319. All
+    /// match.</item>
+    /// <item>`roe_AttackPower@MagicalSkill` — eight cases from the capture: plain, four real skill rows,
+    /// the empower allocation, and each rate scaled alone. All match, including that `MinMARate` moves
+    /// only the low bound and `MaxMARate` only the high.</item>
+    /// <item>`roe_DefendPower@MagicalSkill` — Orc 239, Pinky 319. Matches.</item>
+    /// <item>`roe_Damage` — ⚠️ the two paths do NOT share it: `MagicalSkill` inherits
+    /// `NormalMA::roe_Damage` while `PhisycalSkill` inherits `NormalPY::roe_Damage`. Run side by side they
+    /// return identical values for these inputs, and both equal the port's <c>(level+1)*attack/defend</c>.</item>
+    /// <item>`roe_LevelGapDamageRevision` — returns 1000 for every level pair in the capture.</item>
+    /// <item>`JobChangeDmgUp` — exact by its own oracle, and NOT magic-specific: the Fighter capture's
+    /// character is class 3 `Warrior`, whose rate at level 60 is <b>1700, the same as `Enchanter`</b>. So
+    /// the physical side exercises the 1.7x multiply too and is exact at 545/545 with it.</item>
+    /// <item>`DamageByAngle` — the deployed table is flat 1000 (read live from two zones) and spans only
+    /// 1000-1200 even in the stock file, so it cannot account for 1.28x-1.76x.</item>
     /// </list>
     ///
-    /// <para>So attack power is not where the 1.28x-1.76x goes missing. What remains is everything AFTER
-    /// it: `roe_Damage`'s core step, the `JobChangeDmgUp` multiply, the level-gap rate, and
-    /// `DamageByAngle`. `roe_CalcDamage` itself would not run in the oracle — it faults on object state
-    /// the harness does not build — and getting it to run is the next step, not another fit.</para></summary>
+    /// <para>Also eliminated from the FIXTURE side: the mage carries no self-buffs (every bucket's
+    /// `selfAbstates` is empty); its free-stat block really is all zeros in the packet, not a parse
+    /// failure; the level parses as 60 from `+25`; and the SAME fixture's 56 incoming swings pass
+    /// <see cref="NoBucketExceedsWhatAMaximumRollCanProduce"/>, which independently validates the player's
+    /// level and defence and the mob data.</para>
+    ///
+    /// <para>⭐ <b>So the residual is an INPUT this harness does not have, not a formula error.</b> Solving
+    /// each bucket for the attack power that would reproduce it gives a strikingly consistent
+    /// <b>+460 to +490 on attack</b> across most Orc buckets — a constant ADD, not a multiplier, on a
+    /// quantity the oracle has already proved the engine computes correctly from `roe_MinMA`. Which means
+    /// the wire's magic-attack pair is not the whole input: something contributes ~470 that
+    /// `NC_CHAR_CHANGEPARAMCHANGE_CMD` ids 11/12 do not report.</para>
+    ///
+    /// <para>⚠️ Recorded as an OBSERVATION and explicitly not adopted: the character's id 13 is 468, and
+    /// 622 + 468 = 1090 sits inside the required 1082-1112. That is a coincidence of one number until a
+    /// mechanism says otherwise — adding a defensive stat to attack power makes no sense — and fitting it
+    /// would be exactly the curve-fitting the oracles exist to avoid.</para>
+    ///
+    /// <para>⭐ <b>LEADING HYPOTHESIS: ITEM ACTIONS.</b> `roe_CalcDamage` calls `EventRun` and
+    /// <c>GetPlusAppliValue</c> against BOTH combatants' item-action managers, and
+    /// <see cref="DamageCalculator.AttackPower"/> already models the result as applying to EACH BOUND
+    /// before the roll rather than to the rolled figure. `AttackModifiers.ItemActions` is the input, and
+    /// BOTH ground-truth tests pass it as <c>null</c> — a pcap does not state a character's item actions,
+    /// so nothing has ever populated it.</para>
+    ///
+    /// <para>That is the right SHAPE for this residual: a per-character constant, added to both bounds,
+    /// invisible to every stat packet, and identical across skills because the gear does not change
+    /// between them. It also explains why the physical capture is unaffected — a different character with
+    /// different equipment. The capture carries the character's items
+    /// (`NC_CHAR_CLIENT_ITEM_CMD`, and `NC_ITEM_EQUIPCHANGE_CMD` for swaps), so the next step is to read
+    /// the equipped set and its options out of the wire and drive `ItemActionResults` from them —
+    /// evidence, not another fit.</para></summary>
     [SkippableFact]
     public void MagicalSkillDamageIsTrackedAgainstItsBaseline_KNOWN_RED()
     {

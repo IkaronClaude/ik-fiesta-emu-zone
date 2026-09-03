@@ -74,6 +74,51 @@ def main():
             out.append(o.call(AP_MA, [a], this=magical, ret="double"))
         return out[0], out[1]
 
+    # ⭐ THE DEFENCE SIDE. The attack side is exact (above), so this is where the residual must be, and
+    # it now splits by MOB rather than by skill -- Pinky's buckets demand a bigger correction than the
+    # Orc's. `roe_DefendPower@MagicalSkill` is its own function; the port assumes it is just roe_MR.
+    # ⭐⭐ THE CORE STEP, AND THE TWO PATHS DO NOT SHARE IT. MagicalSkill's vtable slot +0x10 is
+    # `RulesOfEngagementNormalMA::roe_Damage`, while PhisycalSkill's is `NormalPY::roe_Damage`. The
+    # physical one is validated at 545/545; the magical one never has been. The port applies ONE formula,
+    # `((attackerLevel + 1) * attack) / defend`, to both.
+    DMG_MA = "?roe_Damage@RulesOfEngagementNormalMA@@MAENPAUEngageArgument@@NN@Z"
+    DMG_PY = "?roe_Damage@RulesOfEngagementNormalPY@@MAENPAUEngageArgument@@NN@Z"
+    # ⭐ THE LAST UNRUN LINK. roe_CalcDamage calls roe_LevelGapDamageRevision(attacker, defender, damage);
+    # the port models it as a permille rate from DamageLvGapPVE. Run the real one.
+    LGR = "?roe_LevelGapDamageRevision@RulesOfEngagement@@QAEHPAVShineObject@ShineObjectClass@@0H@Z"
+    print("roe_LevelGapDamageRevision(player lv60 -> mob, damage=1000):")
+    for label, lvl in (("Orc lv61", 61), ("Pinky lv61", 61), ("KingMushRoom lv62", 62),
+                       ("OrcHunter lv63", 63), ("same level 60", 60)):
+        d = h.obj({"Men": 112, "MR": 127, "Con": 140, "AC": 102}, lvl, 5)
+        try:
+            got = o.call(LGR, [att, d, 1000], this=magical, ret="int")
+            print("   %-20s -> %d  (x%.4f)" % (label, got, got / 1000.0))
+        except Exception as e:
+            print("   %-20s FAILED %s" % (label, type(e).__name__))
+    print()
+
+    print("roe_Damage core step -- attacker level 60:")
+    print("   %-10s %-9s %-12s %-12s %s" % ("attack", "defend", "NormalMA", "NormalPY", "port (L+1)*a/d"))
+    a0 = h.arg(att, dfn)
+    for atk, dfd in ((949.0, 239.0), (1137.0, 239.0), (3462.0, 239.0), (949.0, 319.0), (1000.0, 1000.0)):
+        ma = o.call(DMG_MA, [a0, ("double", atk), ("double", dfd)], this=magical, ret="double")
+        py = o.call(DMG_PY, [a0, ("double", atk), ("double", dfd)], this=magical, ret="double")
+        print("   %-10.1f %-9.1f %-12.4f %-12.4f %.4f" % (atk, dfd, ma, py, 61 * atk / dfd))
+    print()
+
+    print("roe_DefendPower@MagicalSkill vs the port's MagicResistance:")
+    for label, stats, lvl, want in (("Orc lv61",   {"Men": 112, "MR": 127}, 61, 239.0),
+                                    ("Pinky lv61", {"Men": 142, "MR": 177}, 61, 319.0)):
+        d = h.obj(dict(stats, Str=822, Con=140, Dex=147, Int=135, AC=102, TB=179), lvl, 5)
+        ad = h.arg(att, d)
+        try:
+            got = o.call(DP_MA, [ad], this=magical, ret="double")
+            mark = "OK " if abs(got - want) < 0.5 else "DIFF"
+            print("   %-11s real=%-10.4f port=%-8.1f %s" % (label, got, want, mark))
+        except Exception as e:
+            print("   %-11s FAILED: %s" % (label, type(e).__name__))
+    print()
+
     print("%-44s %11s %11s   %s" % ("case", "attack lo", "attack hi", "port expects"))
     for label, active, emp, expect in (
             ("plain (no skill row)",                  {},                            0, "622 / 702"),
@@ -88,6 +133,34 @@ def main():
         lo, hi = run(active, empower=emp,
                      nT0=[100, 128, 155, 182, 228] if emp else None)
         print("%-44s %11.1f %11.1f   %s" % (label, lo, hi, expect))
+
+    # ⭐ END TO END. Attack and defence are both exact, so run the WHOLE function and see whether the real
+    # server reproduces the capture (this port has a bug downstream) or reproduces this port (the capture
+    # carries something we are not modelling).
+    print()
+    print("roe_CalcDamage, whole pipeline -- Orc lv61, player lv60:")
+    for label, active, emp, nt, port_pred, observed in (
+            ("LightningBolt08", {"MinMA": 327, "MaxMA": 381},  0, None, "411..469", "615..676"),
+            ("MagicMissile08",  {"MinMA": 515, "MaxMA": 598},  0, None, "493..562", "695..778"),
+            ("FireBall01",      {"MinMA": 2840,"MaxMA": 3552}, 0, None, "1501..1844", "1964"),
+            ("MagicBall01 +e5", {"MinMA": 447, "MaxMA": 558},  5,
+                                [100, 128, 155, 182, 228], "562..644", "753..853"),
+    ):
+        o.write(activ, bytes(0x400))
+        for k, v in active.items():
+            o.write(activ + ACTIVE_MA[k], struct.pack("<I", v))
+        for i, v in enumerate(nt or ()):
+            o.write(activ + EMPOWER_TABLE + i * 4, struct.pack("<I", v))
+        o.write(a + 0x0C, struct.pack("<H", emp))
+        out = []
+        for bits in (0, 0xFFFFFFFF):
+            o.write(mask, struct.pack("<I", bits))
+            try:
+                out.append(str(o.call(CALC, [a], this=magical, ret="int")))
+            except Exception as e:
+                out.append(type(e).__name__)
+        print("   %-17s real %8s..%-8s   port %-12s capture %s"
+              % (label, out[0], out[1], port_pred, observed))
 
 
 if __name__ == "__main__":
