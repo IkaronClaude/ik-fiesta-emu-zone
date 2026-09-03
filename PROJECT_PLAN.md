@@ -669,3 +669,55 @@ the angle table, and both were right — the fault was in a part of the pipeline
 calls wide. A function is not ported until every call it makes has been followed.
 
 236 tests: 235 green, 1 deliberately red.
+
+---
+
+### 2026-09-03 — magical skill damage solved: the wire's MA pair is not the accessor's output
+
+**37 of 37 clean magical hits and 8 of 8 criticals inside their predicted bands. 548 tests, 0 red.**
+`MageDamageLvl60.pcapng` had been scoring 1 of 37 with every hit above the ceiling, for three sessions.
+
+**The bug was never in the formula.** `roe_AttackPower@MagicalSkill`, `roe_MinMA`, `roe_MaxMA`, `roe_MR`,
+`roe_DefendPower@MagicalSkill`, `roe_Damage@NormalMA` and `roe_CalcDamage` had all been run against the
+real functions under emulation, and all of them were right. So had every input, checked one at a time. The
+error was one layer out, in the step that converts the wire back into a `Parameter::Container` — and
+nothing tested that step.
+
+`so_mobile_NotifyParameterChange@ShinePlayer` (0x00503C10) reports five stats as `ftol(roe_Xxx) + freeStat`
+and **the magic-attack pair as `ftol(roe_MA) + freeStat − the equipped weapon's own MA`**, from
+`[this+0x10B4]` / `[this+0x10B8]`, which `so_RecalcEquipParam@ShinePlayer` (0x004CAB70) fills by summing
+`ItemInfo.MinMA` (+0x93) and `MaxMA` (+0x97) over the equipped items. The server subtracts it because
+`roe_MinMA` counts the weapon TWICE — once through the `Item.Plus[bound]` chain and again through the
+scaled item bonus — so the client can show the weapon's line separately. The damage engine keeps both.
+
+    roe_MinMA = 288 Int + 240 wand + 240 again + 34 WandMastery05 = 802,  shown 802 + 60 − 240 = 622
+    roe_MaxMA = 288     + 320      + 320       + 34               = 962,  shown 962 + 60 − 320 = 702
+
+Both wire numbers to the unit, from four independently sourced quantities.
+
+**The operator called this weeks ago** — "free stat STR applies like twice in 2 separate situations" — and
+was right about the doubling, right that it was on the magical side, and right that the harness had it
+wrong. It is the weapon rather than the free stat.
+
+**What made it findable, in order.** A control: the same capture's mob→player physical swings pass the
+swing check with zero overshoots, which localised the miss to the outgoing magical direction. Then the
+criticals: a critical is `2*d + d*plus/1000` over the same roll, so `damage_buckets.py` now emits each one
+and the test predicts a `ForceCritical` band — 8 more observations, and they pinned `ChainLightning01`
+tightly enough to prove no constant could reconcile it with `FireBolt08`, which is what said the miss was
+an INPUT and not a coefficient. Then reading the packet builder field by field instead of assuming its
+fields were built alike.
+
+**Ruled out positively on the way, each now written down** (OPEN_QUESTIONS): the angle, from the wire, via
+the new `tools/skill_angle.py` (83 of 86 hits get a reconstructed index, correlation −0.011); the free-stat
+slot identity, named from the PDB object vtable; the operator's `roe_FreeState*` cross-wiring, which is
+real but lives only in the abnormal-state DoT path; the mob's MR, read out of `c_StoreMob`; and the whole
+post-`roe_CalcDamage` cascade in `smo_SkillBlast`, which is newly documented and entirely unmodelled.
+
+**One real engine-adjacent fix:** the band helper now pins `so_ply_JobChangeDamageUp`'s `rndbox(0..1)` draw
+at each bound instead of letting a seeded `Random` decide. That draw is worth one point of damage and it
+was the last thing between 34/37 and 37/37.
+
+**Method note.** Every component was verified and the whole was still wrong. A chain of individually
+verified links does not verify the thing they are chained to; when that happens, suspect the step that
+feeds the components rather than the components.
+
