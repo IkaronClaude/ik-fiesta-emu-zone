@@ -1061,8 +1061,26 @@ public class BucketGroundTruthTests
     ///
     /// <para>The same disassembly settles the layout: +2 and +3 are two separate BYTE fields, not one
     /// <c>u16</c> flag, and byte +2 packs eight one-bit flags out of `SkillResultBuffer` at +8..+0x11
-    /// (bit0 from +8, bit7 from +9, bits 1-6 from +0xb..+0x10). Our NAMES for those bits are still a
-    /// guess inherited from FiestaLib; only bit0/bit1 are confirmed by behaviour on the wire.</para></summary>
+    /// (bit0 from +8, bit7 from +9, bits 1-6 from +0xb..+0x10). ⚠️ The REAL discriminator is byte +2
+    /// <b>bit5</b> (from +0xf, our `isenchant`), not the garbage byte +3 — it gives the identical split,
+    /// so the two populations are genuine even though the byte I first found them with was not. And
+    /// bit1 IS critical, confirmed behaviourally: those hits run 1.5x-2.2x larger per skill and are
+    /// correctly excluded, so criticals are NOT leaking into the clean set.</para>
+    ///
+    /// <para>With the free-stat term applied the two groups are:</para>
+    /// <code>
+    /// bit5 set    6261, 6300                   9 hits   FITS a multiplier of 1.120-1.146
+    /// bit5 clear  6007 6047 6067 6142 6240 6280  28 hits  needs >=1.240 and &lt;=1.182 (5% apart)
+    /// </code>
+    ///
+    /// <para>⭐⭐ <b>NEXT, AND IT IS A SPECIFIC INPUT BOTH TESTS HARDCODE: `nBMPDamageRate`.</b>
+    /// `roe_Damage` computes <c>v = nBMPDamageRate * attack / 1000</c>, and
+    /// <see cref="AttackModifiers.BaseDamageRatePermille"/> is left at 1000 by every caller here. It is
+    /// NOT a constant in the server: `smo_SkillBlast` fills `EngageArgument+0x28` from its own
+    /// caller-supplied parameter — <c>mov dword ptr [ebp-0x124], ecx</c> at 0x00581A7A, with
+    /// <c>ecx = [ebp+0x20]</c> — so the skill-blast caller chooses it per cast. A value of ~1180 would
+    /// multiply damage by 1.18, which is the size and shape of what is missing. Read what
+    /// `sbe_BlastObject` passes there.</para></summary>
     [SkippableFact]
     public void MagicalSkillDamageIsTrackedAgainstItsBaseline_KNOWN_RED()
     {
@@ -1120,7 +1138,10 @@ public class BucketGroundTruthTests
 
             // ⚠️ The MAGICAL skill row is MinMA/MaxMA, not MinWC/MaxWC -- `roe_AttackPower@MagicalSkill`
             // reads +0xEB/+0xEF/+0xF3/+0xF7 where the physical one reads +0xDB..+0xE7.
-            var me = ExactlyMagical(b.Level, amin - freeInt, amax - freeInt, 1);
+            // MAGE_KEEP_FREESTAT_IN_MA: probe for whether the DISPLAYED magic-attack pair already
+            // contains the free-stat term (as the physical pair provably does) or not.
+            var sub = Environment.GetEnvironmentVariable("MAGE_KEEP_FREESTAT_IN_MA") is null ? freeInt : 0;
+            var me = ExactlyMagical(b.Level, amin - sub, amax - sub, 1);
             var band = Through(me, mob, new AttackModifiers
             {
                 ForceCritical = false,
