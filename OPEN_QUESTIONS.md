@@ -153,17 +153,39 @@ file's (index, value) pairs name an index the table discards.
 
 1. **Nothing loads a character's set-item damage rate.** `SetItemSkillEffect` models `siel_AppendEffect`'s
    accumulate rule (`arg[index] += Argument - 1000` over a 1000 seed, from `se_Clear`) and the cascade
-   consumes the result, but no loader turns `ItemInfo.SetItemIndex` + `SetItem.shn` + `SetItemEffect.shn`
-   into that list. Both bucket tests pass the neutral 1000, which is right for both captures — neither
-   character's equipment carries a `SetItemIndex` — and wrong for anyone in a set.
+   consumes the result, but no loader produces the list it accumulates. Both bucket tests pass the neutral
+   1000, which is right for both captures — neither character's equipment carries a `SetItemIndex` — and
+   wrong for anyone in a set.
 
-   ⚠️ **And the membership rule is NOT read.** `siel_AppendEffect` gates each effect on a sorted `u16`
-   skill list at `EffectDescription+0x28` (null = applies to every skill), but nothing found so far builds
-   that list from the row's `SkillGroup` / `From` / `To`. The DATA shows two shapes — 222 of 235
-   `SkillGroup` values are an `InxName` prefix (`IceBolt` -> `IceBolt01`..`IceBolt99`, and `From`/`To` are
-   `01`/`99` throughout), and the other 13 are four-letter codes that appear in `SkillClassifierA`
-   (`SBBF`, `GDHM`, `HHMM`, `HDMC`, `BBDI`). Which of those the builder uses, and whether it uses both, is
-   an inference from the data and not a reading. Find the builder before writing the loader.
+   **The chain is now mapped end to end, which is most of the work:**
+
+   ```
+   sp_SetItemCheck (0x00510B50, on equipment change)
+     -> sic_SetItemDefine(SetItemClassifier, &player.PlayerSetEffect)      0x00510370
+          PlayerSetEffect is {ushort effectarray[10]; byte effectnumber} at player+0x2A7E0,
+          which is why nothing appears to WRITE the count at +0x2A7F4: it is written through
+          this pointer, not by that offset. SetItemClassifier (0x1326AE00) holds
+          EffectByPiece[256] and sic_ItemSetPiece[256] -- pieces worn per set type.
+     -> smo_ply_SetItemEffect(skillId)                                     0x00510D20
+          se_Clear() seeds all 17 slots to 1000, then one siel_AppendEffect per handle.
+     -> siel_AppendEffect(effectHandle, skillId)                           0x005104C0
+          entry = setitemeffectlist + handle*0x30            (EffectDescription, 48 bytes)
+          if (entry->skilllist && !bsearch(&skillId, entry->skilllist, entry->skillnumber, 2))
+              return;                                        // null list = applies to EVERY skill
+          se_Argument[entry->seteffect] += entry->setargument - 1000;
+   ```
+
+   **Two links are still unread, and both are in the DATA path rather than the damage path:**
+
+   - **Who fills `setitemeffectlist` (0x1325EDF8) from `SetItemEffect.shn`.** A whole-image sweep finds
+     exactly one code reference to that address, in `smo_ply_SetItemEffect`. ⚠️ That is an argument from
+     absence and this file forbids acting on one — the `PlayerSetEffect` case above is the same shape and
+     did have a writer, through a pointer argument. Look for a method taking `SetItemEffectList*`.
+   - **How `EffectDescription.skilllist` is built from the row's `SkillGroup` / `From` / `To`.** The DATA
+     shows two shapes: 222 of 235 `SkillGroup` values are an `InxName` prefix (`IceBolt` ->
+     `IceBolt01`..`IceBolt99`, and `From`/`To` are `01`/`99` throughout), and the other 13 are four-letter
+     codes that appear in `SkillClassifierA` (`SBBF`, `GDHM`, `HHMM`, `HDMC`, `BBDI`). Which the builder
+     uses, and whether it uses both, is an inference from the data and not a reading.
 
 2. **A bucket cannot feed step 4.** The execute bonus needs the target's HP AT THE STRIKE, and a bucket
    aggregates its hits. Both tests now REFUSE such a bucket rather than predicting without the term —
