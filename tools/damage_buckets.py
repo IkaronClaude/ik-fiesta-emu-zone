@@ -169,6 +169,15 @@ def collect(lines):
     free_stat, chrclass, passives = {}, None, ()
     skill_empower = {}                            # skill id -> the raw SKILL_EMPOWER word
     weapon = None                                 # item id in the weapon slot, or None if unknown
+    # ⭐ EVERY equipped slot, not just the weapon. Matched-equipment SET bonuses are counted over the whole
+    # equipment bag (`sp_SetItemCheck` walks it and tallies `ItemInfo.SetItemIndex` per piece), so a
+    # harness that remembers only the weapon cannot tell a set from a coincidence.
+    #
+    # ⚠️ THIS IS A LOWER BOUND, not the equipment. It holds what the capture SAW equipped; anything worn
+    # before the capture started is missing, and no packet in these captures dumps the equipment bag. That
+    # is the safe direction -- missing a piece under-counts a set, which under-predicts damage and makes a
+    # band check fail loudly rather than pass with a silently wrong bonus.
+    equipment = {}                                # equip slot -> item id
     swings, chat, hit_counts = [], [], collections.Counter()
     # A skill hit does not name its skill. `NC_BAT_SKILLBASH_HIT_OBJ_START_CMD` (0x244E) carries
     # {skill, targetobj, index} and the damage packet carries only the index, so the id has to be carried
@@ -356,8 +365,12 @@ def collect(lines):
             #
             # Slot numbering matches `ItemInfo.Equip` and `tItem.nStorage`: 12 weapon, 10 shield, 7 body.
             # 0xFFFF is the EMPTY marker -- item id 0 is a real id, so emptiness cannot be signalled by 0.
-            if raw[2] == WEAPON_EQUIP_SLOT:
-                item = u16(raw, 3)
+            slot, item = raw[2], u16(raw, 3)
+            if item == EMPTY_EQUIP_SLOT:
+                equipment.pop(slot, None)
+            else:
+                equipment[slot] = item
+            if slot == WEAPON_EQUIP_SLOT:
                 weapon = None if item == EMPTY_EQUIP_SLOT else item
         elif name == "NC_CHAR_CLIENT_PASSIVE_CMD" and len(raw) >= 2:
             # count u16, then count * u16 passive-skill ids, IN LIST ORDER. Order matters: cpl_RecalcParam
@@ -428,6 +441,7 @@ def collect(lines):
                     "flags": [n for j, n in enumerate(SKILL_FLAGS_B0) if raw[off + 2] & (1 << j)]
                              + [n for j, n in enumerate(SKILL_FLAGS_B1) if raw[off + 3] & (1 << j)],
                     "levelups": levelups, "level": level, "passives": passives, "weapon": weapon,
+                    "equipment": tuple(sorted(equipment.items())),
                     "attackerMob": mob_of.get((conv, caster)),
                     "defenderMob": mob_of.get((conv, handle)),
                     "params": tuple(sorted(params.items())),
@@ -448,6 +462,7 @@ def collect(lines):
                 "level": level,
                 "passives": passives,
                 "weapon": weapon,
+                "equipment": tuple(sorted(equipment.items())),
                 "attackerMob": mob_of.get((conv, att)),
                 "defenderMob": mob_of.get((conv, dfn)),
                 # Snapshots, not references: the state moves on and a bucket must remember what was true
@@ -492,6 +507,7 @@ def main():
     # swings that missed is not a rate.
     buckets = collections.defaultdict(list)
     outcomes = collections.defaultdict(collections.Counter)
+    swing_equipment = {}
     unattributed = 0
     for s in swings:
         me = player.get(s["conv"])
@@ -512,6 +528,7 @@ def main():
         key = (side, mob, s["level"], s["params"], s["freeStat"], own_ab, foe_ab, s["passives"], own_weapon)
 
         flags, tally = s["flagWord"], outcomes[key]
+        swing_equipment[key] = s["equipment"]
         tally["swings"] += 1
         # Bit names from the PDB: 0 iscritical, 2 ismissed, 3 isshieldblock. A blocked swing carries BOTH
         # missed and blocked in every frame of this capture -- roe_HitRate sets isshieldblock and then
@@ -533,6 +550,7 @@ def main():
     # and none is invented here.
     skill_buckets = collections.defaultdict(list)
     skill_crits = collections.defaultdict(list)
+    skill_equipment = {}
     skill_outcomes = collections.defaultdict(collections.Counter)
     skill_unattributed = 0
     for s in skill_hits:
@@ -553,6 +571,7 @@ def main():
             continue
         key = (side, s["skill"], mob, s["level"], s["params"], s["freeStat"], own_ab, foe_ab, s["passives"], own_weapon)
         flags, tally = s["flagWord"], skill_outcomes[key]
+        skill_equipment[key] = s["equipment"]
         tally["hits"] += 1
         # The SKILL bit order -- see SKILL_FLAGS_B0. bit 1 is critical here, not bit 0.
         if flags & 0x04:
@@ -607,6 +626,7 @@ def main():
                "params": dict(params),
                # The allocation IN FORCE AT THESE HITS, not the first one the capture ever showed.
                "freeStat": dict(free),
+               "equipment": dict(skill_equipment.get(key, ())),
                "n": len(dmg), "hits": tally["hits"], "missed": tally["missed"],
                "blocked": tally["blocked"], "critical": tally["critical"],
                "criticalDamage": tally["criticalDamage"], "resisted": tally["resisted"],
@@ -630,6 +650,7 @@ def main():
                "freeStat": dict(free),
                # `n` stays the count of CLEAN hits, so the damage-band check keeps reading the field it
                # always read. `swings` is the denominator for the rates.
+               "equipment": dict(swing_equipment.get(key, ())),
                "n": len(dmg), "swings": tally["swings"],
                "missed": tally["missed"], "blocked": tally["blocked"],
                "critical": tally["critical"], "criticalDamage": tally["criticalDamage"],

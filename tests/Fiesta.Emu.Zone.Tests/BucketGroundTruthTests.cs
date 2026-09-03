@@ -45,7 +45,8 @@ public class BucketGroundTruthTests
     private sealed record Bucket(string Side, int Mob, int Level, IReadOnlyList<Abstate> SelfAbstates,
                                  IReadOnlyList<Abstate> EnemyAbstates,
                                  IReadOnlyDictionary<string, int> Params,
-                                 IReadOnlyList<int> Passives, int? Weapon, int N, int Min, int Max);
+                                 IReadOnlyList<int> Passives, int? Weapon, int N, int Min, int Max,
+                                 IReadOnlyList<int> Equipment);
 
     /// <summary>A skill bucket: the same state key as a swing, plus WHICH skill was cast.</summary>
     private sealed record SkillBucket(string Side, int Skill, int Mob, int Level,
@@ -54,7 +55,8 @@ public class BucketGroundTruthTests
                                       IReadOnlyList<int> Passives, int? Weapon,
                                       IReadOnlyDictionary<string, int> FreeStat,
                                       int N, int Min, int Max,
-                                      IReadOnlyList<int> CriticalDamages);
+                                      IReadOnlyList<int> CriticalDamages,
+                                      IReadOnlyList<int> Equipment);
 
     private sealed record Fixture(IReadOnlyList<Bucket> Buckets, IReadOnlyDictionary<string, int> FreeStat,
                                   int ChrClass, IReadOnlyList<SkillBucket> SkillBuckets,
@@ -87,6 +89,17 @@ public class BucketGroundTruthTests
 
     /// <summary>Each critical's own damage, or empty for a fixture built before `damage_buckets.py`
     /// recorded them individually rather than as a sum.</summary>
+    /// <summary>Every item id the capture saw equipped, from `NC_ITEM_EQUIPCHANGE_CMD`.
+    ///
+    /// <para>⚠️ A LOWER BOUND, not the equipment: it holds what the capture SAW equipped, and anything worn
+    /// before it started is missing. That is the safe direction — a missing piece under-counts a matched
+    /// SET, which under-predicts damage and makes a band check fail loudly instead of passing with a
+    /// silently wrong bonus.</para></summary>
+    private static IReadOnlyList<int> Equipment(JsonElement b)
+        => b.TryGetProperty("equipment", out var e) && e.ValueKind == JsonValueKind.Object
+            ? e.EnumerateObject().Select(x => x.Value.GetInt32()).ToList()
+            : [];
+
     private static IReadOnlyList<int> Crits(JsonElement b)
         => b.TryGetProperty("criticalDamages", out var c) && c.ValueKind == JsonValueKind.Array
             ? c.EnumerateArray().Select(x => x.GetInt32()).ToList()
@@ -113,7 +126,8 @@ public class BucketGroundTruthTests
                 ? b.GetProperty("weapon").GetInt32() : null,
             b.GetProperty("n").GetInt32(),
             b.GetProperty("min").GetInt32(),
-            b.GetProperty("max").GetInt32())).ToList();
+            b.GetProperty("max").GetInt32(),
+            Equipment(b))).ToList();
 
         // ⚠️ A bucket with no CLEAN hits is kept when it has CRITICALS. A critical is a second sample of
         // the same roll distribution -- `2*d + d*plus/1000` over the same `d` -- so a crit-only bucket is
@@ -142,7 +156,7 @@ public class BucketGroundTruthTests
                 // not need one.
                 b.TryGetProperty("min", out var mn) ? mn.GetInt32() : 0,
                 b.TryGetProperty("max", out var mx) ? mx.GetInt32() : 0,
-                Crits(b))).ToList()
+                Crits(b), Equipment(b))).ToList()
             : [];
 
         return new Fixture(buckets,
@@ -752,18 +766,31 @@ public class BucketGroundTruthTests
     ///
     /// <para>Int governs magic attack the way Str governs weapon damage, and Men governs magic resistance
     /// the way Con governs armour — so the same floor-at-1 trick applies to the other pair.</para></summary>
-    /// <summary>The equipped weapon's own `MinMA`/`MaxMA` from `ItemInfo.shn` — the term
+    /// <summary>The equipped items' summed `MinMA`/`MaxMA` from `ItemInfo.shn` — the term
     /// `so_mobile_NotifyParameterChange` subtracts out of the reported magic-attack pair, and the one that
     /// has to go back in to recover `roe_MinMA`/`roe_MaxMA`.
     ///
-    /// <para>Null when the bucket carries no weapon id, which is a refusal and not a zero: "no weapon
-    /// known" and "a weapon with no magic attack" are different states and only the second is a reading.
-    /// A weapon id that is not in `ItemInfo.shn` is the same kind of unknown.</para></summary>
-    private static (int Min, int Max)? EquipMagicAttack(ShnFile items, int? weapon)
+    /// <para>SUMMED over every equipped item, because that is what fills the slot: `so_RecalcEquipParam`
+    /// walks the equipment and does <c>[+0x10B4] += ItemInfo.MinMA</c> per piece. Reading only the weapon
+    /// happens to be right for both captures — the level-60 Enchanter's other eight items are four Nature
+    /// armour pieces and four cosmetics, all with `MinMA`/`MaxMA` 0 — and would be wrong for anyone
+    /// wearing magic-attack jewellery.</para>
+    ///
+    /// <para>Null when the bucket saw no equipment at all, which is a refusal and not a zero: "we never
+    /// saw what they were wearing" and "they wore nothing with magic attack" are different states and only
+    /// the second is a reading.</para></summary>
+    private static (int Min, int Max)? EquipMagicAttack(ShnFile items, IReadOnlyList<int> equipment)
     {
-        if (weapon is not { } id) return null;
-        var row = items.Rows.FirstOrDefault(r => ShnFile.Int(r, "ID") == id);
-        return row is null ? null : (ShnFile.Int(row, "MinMA"), ShnFile.Int(row, "MaxMA"));
+        if (equipment.Count == 0) return null;
+        int min = 0, max = 0;
+        foreach (var id in equipment)
+        {
+            var row = items.Rows.FirstOrDefault(r => ShnFile.Int(r, "ID") == id);
+            if (row is null) return null;          // an item we cannot price is not a zero either
+            min += ShnFile.Int(row, "MinMA");
+            max += ShnFile.Int(row, "MaxMA");
+        }
+        return (min, max);
     }
 
     /// <summary>Every skill's `SpecialIndex`/`SpecialValue` pairs, resolved as `sdi_SetArgument` resolves
@@ -1229,12 +1256,17 @@ public class BucketGroundTruthTests
             // = roe_MinMA 802, reported as 802 + 60 - 240 = 622; and 288 + 320 + 320 + 34 = 962 reported
             // as 962 + 60 - 320 = 702. Both wire values fall out to the unit.
             //
-            // ⚠️ ONLY THE WEAPON IS ADDED BACK HERE, and that is a fixture limit rather than a claim:
-            // `so_RecalcEquipParam` sums EVERY equipped item, and the bucket records only the weapon id.
-            // It is exact for this capture because the four Nature armour pieces carry MinMA/MaxMA 0 --
-            // checked in `ItemInfo.shn`, not assumed -- and it will be wrong for a character wearing MA
-            // jewellery. The fix is for `damage_buckets.py` to record the whole equipment set.
-            var equip = EquipMagicAttack(items, b.Weapon);
+            // ⭐ SUMMED OVER EVERY EQUIPPED ITEM, which is what `so_RecalcEquipParam` does. `damage_buckets.py`
+            // now records the whole equipment map from `NC_ITEM_EQUIPCHANGE_CMD` rather than the weapon
+            // alone, so this is a reading instead of an approximation.
+            //
+            // ⚠️ IT ALSO CORRECTED THE PICTURE OF THIS CHARACTER. The capture equips NINE items, not the
+            // five this project had been reasoning about: the wand, four Nature armour pieces, and four
+            // cosmetics -- `Cos_Sakura01_9`, `AngelWing09_4`, `Hat_Rabbitear01_4` and `MiniPino01_7`. The
+            // cosmetics carry MinMA/MaxMA 0, so the magic-attack term is unchanged, and calling them
+            // "cosmetics with no magic attack" is exactly how their real contribution was missed: three of
+            // them carry `CriRate` 50. The character's item critical rate is 180, not the wand's 30.
+            var equip = EquipMagicAttack(items, b.Equipment);
             if (equip is not { } wpnMa) { skipped += b.N; continue; }
 
             var special = specials.GetValueOrDefault(b.Skill, Fiesta.Emu.Zone.Skill.SkillSpecialArguments.None);

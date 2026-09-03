@@ -260,10 +260,21 @@ Two smaller things fell out on the way and are worth keeping:
   are what pinned `ChainLightning01` tightly enough to prove no constant could ever reconcile it with
   `FireBolt08` — which is what said the miss was an INPUT rather than a coefficient.
 
-**Left open by this:** the fixture records only the weapon id, so the test adds only the WEAPON's MA back.
-`so_RecalcEquipParam` sums every equipped item. It is exact for this capture because the four Nature
-armour pieces carry MinMA/MaxMA 0 — checked in `ItemInfo.shn`, not assumed — and it will be wrong for a
-character wearing magic-attack jewellery. `damage_buckets.py` should record the whole equipment set.
+**Closed since:** `damage_buckets.py` records the whole equipment map from `NC_ITEM_EQUIPCHANGE_CMD`, and
+the test sums `MinMA`/`MaxMA` over every equipped item the way `so_RecalcEquipParam` does. The result is
+unchanged at 37/37, which is the point — it is now a reading rather than an approximation that happened to
+be right.
+
+⚠️ **And it corrected the picture of this character.** The capture equips NINE items, not the five this
+project had been reasoning about all along: the wand, four Nature armour pieces, and four cosmetics
+(`Cos_Sakura01_9`, `AngelWing09_4`, `Hat_Rabbitear01_4`, `MiniPino01_7`). They carry no magic attack, so
+the damage work stands — but **three of them carry `CriRate` 50, and the operator caught that the crit
+chance was wrong because of it.** The character's item critical rate is 180; the wand alone gives 30. Two
+of the three are literally named `[Critical]` in `ItemInfo.Name`.
+
+The lesson is the narrow-check one this file keeps relearning: the four extra items were dismissed as
+"cosmetics with zero MA" after checking the ONE column the magic-attack question needed. Dismissing an
+input requires looking at what it does, not at what you were looking for.
 
 
 ## The job-change catch-up multiplier — CLOSED 2026-08-27
