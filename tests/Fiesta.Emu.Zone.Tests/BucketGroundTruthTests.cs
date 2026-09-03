@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Fiesta.Emu.Zone.Abstate;
 using Fiesta.Emu.Zone.Combat;
 using Fiesta.Emu.Zone.Data;
 using Fiesta.Emu.Zone.Parameter;
@@ -286,32 +287,18 @@ public class BucketGroundTruthTests
     /// flag — as opposed to one this port has not read, which is refused instead.</summary>
     private sealed record AbstateAction(bool Rate, int Sign, params Stat[] Stats);
 
-    private static readonly Dictionary<int, AbstateAction> AbstateActions = new()
-    {
-        [4] = new(true, +1, Stat.WCmin, Stat.WCmax),
-        [94] = new(false, -1, Stat.WCmin, Stat.WCmax),
-        [73] = new(false, -1, Stat.AC),
-        [74] = new(true, -1, Stat.AC),
-        [81] = new(false, -1, Stat.Dex),
-        [18] = new(true, +1, Stat.ShieldAC),
-        [21] = new(true, +1, Stat.AttSpeed),
-
-        // ⚠️ NO PARAMETER EFFECT -- WHICH IS NOT THE SAME AS NO EFFECT. These write BEHAVIOUR BITS into
-        // `Parameter::Container::flag` (+0xCCE), whose three bits the PDB names
-        // `cannotmove_stun` / `cannotmove_entangle` / `cannotattack`:
-        //
-        //     SAA_NOATTACK  or byte [+0xCCE], 4   -> cannotattack
-        //     SAA_NOMOVE    or byte [+0xCCE], 2   -> cannotmove_entangle
-        //                   or byte [+0xCCE], 1   -> cannotmove_stun, when the sub-type at +0x26 is
-        //                                            0x15 or 0x60
-        //
-        // They are no-ops FOR THE DAMAGE FORMULA -- a stunned mob takes and deals normal damage, it just
-        // cannot act -- which is the only claim this test needs. For the mob tactic state machine they are
-        // the opposite of a no-op: they are exactly what a stun IS, and MobActionAttack / MobActionChase /
-        // MobActionTurning have to honour them. See docs/FUTURE_TESTS.md; nothing models them yet.
-        [19] = new(false, 0),   // SAA_NOMOVE
-        [25] = new(false, 0),   // SAA_NOATTACK
-    };
+    /// <summary>⭐ The abstate action table is the LIBRARY's generated one, not a local copy.
+    ///
+    /// <para>This used to be a hand-written dictionary of NINE actions — the nine the Fighter capture
+    /// happened to exercise — and everything else made a bucket unpredictable. That silently refused 15
+    /// of the level-60 Mage capture's 37 hits, because `StaChainLightningStun` and `StaFrostNova` both
+    /// carry action 88, <c>SAA_SPEEDDOWNRATE</c>, which writes `AbnormalState.Rate[MoveSpeed]` and cannot
+    /// touch damage at all.</para>
+    ///
+    /// <para><see cref="AbstateEffects"/> is generated from `aeo_ParameterEnchant`'s jump table by
+    /// `tools/abstate_actions.py --csharp` and covers all 120, and — the part that matters here — it
+    /// distinguishes an action that writes NOTHING (49 of them resolve to the shared epilogue) from one
+    /// nobody has read. Only the second kind may refuse a bucket.</para></summary>
 
     /// <summary>Apply a mob's abnormal states to its own container.
     ///
@@ -353,13 +340,25 @@ public class BucketGroundTruthTests
                 var index = ShnFile.Int(row, "ActionIndex" + slot);
                 var arg = ShnFile.Int(row, "ActionArg" + slot);
                 if (index == 0) continue;
-                if (!AbstateActions.TryGetValue(index, out var action)) return false;
-                foreach (var stat in action.Stats)
+                var action = (SubAbstateAction)index;
+                // Out of the dispatcher's 1..120 range: the server would fall straight through, so this
+                // is not an unknown -- it is a known no-op.
+                if (!AbstateEffects.IsDispatched(action)) continue;
+                var effect = AbstateEffects.For(action);
+                // Dispatched but absent from the table = the handler IS the shared epilogue: it writes
+                // nothing. A read result, not a gap, so it must NOT refuse the bucket.
+                if (effect is null) continue;
+                foreach (var w in effect.Stats)
                 {
-                    var cluster = action.Rate ? p.Rate(StatModifier.AbnormalState)
-                                              : p.Plus(StatModifier.AbnormalState);
-                    cluster[stat] += action.Sign * arg;
+                    var cluster = w.Half == StatHalf.Rate ? p.Rate(StatModifier.AbnormalState)
+                                                          : p.Plus(StatModifier.AbnormalState);
+                    cluster[w.Stat] += w.Sign * arg;
                 }
+                // ⚠️ Second-tier fields and behaviour bits are NOT applied here, and that is deliberate:
+                // this harness reconstructs a container for the DAMAGE formula only. None of the fields
+                // (`RangeOver`, heal rates) or flags (stun / entangle / cannot-attack) is read by
+                // `roe_AttackPower` / `roe_DefendPower` / `roe_Damage`, so ignoring them changes no
+                // prediction -- see AbstateEffect and docs/SUBABSTATE_ACTIONS.md.
             }
         }
         return true;
@@ -920,34 +919,43 @@ public class BucketGroundTruthTests
     /// <para>Fixture comes from a live MageZero packet log rather than a pcap; see `tools/mage_fixture.py`,
     /// which walks the bot's own log format and emits the same JSON.</para>
     ///
-    /// <para>⛔ <b>RED: the magical path under-predicts, 10 of 10 above the ceiling.</b> Unlike the
-    /// physical residual this one is NOT a constant — no single multiplier fits, because the observations
-    /// require at least 1.278x (FireBolt01) and at most 1.176x (MagicMissile04) and that window is empty.
-    /// The size of the miss tracks the skill's OWN `MinMA` inversely: `FireBolt01` (MinMA 26) needs 1.48x
-    /// while `MagicMissile04` (MinMA 151) needs 1.18x. A term proportional to the skill row would do the
-    /// opposite, so what is missing sits in the BASE magic attack, not the skill's contribution.</para>
+    /// <para>⛔ <b>RED: the magical path under-predicts, 37 of 37 above the ceiling.</b> Fixture is a real
+    /// level-60 client capture (`MageDamageLvl60.pcapng`, class 18 `Enchanter`), 37 clean hits over 8
+    /// skills, nothing refused. The miss runs 1.28x to 1.76x.</para>
     ///
-    /// <para>Ruled OUT on data, not argument:</para>
+    /// <para><b>The shape says an INPUT is wrong, not a coefficient.</b> The multiplier each skill needs
+    /// varies INVERSELY with its own `MinMA` — `FireBall01` (MinMA 2840) needs ~1.07-1.31 while
+    /// `LightningBolt08` (327) needs ~1.31-1.70 — which is what a missing ADDITIVE term on the base magic
+    /// attack looks like. But a pure additive does not fit either (`MagicBall01` wants C in [722, 975]
+    /// where every other skill wants [320, 500]), and a grid search over combined (additive C,
+    /// multiplier M) against all 19 buckets returns NO solution. Several buckets need the predicted band
+    /// to span a range wider than any (C, M) produces.</para>
+    ///
+    /// <para>Ruled OUT on data:</para>
     /// <list type="bullet">
-    /// <item>⚠️ <b>Free-stat INT.</b> An earlier note recorded `MAGE_FREE_INT=12` as the value that
-    /// zeroes ceiling violations. `NC_CHAR_CLIENT_BASE_CMD` says the allocation is
-    /// <c>Constitute 21, Intelligence 0</c> — the 12 was curve-fitting against a number the wire reports
-    /// as zero. The env var survives as a probe; it is not a finding.</item>
-    /// <item><b>Job-change damage-up.</b> `NC_CHAR_CLIENT_SHAPE_CMD` gives class 16, base Mage, whose
-    /// `JobChangeDmgUp` is 1000 permille at every level. `WizMage` would be 1970 at level 21 — nearly 2x,
-    /// which would make this UNDER-shoot rather than over. The bot has not job-changed.</item>
-    /// <item><b>Multi-hit and AoE.</b> All six skills carry `HitID` 0 and `TargetNumber` 1.</item>
-    /// <item><b>Skill empower.</b> The character's `PROTO_SKILLREADBLOCKCLIENT.empow` is zero on every
-    /// skill it holds, so the term that closed `PowerHit05` cannot apply here.</item>
+    /// <item><b>Job-change damage-up.</b> Wired now, and this character is class 18 whose
+    /// `JobChangeDmgUp` is 1700 permille at level 60 — a real 1.7x that the Fighter capture could never
+    /// exercise, since class 1 is 1000. It is NOT the cause: the level-21 base-Mage bot log, whose rate is
+    /// 1000 and so applies nothing at all, under-predicts by the same ~1.3x.</item>
+    /// <item><b>Weapon mastery.</b> The weapon is a `FairyWand` (WeaponType 11, two-hand), and the mage's
+    /// `WandMastery05` gives `MstPlWand2` = +34 — a flat PLUS, not a rate, and already inside the 622 the
+    /// wire reports, since that number is the accessor's OUTPUT.</item>
+    /// <item><b>The MA parameter mapping.</b> Ids 11/12 read 622/702 against a weapon pair (6/7) of 85/98
+    /// and an Int (3) of 288 — the only pair that can be a level-60 mage's magic attack.</item>
+    /// <item><b>Multi-hit, AoE division, empower, free-stat INT.</b> Every skill carries `HitID` 0;
+    /// `TargetNumber` is 1 except `MagicBurst03`; the empower allocation is read from the wire; and the
+    /// free-stat block is all zeros on this character.</item>
+    /// <item><b>The mob's magic resistance</b>, by symmetry: `roe_AC` is Con-chain + AC and the physical
+    /// side is exact at 545/545 with it, so `roe_MR` = Men-chain + MR should be sound the same way.</item>
     /// </list>
     ///
-    /// <para>⚠️ <b>THE SAMPLE IS THE REAL BLOCKER, and it is a BOT problem, not a simulator one.</b> Ten
-    /// clean hits across seven buckets, mostly n=1 — and a single draw inside a band can only bound the
-    /// answer, never locate it. MageZero cast 36 times in 4h15m while swinging 817 times; ClericZero's
-    /// 46 MB log holds ZERO casts and zero swings; ArcherZero swung 1394 times and cast nothing. The
-    /// classes that should be casting are auto-attacking instead, so the wire is not producing magical
-    /// damage to check against. The fighter set has 545 hits for comparison. Fix the rotation or take a
-    /// real capture before drawing any conclusion from these ten numbers.</para></summary>
+    /// <para>⭐ <b>NEXT, and deliberately not more curve-fitting: there is no oracle for the MAGICAL
+    /// accessors.</b> `tools/oracle_accessors.py` differentially checks `roe_MinWC` / `roe_MaxWC` /
+    /// `roe_AC` against the real functions under emulation; nothing does the same for `roe_MinMA` /
+    /// `roe_MaxMA` / `roe_MR`. <see cref="DamageCalculator"/>'s own note says the magic pair is "NOT the
+    /// mirror image of WeaponDamage, which is the natural assumption and is wrong" — the FIELDS it reads
+    /// were probed, the arithmetic was not. That is the gap, and running the real function is the way to
+    /// close it rather than another fit.</para></summary>
     [SkippableFact]
     public void MagicalSkillDamageIsTrackedAgainstItsBaseline_KNOWN_RED()
     {
@@ -967,10 +975,21 @@ public class BucketGroundTruthTests
                               .GroupBy(kv => kv.Value.Id)
                               .ToDictionary(g => g.Key, g => g.First().Key);
         var skills = SkillRowsMagical(ressystem!);
+        var lineBase = SkillLineBase(ressystem!);
+        var abState = ShnFile.Load(Path.Combine(shine!, "AbState.shn"));
+        var subAbState = ShnFile.Load(Path.Combine(shine!, "SubAbState.shn"));
+        // ⭐ THE JOB-CHANGE MULTIPLIER IS NOT OPTIONAL HERE. This capture's character is class 18,
+        // `Enchanter`, whose `JobChangeDmgUp` at level 60 is 1700 permille — a 1.7x on every hit it deals
+        // to a monster. Passing `null` (as this test did while it only had a base-Mage bot log, where the
+        // value is 1000) under-predicts by that whole factor.
+        var jobByLevel = f.SkillBuckets.Select(b => b.Level).Distinct()
+                                       .ToDictionary(l => l, l => JobChangeRate(f, shine!, l));
 
-        // The mage's free-stat INT allocation is not in the bot's packet log (it rides
-        // `NC_CHAR_CLIENT_BASE_CMD` +0x57, which the log did not capture), so it is supplied.
-        var freeInt = int.TryParse(Environment.GetEnvironmentVariable("MAGE_FREE_INT"), out var fi) ? fi : 0;
+        // `FreeStat` is read from the fixture, which reads it from `NC_CHAR_CLIENT_BASE_CMD` +0x57.
+        // `MAGE_FREE_INT` remains only as a probe for a fixture that predates that being captured; it
+        // must never be used to make numbers fit — the wire reports the allocation.
+        var freeInt = int.TryParse(Environment.GetEnvironmentVariable("MAGE_FREE_INT"), out var fi)
+            ? fi : f.FreeStat.GetValueOrDefault("Intelligence");
 
         int inside = 0, over = 0, under = 0, skipped = 0;
         var report = new List<string>();
@@ -981,6 +1000,7 @@ public class BucketGroundTruthTests
             if (!mobNames.TryGetValue(b.Mob, out var name)) { skipped += b.N; continue; }
             var mob = MobCombatant.Build(box, name);
             if (mob is null) { skipped += b.N; continue; }
+            if (!ApplyAbstates(mob.Parameters, b.EnemyAbstates, abState, subAbState)) { skipped += b.N; continue; }
             if (!b.Params.TryGetValue(MaMin, out var amin) || !b.Params.TryGetValue(MaMax, out var amax))
             { skipped += b.N; continue; }
 
@@ -995,14 +1015,19 @@ public class BucketGroundTruthTests
                 // accessors return table[0] = 0, so only the attacker's term is live.
                 AttackerFreeStat = FreeStatInt(freeInt),
                 DefenderFreeStat = 0,
-                JobChangeDamageUpPermille = null,
+                JobChangeDamageUpPermille = jobByLevel.GetValueOrDefault(b.Level),
                 LevelGapRatePermille = gaps.Rate(CombatantKind.Player, b.Level,
                                                  CombatantKind.Monster, mob.Level),
                 Skill = row,
+                // Allocated per skill LINE and reported on the line's base rank — see SkillLineBase.
+                Empower = new Fiesta.Emu.Zone.Skill.SkillEmpower((ushort)f.SkillEmpower
+                    .GetValueOrDefault(lineBase.GetValueOrDefault(b.Skill, b.Skill))),
             }, EngagementRule.MagicalSkill);
 
             report.Add($"DIAG skill={b.Skill} mob={b.Mob} n={b.N} obs={b.Min}..{b.Max} "
-                     + $"pred={band.Floor}..{band.Ceiling}");
+                     + $"pred={band.Floor}..{band.Ceiling} "
+                     + $"loRatio={(band.Floor == 0 ? 0 : (double)b.Min / band.Floor):F3} "
+                     + $"hiRatio={(band.Ceiling == 0 ? 0 : (double)b.Max / band.Ceiling):F3}");
 
             if (b.Max > band.Ceiling) over += b.N;
             else if (b.Min < band.Floor) under += b.N;
