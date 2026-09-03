@@ -949,13 +949,24 @@ public class BucketGroundTruthTests
     /// side is exact at 545/545 with it, so `roe_MR` = Men-chain + MR should be sound the same way.</item>
     /// </list>
     ///
-    /// <para>⭐ <b>NEXT, and deliberately not more curve-fitting: there is no oracle for the MAGICAL
-    /// accessors.</b> `tools/oracle_accessors.py` differentially checks `roe_MinWC` / `roe_MaxWC` /
-    /// `roe_AC` against the real functions under emulation; nothing does the same for `roe_MinMA` /
-    /// `roe_MaxMA` / `roe_MR`. <see cref="DamageCalculator"/>'s own note says the magic pair is "NOT the
-    /// mirror image of WeaponDamage, which is the natural assumption and is wrong" — the FIELDS it reads
-    /// were probed, the arithmetic was not. That is the gap, and running the real function is the way to
-    /// close it rather than another fit.</para></summary>
+    /// <para>⭐ <b>THE WHOLE MAGICAL ATTACK SIDE IS NOW VERIFIED AGAINST THE REAL FUNCTIONS, and it is
+    /// exact.</b> Two new oracles run the server's own code under emulation rather than fitting:</para>
+    ///
+    /// <list type="bullet">
+    /// <item>`tools/oracle_magical.py` — `roe_MinMA` / `roe_MaxMA` / `roe_MR`. The captured mage returns
+    /// 622 / 702 / 468 and the Orc returns MR 239, every one agreeing with this port. So the container
+    /// reconstruction is right and <see cref="ExactlyMagical"/> is right.</item>
+    /// <item>`tools/oracle_magical_skill.py` — `roe_AttackPower@RulesOfEngagementMagicalSkill` over eight
+    /// cases taken from the capture: plain, four real skill rows, the empower allocation, and each rate
+    /// scaled on its own. <b>All eight match exactly</b>, including that `MinMARate` moves only the low
+    /// bound and `MaxMARate` only the high, and including `MagicBall01`'s empower term (1069/1260 →
+    /// 1297/1488). `oracle_empower.py` had only ever covered NormalPY and PhisycalSkill.</item>
+    /// </list>
+    ///
+    /// <para>So attack power is not where the 1.28x-1.76x goes missing. What remains is everything AFTER
+    /// it: `roe_Damage`'s core step, the `JobChangeDmgUp` multiply, the level-gap rate, and
+    /// `DamageByAngle`. `roe_CalcDamage` itself would not run in the oracle — it faults on object state
+    /// the harness does not build — and getting it to run is the next step, not another fit.</para></summary>
     [SkippableFact]
     public void MagicalSkillDamageIsTrackedAgainstItsBaseline_KNOWN_RED()
     {
