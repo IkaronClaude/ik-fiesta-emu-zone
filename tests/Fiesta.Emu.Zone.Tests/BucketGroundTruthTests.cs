@@ -1078,9 +1078,26 @@ public class BucketGroundTruthTests
     /// <see cref="AttackModifiers.BaseDamageRatePermille"/> is left at 1000 by every caller here. It is
     /// NOT a constant in the server: `smo_SkillBlast` fills `EngageArgument+0x28` from its own
     /// caller-supplied parameter — <c>mov dword ptr [ebp-0x124], ecx</c> at 0x00581A7A, with
-    /// <c>ecx = [ebp+0x20]</c> — so the skill-blast caller chooses it per cast. A value of ~1180 would
-    /// multiply damage by 1.18, which is the size and shape of what is missing. Read what
-    /// `sbe_BlastObject` passes there.</para></summary>
+    /// <c>ecx = [ebp+0x20]</c>. ⚠️ RULED OUT: `sbe_BlastObject` passes <c>push 0x3e8</c> = <b>1000</b>
+    /// (0x00584029), so it is neutral for the skill-blast path after all.</para>
+    ///
+    /// <para>Also ruled out this round: the CLIENT and SERVER copies of `ActiveSkill.shn` are the same
+    /// file (identical size and identical MinMA/MaxMA/nT0 for every skill in both captures), so loading
+    /// skill rows from `ressystem` is not a stale-data bug; and no skill-group column separates the two
+    /// populations (`DlyGroupNum` and `SkillClassifierA` both vary WITHIN each group), so
+    /// `EventRunBySkillGroupIndex` has no candidate key.</para>
+    ///
+    /// <para><b>Where a fitted constant would get to, recorded so nobody has to re-derive it — and
+    /// deliberately NOT adopted.</b> A single multiplier on final damage reaches 25 of 37 inside at
+    /// 1.103; per group it is 9/9 at 1.087 for the bit5 half and only 17/28 at 1.116 for the plain half.
+    /// Adopting either would turn this test green by construction while the mechanism stayed unknown,
+    /// which is the one thing the oracles exist to prevent. The plain half still needs something that
+    /// varies with the skill's own `MinMA` — `LightningBolt08` (327) wants ~5% more than
+    /// `FireBolt08` (775) and `MagicBall01` (447+228), which both pin at ~1.182.</para>
+    ///
+    /// <para>The remaining unmodelled input in <see cref="DamageCalculator.AttackPower"/> is
+    /// `ItemActions`, which every caller here passes as null and which the capture's equipment
+    /// (`NC_ITEM_EQUIPCHANGE_CMD` on nine slots) could populate.</para></summary>
     [SkippableFact]
     public void MagicalSkillDamageIsTrackedAgainstItsBaseline_KNOWN_RED()
     {
