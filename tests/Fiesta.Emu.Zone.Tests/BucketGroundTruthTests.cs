@@ -1110,8 +1110,32 @@ public class BucketGroundTruthTests
     /// <para>So: every formula link verified against the real binary, every data file verified against
     /// the deployed server, the record layout verified against the wire, the container verified to
     /// reproduce the wire's accessor outputs, criticals confirmed excluded, free stat applied,
-    /// `nBMPDamageRate` read as 1000 from the caller — and the observations are still 1.10x-1.27x high.
-    /// The missing term is an input this harness does not have and this pass did not find.</para></summary>
+    /// `nBMPDamageRate` read as 1000 from the caller, and weapon mastery confirmed absent from the
+    /// magical rule WITH a working control (`tools/oracle_magical_mastery.py`).</para>
+    ///
+    /// <para>⭐⭐ <b>AND IT IS NOT A PER-CHARACTER INPUT — that reading, which earlier notes here stated,
+    /// was wrong.</b> Two independent characters give nearly the same residual:</para>
+    ///
+    /// <code>
+    /// lvl21 base Mage   job x1.000   10 hits   residual needs >= 1.278 and &lt;= 1.176
+    /// lvl60 Enchanter   job x1.700   37 hits   residual needs >= 1.184 and &lt;= 1.105
+    /// </code>
+    ///
+    /// <para>Different level, different gear, different job-change rate, different skills — and both want
+    /// roughly <b>1.18</b>. The two windows miss each other by 0.7%, which is inside the noise of bounds
+    /// each set by a single extreme observation. A per-character term could not do that; a CONSTANT
+    /// factor in the magical path is exactly what does.</para>
+    ///
+    /// <para>Since every step from `roe_MinMA` through `roe_AttackPower`, `roe_DefendPower`,
+    /// `roe_Damage`, the level-gap revision and the job-change multiply has been run against the real
+    /// function and matches, the factor must live in the one part that has never been runnable:
+    /// <b>`roe_CalcDamage` itself</b>. That is not a gap in this port's reading — the pre-existing
+    /// `tools/oracle_accessors.py` fails on it too, catching the exception and printing FAILED. Making
+    /// `roe_CalcDamage` run under emulation (it reads object state past +0x60 — position, item-action
+    /// managers) is therefore THE next piece of work, and it is a project rather than a probe.</para>
+    ///
+    /// <para>⛔ A constant is exactly what a fit would produce, which is why one is NOT adopted here. The
+    /// difference between finding 1.18 and fitting 1.18 is knowing which instruction applies it.</para></summary>
     [SkippableFact]
     public void MagicalSkillDamageIsTrackedAgainstItsBaseline_KNOWN_RED()
     {
