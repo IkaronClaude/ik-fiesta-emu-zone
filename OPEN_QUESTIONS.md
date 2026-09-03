@@ -69,6 +69,20 @@ and in force. Every zone runs one today and `tools/capture_state.py` records it.
 do equal damage there, the term's absence is established on the wire instead of argued from a file or a
 recollection — and this constant can stop being a judgement call.
 
+**⭐ 2026-09-03: that control now exists, from a capture we already had — and it says FLAT.**
+`MageDamageLvl60.pcapng` carries off-angle hits without anyone having set out to make them.
+Reconstructing every hit's index (see §4 for the method and its one assumption) gives 83 of 86 hits an
+index, spread from 0 to 78, and the correlation between the stock table's rate and the multiplier each hit
+actually needs is **-0.011 over 43 clean hits**. Hits at index 0 need up to 1.240; hits at index 73-78,
+where the stock table pays 1.126-1.131, need only 1.12-1.13. On THAT deployment, on that date, the angle
+term is not acting.
+
+⚠️ **This does not retroactively settle `Damage.pcapng`.** Different session, different date, and the
+operator's recollection of positioning during that fight is first-hand evidence about that window which
+this measurement cannot touch. `DeployedAngleMax` stays 1000 and keeps its history; what has changed is
+that the flat reading now has wire evidence behind it for at least one deployment, where before it had
+only a file and a process dump.
+
 ---
 
 ## 3. Five damage hooks are read but not modelled
@@ -88,6 +102,129 @@ cost nothing on the current capture and will cost everything on a buffed one.
 Skills bring one more: `MiscDataTable::mdt_ArgumentLoad` bsearches a table by skill id and writes
 `EngageArgument.damagerate` (+0x1C) and `crirateadd` (+0x20) from it, plus an abstate to apply. It is
 gated on `arg->sklinfo` being non-null, so a normal attack never reaches it.
+
+---
+
+## 4. `MageDamageLvl60`'s magical residual — the SHAPE is now measured, the term is not found
+
+**Status:** open, and it is the headline. `MagicalSkillDamageIsTrackedAgainstItsBaseline_KNOWN_RED` scores
+**1 of 37 hits inside**, every miss ABOVE the ceiling, while the physical twin scores 545/545.
+
+**The one control that matters passed.** The SAME capture's mob→player physical swings run through
+`NoBucketExceedsWhatAMaximumRollCanProduce` with **zero overshooting buckets** (`FIESTA_BUCKETS=mage60.json`).
+Same character, same session, same decode, same bucket tool. So the miss is not the capture, not the
+decode, not the level, and not the harness — it is specific to the OUTGOING MAGICAL direction, whose one
+unshared input is the mob's `roe_MR`.
+
+**The residual is NOT a constant, and this is now measured rather than argued.** Criticals in this capture
+are exactly `2 x` the clean damage (`PassiveCriDamageRatePlus` = 0 — `MagicBall01`'s crits 1504 and 1522
+halve to 752 and 761, both inside the clean 753..810), so every critical is a second sample of the clean
+distribution and the sample count goes from 37 to 43. With those in, the required multiplier on the FINAL
+damage is pinned per skill and the pins CONTRADICT each other:
+
+| skill | MinMA | clean samples | required multiplier |
+|---|---|---|---|
+| `LightningBolt08` | 327 | 5 | >= 1.240 |
+| `MagicMissile08` | 515 | 5 | >= 1.218 |
+| `MagicBall01` | 675 (incl. empower) | 12 | >= 1.185 |
+| `FireBolt08` | 775 | 3 | >= 1.182 |
+| `ChainLightning01` | 899 | 9 | >= 1.134, and **<= 1.146** |
+
+`FireBolt08` needs at least 1.182 while `ChainLightning01` allows at most 1.146. **No affine transform
+`m * band + D` of the predicted band satisfies both** — solved as a 2-variable LP, and the 3-variable
+version over the ATTACK range (`a * container + b * skillFlat + c`) is infeasible too unless `a ~ 1.96`,
+which is a fit, not a reading. So either something varies per hit, or the two skills genuinely differ.
+
+⚠️ **Express the residual on the DAMAGE, not on the attack power.** `roe_Damage`'s per-rule override adds
+the attacker's free stat AFTER the divide, so a multiplier on attack and a multiplier on damage are
+different numbers — for the `LightningBolt08`/Pinky hit they are 1.263 and 1.203. An earlier pass conflated
+them and read the conflict as larger than it is.
+
+**The required multiplier falls monotonically as the skill's own `MinMA` rises** (1.240 at 327 down to
+1.134 at 899). That is the signature of a missing ADDITIVE term on the base magic attack. But the implied
+constant is not constant either — 161, 215, 206, 323, 145 across those five skills — and a single additive
+large enough for `FireBolt08` puts `ChainLightning01`'s lowest hit below its own floor.
+
+### What was RULED OUT this session, each positively
+
+- **The angle, from the wire.** `tools/`-side reconstruction of every hit's `DamageByAngle` index out of
+  `MageDamageLvl60.pcapng`: facing from each mob's last `NC_ACT_SOMEONEMOVEWALK/RUN` vector (never from the
+  `REGENMOB` `dir` byte, so my `atan2` convention and the server's cancel in the subtraction), position
+  from the same packets, the caster's position from his own `NC_ACT_MOVERUN_CMD` — which is what
+  `EngageArgument.attackloc` is, since `smo_SkillBlast` passes `[caster+0x66]` as the ctor's 5th argument.
+  **83 of 86 hits get an index; 29 of them are index 0 and 68 are index <= 11**, i.e. the mobs were facing
+  the mage, exactly as they face a melee attacker. Correlation between the stock table's rate and the
+  required multiplier is **-0.011 over 43 clean hits**, and hits at index 0 still need up to 1.240 while
+  hits at index 73-78 (rate 1.126-1.131) need only 1.12-1.13. The angle cannot be it, and this is the
+  rear-hit control §2 asked for, obtained from a capture we already had.
+- **The free-stat slot identity**, which was genuinely ambiguous. Named from the PDB via the object vtable
+  rather than inferred: **+0x468 `so_ply_FreeStatStr`, +0x46C `FreeStatInt`, +0x470 `FreeStatDex`,
+  +0x474 `FreeStatCon`, +0x478 `FreeStatMen`**. `NormalPY::roe_Damage` reads `att->+0x468` and
+  `def->+0x474`; `NormalMA::roe_Damage` reads `att->+0x46C` and `def->+0x478`. **The port is right**: Str
+  minus Con physical, Int minus Men magical.
+- **The operator's "free stat applies twice" — real, but not here.** `roe_FreeStateAttackPower` and
+  `roe_FreeStateDefendPower` (rules vtable +0x30/+0x34) ARE cross-wired: `NormalPY`'s pair reads
+  `FreeStatInt`/`FreeStatMen` and `NormalMA`'s reads `FreeStatStr`/`FreeStatCon`. Their only callers are
+  `roe_GetAttackPower` and `roe_AttackPowerCalcDamage`, and *their* only callers are
+  `SubAbnormalStateActorPoison::sasa_GetDamage`, `SubAbnormalStateActorBomb::sasa_ApplyAbstate` and
+  `aeo_Set` — the **abnormal-state damage-over-time path**. Nothing in the hit path calls slot 0x30 or
+  0x34. So free stat does enter twice, in two separate situations, and the second is DoT damage — worth
+  modelling when DoT is, and irrelevant to this residual.
+- **The free-stat closed forms.** `FreeStatStr/Int = n + n/5` and `Con/Men = ceil(n/2)` match
+  `FreeStatTables`'s real 181-entry tables at **every** entry, 0 mismatches. `FreeStatInt` has one field
+  (`MAAbsolute`); there is no rate half to have missed.
+- **`ActiveSkillInfoServer.DmgIncRate` / `DmgIncValue`** — 0 for all **2791** rows.
+- **The whole post-`roe_CalcDamage` cascade in `smo_SkillBlast`** (see §5): every term of it is neutral for
+  this character and these skills, checked against the data rather than assumed.
+- **`EngageArgument`'s constructor** (0x0042ABF0) sets `damagerate` (+0x1C) **and** `nBMPDamageRate` (+0x28)
+  to **1000**. Neither is a stack leftover.
+- **`mdt_ArgumentLoad`'s override table** is `9Data/Shine/World/MiscDataTable.txt` `#Table ExpandSkill`, and
+  it has **four rows** — `PowerBenTear`, `PowerWeaponBlast`, `FinalSwordForce`, `WeaponBlast`. None of the
+  capture's skills, in either capture.
+- **The skill row mapping**, from the PDB rather than by name-matching: `ActiveSkillInfo` +0xEB `MinMA`,
+  +0xEF `MinMARate`, +0xF3 `MaxMA`, +0xF7 `MaxMARate` — exactly what `roe_AttackPower@MagicalSkill` reads,
+  and exactly what `SkillRowsMagical` loads.
+
+### Where to look next
+
+The mob's `roe_MR` is the only input on this path that no passing test exercises. It is Men-chain +
+MR-chain out of `MobInfoServer.shn`, structurally identical to `roe_AC` which 545 hits verify — but
+"identical in shape" is not a reading. `roe_MR` has never been run under emulation against a container
+built the way `MobCombatant.Build` builds one, only against one the oracle assembled.
+
+---
+
+## 5. `smo_SkillBlast` runs a whole damage cascade AFTER `roe_CalcDamage`, and none of it is modelled
+
+**Status:** open. Read end to end on 2026-09-03 from `ShineMobileObject::smo_SkillBlast` (0x00581160),
+which is the function that builds the `EngageArgument` for a skill, calls `roe_CalcDamage` through rules
+vtable slot 0x1C at +0x939, and then does six more things to the integer it gets back. `DamageCalculator`
+stops at `roe_CalcDamage`, so **the port's skill damage is the input to this cascade, not its output.**
+
+In order, on the value that eventually reaches the `SkillDamage` record:
+
+| where | what | data |
+|---|---|---|
+| +0x93B | `dmg = dmg * setitemskilleffect.se_Argument[SET_DAMEGERATE] / 1000` | `SetItemData::SkillEffect`, the global at 0x1325EDB0 — a `unsigned long[17]` indexed by the `SetIndex` enum (2 = `SET_DAMEGERATE`). `se_Clear` fills all 17 with **1000**; `smo_ply_SetItemEffect(skillId)` clears it and then calls `siel_AppendEffect(setIndex, skillId)` for every set the player wears, each doing `arg[i] += Argument; arg[i] -= 1000`. The rows are `SetItemEffect.shn` — `Effect / SkillGroup / From / To / Index / Argument`, e.g. `IceDameg` = SkillGroup `IceBolt`, Index 2, Argument 1200. **A set item is a per-skill-group damage multiplier and this port has no concept of it.** |
+| +0x94D | `dmg = dmg * MultiHitArgument.mha_DamageRate / 1000`, floored at 1 when it truncates to 0 and the rate was positive | Modelled — but only in the physical test, as a post-hoc band scale. It belongs here. |
+| +0x9A9 | if `sdi_TARGETHPDOWNDMGUPRATE.exist`: `dmg += hpMissingPermille(target) * dmg / 1000` | `SkillDataIndex` +0x1F8. The rate at +0x1FC cancels out of the arithmetic — `(miss*rate/1000)*dmg/rate` — which looks like a server bug and is what the instructions do. |
+| +0xA3C | if `sdi_DMGDOWNRATE.exist`: `dmg += min(value * arg6, sdi_MAXDMGDOWNRATE) * dmg / 10000` | `SkillDataIndex` +0x1E0 / +0x1E8. |
+| +0xAAF | if `sdi_UNDEADTODMG.exist` and the target's race is 5: `dmg += rate * dmg / 1000` | `SkillDataIndex` +0xA8. |
+| +0xC98 | if `caster[+0x1E7C] > 0`: `dmg = caster[+0x1E7C]` — an outright override | Not yet identified; a GM/scenario fixed-damage slot. |
+
+The three `sdi_*` gates come from `ActiveSkill.shn`'s `SpecialIndexA..E` / `SpecialValueA..E` pairs, which
+fill the `SkillDataIndex` `EnumStruct` array (`{unsigned char exist; int value}` every 8 bytes from +0x78,
+so index = `(offset - 0x78) / 8`). **All five are 0 for every skill in both captures**, which is why the
+cascade costs nothing today; 73 distinct indices are used across the file, so it costs plenty elsewhere.
+
+`SET_DAMEGERATE` is 1000 for the level-60 Enchanter because none of its five items carries a
+`SetItemIndex` — checked in `ItemInfo.shn`, not assumed.
+
+Also read while here: `MiscDataTable::mdt_ArgumentLoad`'s table (§3's last paragraph) is
+`MiscData_VarifyByAbstate` — `{Skill u16, Condition (NONE/STUN/SLOW/ACMRMINUS), DamageRate s16,
+NewState ABSTATEINDEX, Crirate s16}` — so a skill can deal a different damage rate and crit rate against a
+target that is stunned, slowed or armour-debuffed. Its file is `World/MiscDataTable.txt` `#Table
+ExpandSkill`, four rows.
 
 ---
 
