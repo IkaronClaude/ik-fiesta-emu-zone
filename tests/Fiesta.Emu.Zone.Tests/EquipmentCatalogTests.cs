@@ -125,7 +125,7 @@ public class KillQuestTests
           if #mobs == 0 then bot.walkTo(bot.x() + 60, bot.y() + 25) return end
           local best, bd = nil, 1e9
           for i = 1, #mobs do if mobs[i].dist < bd then best, bd = mobs[i], mobs[i].dist end end
-          if not bot.attack(best.handle) then bot.walkTo(best.x, best.y) end
+          if not bot.swing(best.handle) then bot.walkTo(best.x, best.y) end
         end
         """;
 

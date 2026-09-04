@@ -28,9 +28,10 @@ public static class CharacterSheet
         int level,
         FreeStats? freeStats = null,
         IEnumerable<EquipmentPiece>? equipment = null,
-        Data.SkillCatalog? skills = null)
+        Data.SkillCatalog? skills = null,
+        bool hasPowerOfLove = false)
     {
-        var container = CharacterParameters.Build(table, level, freeStats, equipment);
+        var container = CharacterParameters.Build(table, level, freeStats, equipment, hasPowerOfLove);
         var total = container.MakeTotal();
 
         player.Parameters = container;
@@ -68,7 +69,11 @@ public static class CharacterSheet
         // `Enchanter`, a job-changed class, and that is what makes the skill list a level-60 rotation
         // rather than a level-20 one. Naming a BASE class is legal and gets base-class skills; see
         // `SkillCatalog.LearnedBy`.
-        if (skills is not null) player.LearnedSkills = skills.LearnedBy(table.ClassName, level);
+        if (skills is not null)
+        {
+            player.LearnedSkills = skills.LearnedBy(table.ClassName, level);
+            player.ClassId = skills.ClassIds.GetValueOrDefault(table.ClassName);
+        }
 
         return container;
     }

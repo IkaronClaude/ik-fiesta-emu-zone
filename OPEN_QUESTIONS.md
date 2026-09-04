@@ -201,136 +201,90 @@ file's (index, value) pairs name an index the table discards.
 ---
 
 
-## 5. The capture's character carries base stats its class row does not produce
-
-**Status:** the ARMOUR half is CLOSED (2026-09-04). What is left is smaller and different from what
-this section used to claim.
-
-### What this section said, and why it was wrong
-
-It said the rebuild's DEF 327 fell nine short of the capture's 336 because `NC_ITEM_EQUIPCHANGE_CMD`
-carries no `+N`, so an upgraded Nature piece contributed armour `ItemInfo` could not see — and pointed at
-`NC_CHAR_CLIENT_ITEM_CMD` (0x1047) as the packet that would settle it.
-
-**That is refuted.** Enhancement moves AC and MR and nothing else, and the capture's character is off the
-level-60 class row on *every* primary stat:
-
-| | Str | Con | Dex | Int | Men | AC | MaxHp |
-|---|---|---|---|---|---|---|---|
-| class row 60 | 43 | 138 | 157 | 273 | 186 | — | 1245 |
-| + the Mini Phino pet | 45 | 140 | 159 | 275 | 188 | 329 | 1255 |
-| capture, at the hits | 47 | 147 | 166 | 288 | 197 | 336 | 1290 |
-
-Armour was never the odd one out. Reading only the AC column made a whole-vector difference look like an
-equipment problem, and sent the next step after the wrong packet.
-
-### What the capture proves instead
-
-`MageDamageLvl60.pcapng`'s first `NC_CHAR_CHANGEPARAMCHANGE_CMD` after zone login, **before any equipment
-packet arrives**, reports `Str 43, Con 138, Dex 157, Int 273, Men 186, MaxHp 1245, MaxSp 1826, AC 138` —
-the level-60 Enchanter class row to the unit, and the rebuild reproduces all eight exactly. Later, wearing
-nine items worth 189 armour, it reports `Con 147, AC 336`. So:
-
-```
-AC = Con + sum(item AC)          138 = 138 + 0        336 = 147 + 189
-```
-
-Two independent points in one session, and the unequipped one is decisive: with nothing worn, reported AC
-EQUALS Constitution. **The engine's armour chain is correct, and the nine points of DEF are nine points of
-Con.** `AnUnequippedCharacterHasArmourEqualToItsConstitution` pins the login state and
-`AnOrcHitsTheCapturesCharacterAsHardAsTheCaptureSaysItDid` now asserts the identity itself rather than a
-tolerance around 336.
-
-### What is still open
-
-Why the base stats are elevated at all. The wire rules out the obvious answers:
-
-- **Not a level difference.** All five `NC_CHAR_CLIENT_BASE_CMD` blocks in the capture report level **60**.
-  (Level 65's row happens to match Str/Con/Dex exactly, which is a coincidence worth knowing about — it is
-  the trap this question is most likely to fall into next.)
-- **Not free-stat allocation.** All 93 hits at DEF 336 share one free-stat block, `Int 50 / Men 25` and
-  nothing in Str, Con or Dex — yet Str, Con and Dex all moved.
-- **Not equipment.** `ItemInfo.shn` has no Str/Con/Dex/Int/Men columns at all.
-- **Not set effects.** None of the nine items appears in `SetItemCatalog.SetOfItem`.
-- **Not passives.** All 18 learned passives are Staff/Wand mastery, Wisdom (`MaxSP`) and `PowerofLove`;
-  none carries a stat column.
-- **Not a visible buff.** `damage_buckets.py` records no self-abstate on any of the 93 hits.
-
-**The leading explanation is that it is an ADMIN character** — the capture carries
-`NC_ACT_NOTICE_CMD` "Admin level is 100", and `NC_CHAR_STAT_REMAINPOINT_CMD` reports 75 unspent points at
-login. Hand-set stats would explain it and are not derivable from any table. **This is a plausible cause,
-not a proven one, and it is recorded as such.**
-
-### The pet — found, and how it was missed
-
-The **Mini Phino pet** grants **+2 to every primary stat**, through `GradeItemOption.shn`. The wire shows
-it directly: `EQUIP slot 25 <- 30817` is followed 35 ms later by a CHANGEPARAM moving Str 43->45, Con
-138->140, Dex 157->159, Int 273->275, Men 186->188, with AC following Con (+2) and MaxHp following it by
-five (+10). `EquipmentCatalog` now joins that table and reproduces all seven exactly.
-
-**The operator supplied this from play experience after the analysis here had ruled it out.** The ruling
-was: "No Str/Con/Dex/Int/Men columns exist in `ItemInfo.shn` at all. So items cannot add base stats."
-The first sentence is true; the second does not follow. `ItemInfo.shn` has no primary-stat column for ANY
-item in the game — which is the signature of reading the wrong table, not of the answer being no.
-**An absent COLUMN is evidence about a schema; only an absent VALUE, in the right table, is evidence
-about the entity.** The same four cosmetics had already caught this project once before, dismissed as
-"cosmetics" after a check of their `MinMA` when they carry `CriRate`.
-
-Fixed structurally rather than by resolution: `ItemTableDiscovery` scans every server table for columns
-that resolve to item ids or `InxName`s — it finds **52** — and `ItemTableCoverageTests` fails the build
-unless every one is named as either modelled or, with a statement about the data, not combat-relevant.
-`EquipmentCatalog` reading `ItemInfo.shn` alone had the same blind spot as the reasoning did, so nothing
-could have caught it.
-
-### What is still open: a uniform +5% on every stat
-
-With the class row and the pet both modelled the rebuild reaches `Str 45, Con 140, Dex 159, Int 275,
-Men 188`. The capture reports `47, 147, 166, 288, 197` — each one the rebuilt value plus
-**floor(value x 5%)**:
-
-```
-Str  45 + floor( 2.25) = 47      Int  275 + floor(13.75) = 288
-Con 140 + floor( 7.00) = 147     Men  188 + floor( 9.40) = 197
-Dex 159 + floor( 7.95) = 166
-```
-
-Five exact hits from a one-parameter model, and the truncation pins it: 7.95 gives 7, not 8. **The source
-multiplies; it does not add.** DEF follows Con, so the remaining armour gap is 7 points and is entirely
-this.
-
-Ruled out, each checked rather than assumed:
-
-- **Level** — all five `NC_CHAR_CLIENT_BASE_CMD` blocks report 60. (Level 65's row matches Str/Con/Dex
-  exactly by coincidence; that is the trap this question is most likely to fall into next.)
-- **Free-stat allocation** — all 93 hits share one block, `Int 50 / Men 25`, nothing in Str/Con/Dex.
-- **Remaining equipment** — `GradeItemOption` has a row for the pet and for none of the other eight.
-- **`ChargedEffect.shn`** — the four cosmetics carry `EffectEnum 9`, which is 3,692 of 4,546 rows and
-  takes only the values 0 and 1: a costume flag. Its rate-bearing enums (13 HPIncrease, 14 SPIncrease,
-  15 DIncrease, 10-12 A/D/AD Power) are permille and single-purpose; none touches all five primaries.
-- **`MinimonInfo.shn`** — `{MinimonEquipPos, MinimonRole}` only; a pet's stats are in `GradeItemOption`.
-- **Set effects, the 18 learned passives, `StateItem.shn`, and the character title** (the client reports
-  `CurrentTitle 0, NumOfTitle 0`).
-- **The only self-abstate in the capture** — index 291, `StaImmortal`, a GM state. (Index 731,
-  `StaE_UserNewbie04`, is on handle 9280, not the player's 9282.)
-
-The character IS an admin — `NC_ACT_NOTICE_CMD` "Admin level is 100" — so a hand-applied buff remains the
-leading guess and stays a guess. `TheResidualAgainstTheCaptureIsAUniformFivePercentOnEveryStat` asserts
-the shape, so the next session inherits a signature to search for rather than a number to nudge.
-
-### A second thing this turned up
-
-`CharacterParameters.StorePure` adds free-stat points to the base stat 1:1 (`b[Stat.Int] = row.Int +
-free.Int`), ported statement for statement from `c_Storepure`. The capture reports base Int **288** with
-50 points allocated against a row of 273 — neither 273 nor 323. Either the 0x1035 builder transforms the
-value on its way out (which is exactly what the MA pair does — see the closed section below), or the
-allocation reaches the base stat by some other route. **Nothing has been changed on the strength of this**;
-the ported statement stands until something reads the builder. It matters because `Con.ACAbsoulte` is
-`ceil(n/2)` while a 1:1 base-stat add would give `n`, so the two models disagree about what a point of Con
-is worth in armour — and no capture to hand allocates Con.
-
 ---
 
 # Resolved
+
+## "Power of Love" — CLOSED 2026-09-04. A +5% all-stat passive with no row in any table.
+
+`SimAgreesWithTheCaptureTests` rebuilt `MageDamageLvl60`'s Enchanter and came out **nine points of DEF
+short** — 327 against a reported 336. This question stood open for three sessions under two successive
+wrong explanations.
+
+### Two wrong answers first
+
+**"Missing armour enhancement."** `NC_ITEM_EQUIPCHANGE_CMD` carries no `+N`, so an upgraded Nature piece
+would add AC that `ItemInfo` cannot see. Refuted: enhancement moves AC and MR and nothing else, and the
+capture's Str, Dex, Int and MentalPower are off the class row too. Reading only the AC column made a
+whole-vector difference look like an equipment problem, and aimed the next step at the wrong packet.
+
+**"Items cannot grant primary stats."** Every non-zero column of `ItemInfo.shn` was dumped for all nine
+equipped items; none carried STR/CON/DEX/INT/MEN. But `ItemInfo.shn` has no such column for ANY item —
+the signature of the wrong table, not of the answer being no. The **Mini Phino pet** grants +2 to all five
+through `GradeItemOption.shn`, and the wire shows it: `EQUIP slot 25 <- 30817` is followed 35 ms later by
+Str 43→45, Con 138→140, Dex 157→159, Int 273→275, Men 186→188, AC +2, MaxHp +10. The operator named the
+mechanic from play experience after the analysis here had ruled it out.
+
+### What the wire narrowed it to
+
+Three states in one capture, against the level-60 Enchanter class row `43 138 157 273 186`:
+
+| conversation | free stat block | Str Con Dex Int Men | |
+|---|---|---|---|
+| 9016/53156 @5540 | all zero | 43 138 157 273 186 | class row exactly, no gear — AC 138 = Con |
+| 9022/54567 @22094 | all zero | 45 140 159 275 188 | + the pet, **no 5%** |
+| 9022/58814 | Int 50 / Men 25 | 47 147 166 288 197 | + a uniform **floor(x x 1.05)** |
+
+Five exact hits from a one-parameter model, and the truncation pinned it: 159 x 1.05 = 166.95 gives 166,
+not 167. **The source multiplied; it did not add.** `c_MakeTotal` has exactly four rate layers, so it had
+to be one of them.
+
+### The answer, from the binary
+
+`ShinePlayer::so_RecalcLastParam` (**0x004CB5F0**) seeds `LastTune.Plus` with the plus eraser and
+`LastTune.Rate` with the rate eraser, then does one thing:
+
+```
+call sdb_SpecSkillStruct@PassiveDataBox   ; the ONE special skill
+movzx edx, word ptr [eax]                 ; its id
+call cpl_IsLearn@CharacterPassiveList     ; learned?
+je   skip
+mov  eax, 0x32                            ; 50
+add  [LastTune.Rate + Str], eax           ; 1000 -> 1050
+add  [LastTune.Rate + Con], eax
+add  [LastTune.Rate + Dex], eax
+add  [LastTune.Rate + Int], eax
+add  [LastTune.Rate + Men], eax
+```
+
+**The skill is named by the PDB, so nothing here is inferred:** `PassiveDataBox::SpecialSkill` is a
+two-byte struct whose single field is `ss_PowerOfLove`. The capture's character carries passive **400,
+`PowerofLove01` "Power of love"** — the only one of its eighteen that is neither a weapon mastery nor
+Wisdom.
+
+`c_MakeTotal` applies `*= LastTune.Rate` **LAST**, so it scales base, gear and pet together, and the
+truncating permille divide gives `floor(x * 1.05)`.
+
+⚠️ **The passive has no stat column in `PassiveSkill.shn`, and cannot have one** — its effect is this
+hard-coded special case. Searching the passive table for its bonus found nothing and proved nothing,
+which is the same trap as the item tables above. Ported as `CharacterParameters.RecalcLastParam`.
+
+### Everything now lands exactly
+
+| | Str | Con | Dex | Int | Men | AC | MaxHp |
+|---|---|---|---|---|---|---|---|
+| rebuilt (pet + Power of Love) | 47 | 147 | 166 | 288 | 197 | **336** | **1290** |
+| capture | 47 | 147 | 166 | 288 | 197 | **336** | **1290** |
+
+The Orc band moves from 297..371 to **289..361** against an observed 290..358, so the observations now sit
+INSIDE the predicted band rather than straddling its floor.
+
+**MaxSp closes too**, and is worth recording because it is three separate terms: rebuilt 1881, plus 360
+from `WisdomMastery06`'s `MaxSP` column, plus 125 from 25 MentalPower free-stat points at
+`Men.MaxSP = 5n`, = **2366**, the capture's figure exactly. Neither the passive `MaxSP` term nor the
+free-stat `MaxSP` term is ported yet; both are known and neither touches damage.
+
+
 
 ## `MageDamageLvl60`'s magical residual — CLOSED 2026-09-03. The wire's MA pair is not the accessor's output.
 

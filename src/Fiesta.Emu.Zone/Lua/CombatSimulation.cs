@@ -336,6 +336,25 @@ public sealed class CombatSimulation
     /// <summary>How many casts have landed this run.</summary>
     public int Casts { get; private set; }
 
+    /// <summary>Damage observed per skill — the total and the number of landed hits.
+    ///
+    /// <para>⭐ THE DRIVER RANKS ITS ROTATION ON THIS, and it is a genuine feedback loop rather than a
+    /// lookup: `level_quest.lua` sorts under-sampled skills FIRST so every rank gets its turn, then
+    /// prefers the best measured damage-per-second. Stubbed, `measuredDps` returned nil for every skill
+    /// and the rotation fell back to the static table forever — the bot could never learn that a skill
+    /// its data rates highly performs badly against a particular mob.</para></summary>
+    private readonly Dictionary<int, (long Total, int Count)> _skillDamage = [];
+
+    /// <summary>Mean damage a skill has actually dealt. <b>-1 when nothing has landed yet</b>, matching
+    /// the live accessor — and the driver reads it that way, treating an unmeasured skill as unknown
+    /// rather than as zero damage.</summary>
+    public double SkillDamageAvg(int skillId)
+        => _skillDamage.TryGetValue(skillId, out var d) && d.Count > 0 ? (double)d.Total / d.Count : -1;
+
+    /// <summary>How many landed hits have been sampled for this skill. 0 is a real answer here.</summary>
+    public int SkillDamageSamples(int skillId)
+        => _skillDamage.TryGetValue(skillId, out var d) ? d.Count : 0;
+
     /// <summary>Start a cast. SP is spent NOW and the damage lands when the cast bar finishes — which is
     /// what makes a cast interruptible, and what makes cast time cost anything.</summary>
     public CastRefusal Cast(int skillId, ushort target)
@@ -402,6 +421,10 @@ public sealed class CombatSimulation
 
         var damage = SkillDamage(skill, m);
         if (damage <= 0) return;
+
+        var seen = _skillDamage.GetValueOrDefault(skill.Id);
+        _skillDamage[skill.Id] = (seen.Total + damage, seen.Count + 1);
+
         LandOnMob(m, damage);
     }
 
@@ -454,6 +477,12 @@ public sealed class CombatSimulation
             target.Arg.Target = null;
             Kills++;
             _killsByName[target.Name] = _killsByName.GetValueOrDefault(target.Name) + 1;
+
+            // ⭐ EXPERIENCE IS THE LEVELLING BOT'S ENTIRE SCOREBOARD, and `MonEXP` was already loaded
+            // and never read. Without it `bot.exp()` is a stub, and a driver whose whole job is to gain
+            // experience cannot tell a good grind from a bad one -- which makes the search in stage 5 of
+            // docs/BOT_SIM_INTEGRATION.md score nothing.
+            if (target.Definition is { } def) Player.Experience += def.Server.MonExp;
             Log.Add($"[{Now,6}] {Describe(target)} died (respawn at {target.RespawnAt})");
         }
     }

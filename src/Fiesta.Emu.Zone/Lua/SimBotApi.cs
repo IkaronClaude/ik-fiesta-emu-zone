@@ -124,6 +124,31 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
     /// <summary>Per skill id, the clock at which it comes off cooldown.</summary>
     public Dictionary<int, uint> SkillReadyAt { get; } = [];
 
+    // ---- inventory and purse -------------------------------------------------------------------------
+    //
+    // Deliberately thin. The simulation has no loot, no shops and no drops, so a character genuinely
+    // carries nothing and its bag is genuinely empty — that is a FACT about this world, not a stand-in,
+    // and it is why these can be answered rather than stubbed. What is NOT modelled is the economy that
+    // would change them, which is why `money` starts at 0 and stays there.
+
+    /// <summary>Cen carried. <b>0 is a real value</b>, not "unknown" — a character in a simulation with no
+    /// economy has no money, and the driver is entitled to that answer.</summary>
+    public int Money { get; set; }
+
+    /// <summary>Bag capacity. The live default for a character with no expansions.</summary>
+    public int BagSlots { get; set; } = 24;
+
+    /// <summary>Slots in use. Nothing fills them yet; a loot model would.</summary>
+    public int BagUsed { get; set; }
+
+    /// <summary>Accumulated experience, awarded per kill from the mob's own `MonEXP`.</summary>
+    public long Experience { get; set; }
+
+    /// <summary>`ClassID` for the class this character was built as, or 0 when it was not built from a
+    /// class table. 0 means "unknown", which is what the live call reports before the avatar list has
+    /// arrived.</summary>
+    public int ClassId { get; set; }
+
     // ---- HP soul stones ------------------------------------------------------------------------------
     //
     // ⚠️ Until this existed, survival could not be evaluated AT ALL: the integration fixture had to hand
@@ -336,7 +361,39 @@ public sealed class SimBotApi
 
     /// <summary>`bot.attack` — swing at a mob. Returns false when out of range or the mob is gone, which
     /// is what the real API does rather than throwing.</summary>
-    public bool attack(int handle)
+    /// <summary>⭐ `bot.attack(skill, target)` — <b>a SKILL CAST, not a swing.</b>
+    ///
+    /// <para>⚠️ This is the third semantic mismatch of the same family, and the most expensive. The sim
+    /// had <c>attack(int handle)</c>: one melee swing at a mob. The live API is
+    /// <c>attack(int skill, int target = 0)</c> and `BotManager.AttackAsync` does nothing but fill in the
+    /// nearest mob when target is 0 and <b>delegate to `CastAsync`</b>. `level_quest.lua:2076` casts every
+    /// one of its damage skills through it — <c>bot.attack(id, castTarget)</c>, where <c>id</c> is a SKILL
+    /// id.</para>
+    ///
+    /// <para>So the driver was handing a skill id to a function that looked it up as a mob handle, finding
+    /// no such mob, and getting false. 931 times in a 400-second run, with <b>zero casts</b> — a level-60
+    /// Warrior reduced to bare melee while its whole rotation was silently discarded. An arity that
+    /// happens to accept the call is worse than one that throws.</para></summary>
+    public bool attack(int skill, int target = 0)
+    {
+        if (target == 0)
+        {
+            // `AttackAsync` fills in the nearest mob when the caller passes none.
+            var nearest = _sim.Mobs.Where(m => m.Mob.IsAlive)
+                .OrderBy(m => MobTargetSelector.SquaredDistance(_sim.Player, m.Mob))
+                .FirstOrDefault();
+            if (nearest is null) return false;
+            target = nearest.Mob.Handle;
+        }
+        return cast(skill, target);
+    }
+
+    /// <summary>One melee swing at a handle — the simulation's own primitive, with no live counterpart.
+    ///
+    /// <para>It was called `attack`, which collided with the live `attack(skill, target)`. Renamed rather
+    /// than deleted because the sim's own scenario scripts use it to drive a plain fight without a
+    /// rotation; <see cref="autoAttack"/> is what a real driver uses.</para></summary>
+    public bool swing(int handle)
     {
         var m = _sim.Find((ushort)handle);
         if (m is null || !m.Mob.IsAlive) return false;
@@ -403,6 +460,63 @@ public sealed class SimBotApi
         if (p.SpStones == 0) p.SpStoneDepleted = true;
         return true;
     }
+
+    /// <summary>`bot.skillDamageAvg` — mean damage this skill has been SEEN to deal, -1 when unmeasured.</summary>
+    public double skillDamageAvg(int id) => _sim.SkillDamageAvg(id);
+
+    /// <summary>`bot.skillDamageSamples` — landed hits sampled for this skill.</summary>
+    public int skillDamageSamples(int id) => _sim.SkillDamageSamples(id);
+
+    // ---- inventory ------------------------------------------------------------------------------------
+
+    public double exp() => _sim.Player.Experience;
+    public int classId() => _sim.Player.ClassId;
+
+    /// <summary>`bot.freeStatPoints` — unspent stat points. 0: the simulation does not level, so none are
+    /// ever awarded.</summary>
+    public int freeStatPoints() => 0;
+
+    /// <summary>`bot.announce` — the driver's own status line. Routed into the simulation log so a run can
+    /// be read back, which is the whole point of the call.</summary>
+    public void announce(string text) => _sim.Log.Add($"[{_sim.Now,6}] [announce] {text}");
+
+    // ---- other players -------------------------------------------------------------------------------
+    //
+    // There are none. A single-character simulation has no party to be invited to and no friends to
+    // accept, so these are answers rather than stubs -- and `false` here is exactly what a real bot
+    // alone in a field would see.
+
+    public bool pendingInvite() => false;
+    public bool partyAccept() => false;
+    public bool pendingFriend() => false;
+    public bool friendAccept() => false;
+
+    /// <summary>`bot.npcSeedCount` — how many NPCs the bot has learned. 0, honestly: the spawner places
+    /// FIGHTABLE mobs only, so there is no NPC in the world to have seen. A quest hand-in cannot be
+    /// exercised here, and that is a known limit rather than a hidden one.</summary>
+    public int npcSeedCount() => 0;
+
+    public int money() => _sim.Player.Money;
+    public int bagFreeSlots() => Math.Max(0, _sim.Player.BagSlots - _sim.Player.BagUsed);
+    public bool bagFull() => _sim.Player.BagUsed >= _sim.Player.BagSlots;
+
+    /// <summary>`bot.inventory` — what the character is carrying. Empty, and honestly so: this simulation
+    /// has no loot and no shops, so nothing can have got into the bag.
+    ///
+    /// <para>⚠️ An empty table is a real answer here and a DANGEROUS one to copy elsewhere. A full bag
+    /// halts the entire quest loop live (hand-ins refuse, the board empties, exp goes to zero), so a
+    /// simulation that can never fill its bag cannot exercise that failure at all. Recorded rather than
+    /// papered over.</para></summary>
+    public Table inventory() => new(_sim.Script);
+
+    /// <summary>`bot.equipment` — worn items. Empty for the same reason: the scenario equips a character
+    /// through <c>Become</c>, which takes `EquipmentPiece`s rather than item ids, so there are no ids to
+    /// report back.</summary>
+    public Table equipment() => new(_sim.Script);
+
+    /// <summary>`bot.traveling` — is a cross-map journey under way. Always false: the simulation is one
+    /// map, with no gates and no map transitions, so nothing can be travelling.</summary>
+    public bool traveling() => false;
 
     public int spStones() => _sim.Player.SpStones;
     public int maxSpStones() => _sim.Player.MaxSpStones;

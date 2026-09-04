@@ -244,16 +244,66 @@ public static class CharacterParameters
     }
 
     /// <summary>Build a whole character: class table, level, spent points and worn gear.</summary>
+    /// <summary>⭐ `ShinePlayer::so_RecalcLastParam` (0x004CB5F0) — the LastTune layer, and the answer to a
+    /// nine-point armour gap that stood open for three sessions.
+    ///
+    /// <para>It seeds `LastTune.Plus` with the plus eraser and `LastTune.Rate` with the rate eraser, then
+    /// does exactly one thing:</para>
+    ///
+    /// <code>
+    /// call sdb_SpecSkillStruct@PassiveDataBox   ; the ONE special skill
+    /// movzx edx, word ptr [eax]                 ; its id
+    /// call cpl_IsLearn@CharacterPassiveList     ; learned?
+    /// je   skip
+    /// mov  eax, 0x32                            ; 50
+    /// add  [LastTune.Rate + Str], eax           ; 1000 -> 1050
+    /// add  [LastTune.Rate + Con], eax
+    /// add  [LastTune.Rate + Dex], eax
+    /// add  [LastTune.Rate + Int], eax
+    /// add  [LastTune.Rate + Men], eax
+    /// </code>
+    ///
+    /// <para><b>The special skill is named in the PDB, so this is not an inference:</b>
+    /// <c>PassiveDataBox::SpecialSkill</c> is a two-byte struct with exactly one field,
+    /// <c>ss_PowerOfLove</c>. "Power of Love" grants <b>+5% to all five primaries</b>, and nothing
+    /// else in the game writes this layer.</para>
+    ///
+    /// <para>⚠️ <c>c_MakeTotal</c> applies <c>*= LastTune.Rate</c> <b>LAST</b>, so it multiplies the base,
+    /// the gear and the pet together — and the truncating permille divide is why the result is
+    /// <c>floor(x * 1.05)</c> rather than a rounded value. `MageDamageLvl60`'s character shows it on all
+    /// five at once: 45→47, 140→147, 159→166 (166.95 truncates to 166, not 167), 275→288, 188→197. Its
+    /// DEF followed Con, which is the whole of the armour discrepancy.</para>
+    ///
+    /// <para>The passive carries NO stat columns in `PassiveSkill.shn` — it cannot, because its effect is
+    /// this hard-coded special case. Looking for its bonus in the table finds nothing and proves nothing;
+    /// see the item-table coverage note for the same trap.</para></summary>
+    public const int PowerOfLoveRateBonus = 50;
+
+    /// <summary>The five slots `so_RecalcLastParam` touches, in its order.</summary>
+    private static readonly Stat[] PowerOfLoveSlots =
+        [Stat.Str, Stat.Con, Stat.Dex, Stat.Int, Stat.Men];
+
+    /// <summary>Apply the LastTune layer. <paramref name="hasPowerOfLove"/> is
+    /// <c>cpl_IsLearn(ss_PowerOfLove)</c>.</summary>
+    public static void RecalcLastParam(ParameterContainer container, bool hasPowerOfLove)
+    {
+        if (!hasPowerOfLove) return;
+        var rate = container.Rate(StatModifier.LastTune);
+        foreach (var slot in PowerOfLoveSlots) rate[slot] += PowerOfLoveRateBonus;
+    }
+
     public static ParameterContainer Build(
         ClassParamTable table,
         int level,
         FreeStats? freeStats = null,
-        IEnumerable<EquipmentPiece>? equipment = null)
+        IEnumerable<EquipmentPiece>? equipment = null,
+        bool hasPowerOfLove = false)
     {
         var container = new ParameterContainer();
         StorePure(container, table, level, freeStats);
         foreach (var piece in equipment ?? [])
             Equip(container, piece);
+        RecalcLastParam(container, hasPowerOfLove);
         return container;
     }
 }

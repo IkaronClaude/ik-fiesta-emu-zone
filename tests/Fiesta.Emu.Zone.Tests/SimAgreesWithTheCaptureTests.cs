@@ -98,7 +98,7 @@ public class SimAgreesWithTheCaptureTests(ITestOutputHelper output)
         // `Men.MaxSP`), which is where the magical-damage fix already adds them; passing them here as well
         // would double-count into the base cluster and move armour by a number the wire does not show.
         var player = new CombatSimulation().Player;
-        player.Become(enchanter, level: 60, equipment: Equipment(shine!));
+        player.Become(enchanter, level: 60, equipment: Equipment(shine!), hasPowerOfLove: true);
 
         var orc = MobCombatant.Build(box, "Orc")!;
         var gaps = LevelGapTable.Load(shine!);
@@ -130,10 +130,12 @@ public class SimAgreesWithTheCaptureTests(ITestOutputHelper output)
         // And the residual against the capture is ENTIRELY the Constitution difference: the capture's
         // character carries Con 147 where the level-60 class row gives 138. Nine points of Con, nine
         // points of DEF. Restating it as an equation keeps the two halves from drifting apart.
+        // ⭐ AND IT IS NOW EXACT. Nine points of DEF were nine points of Con, and the Con came from
+        // "Power of Love" -- see CharacterParameters.RecalcLastParam.
         const int captureCon = 147, captureDef = 336;
-        (captureDef - (int)DamageCalculator.ArmourClass(player)).ShouldBe(captureCon - con,
-            "the whole DEF residual should be the Con residual; if these ever differ, something OTHER than "
-            + "the base stats has changed and the armour chain needs re-deriving");
+        con.ShouldBe(captureCon, "the rebuilt Constitution should equal the capture's exactly");
+        DamageCalculator.ArmourClass(player).ShouldBe(captureDef, 0.5,
+            "the rebuilt armour should equal the capture's reported DEF exactly");
 
         hi.ShouldBeGreaterThanOrEqualTo(observedHi,
             "the engine's ceiling must cover the hardest hit observed");
@@ -185,46 +187,40 @@ public class SimAgreesWithTheCaptureTests(ITestOutputHelper output)
             "with no equipment the capture's reported AC equalled its Constitution exactly");
     }
 
-    /// <summary>⭐ WHAT IS LEFT OF THE GAP IS A UNIFORM <b>+5% ON EVERY PRIMARY STAT</b>, and naming its
-    /// shape is the whole value of this test.
+    /// <summary>⭐⭐ <b>"POWER OF LOVE" — +5% TO EVERY PRIMARY STAT, AND THE LAST OF THE GAP.</b>
     ///
-    /// <para>Two things were found and fixed before this residual came into focus. The class row
-    /// reproduces the login state exactly, and the <b>Mini Phino pet</b> grants +2 to all five stats
-    /// through `GradeItemOption.shn` — the operator named that mechanic, and the wire shows the equip
-    /// packet followed 35 ms later by exactly those five increments. With both modelled the rebuild
-    /// reaches <c>Str 45, Con 140, Dex 159, Int 275, Men 188</c>.</para>
+    /// <para>This test used to assert an unexplained uniform 5% and hand the next session a signature to
+    /// search for. The search is done, in the binary. `ShinePlayer::so_RecalcLastParam` (0x004CB5F0)
+    /// seeds `LastTune.Plus` with zeros and `LastTune.Rate` with 1000s, then does exactly one thing:</para>
     ///
-    /// <para>The capture reports <c>47, 147, 166, 288, 197</c>. Every one of those is the rebuilt value
-    /// plus <b>floor(value × 5%)</b>:</para>
     /// <code>
-    /// Str  45 + floor(2.25)  = 47      Int  275 + floor(13.75) = 288
-    /// Con 140 + floor(7.00)  = 147     Men  188 + floor( 9.40) = 197
-    /// Dex 159 + floor(7.95)  = 166
+    /// call sdb_SpecSkillStruct@PassiveDataBox   ; the ONE special skill
+    /// call cpl_IsLearn@CharacterPassiveList     ; learned?
+    /// mov  eax, 0x32                            ; 50
+    /// add  [LastTune.Rate + Str/Con/Dex/Int/Men], eax
     /// </code>
     ///
-    /// <para>Five exact hits from a one-parameter model, and the truncation is what pins it: 7.95 gives 7,
-    /// not 8. <b>Whatever the source is, it multiplies — it does not add.</b></para>
+    /// <para><b>The skill is named by the PDB, so nothing here is inferred:</b>
+    /// <c>PassiveDataBox::SpecialSkill</c> is a two-byte struct whose single field is
+    /// <c>ss_PowerOfLove</c>. The capture's character has passive <b>400, `PowerofLove01`</b> — the only
+    /// one of its eighteen that is neither a weapon mastery nor Wisdom, and the only one with no stat
+    /// column of its own. It cannot have one: its effect is this hard-coded special case, which is why
+    /// searching `PassiveSkill.shn` for it found nothing and proved nothing.</para>
     ///
-    /// <para>The source is not identified. Ruled out from the wire and the tables, each checked rather
-    /// than assumed: the level (all five `NC_CHAR_CLIENT_BASE_CMD` blocks say 60), free-stat allocation
-    /// (all 93 hits share one block, Int 50 / Men 25, nothing in Str/Con/Dex), the remaining equipment
-    /// (`GradeItemOption` has rows for the pet alone), set effects, the 18 learned passives, the character
-    /// title (`NC_CHAR_CLIENT_CHARTITLE_CMD` reports none), `BT_Inx` (it indexes `BelongTypeInfo` —
-    /// binding flags), and the only self-abstate in the capture (index 291, `StaImmortal`, a GM state).
-    /// The character IS an admin, so a hand-applied buff is the leading guess and stays a guess.</para>
-    ///
-    /// <para>This test asserts the SHAPE, so the next session inherits a signature to search for rather
-    /// than a number to nudge.</para></summary>
+    /// <para>`c_MakeTotal` applies <c>*= LastTune.Rate</c> LAST, so it scales base, gear and pet together,
+    /// and the truncating permille divide is why Dex lands on 166 rather than 167 (159 x 1.05 = 166.95).</para></summary>
     [SkippableFact]
-    public void TheResidualAgainstTheCaptureIsAUniformFivePercentOnEveryStat()
+    public void PowerOfLoveExplainsTheWholeRemainingResidual()
     {
         var shine = Shine();
         Skip.If(shine is null, "server data not present; set SHINE_DATA");
 
         var enchanter = ClassParamTable.Load(Path.Combine(shine!, "World", "ParamEnchanterServer.txt"));
-        var player = new CombatSimulation().Player;
-        player.Become(enchanter, level: 60, equipment: Equipment(shine!));
-        var built = player.EffectiveStats();
+
+        var without = new CombatSimulation().Player;
+        without.Become(enchanter, level: 60, equipment: Equipment(shine!));
+        var with = new CombatSimulation().Player;
+        with.Become(enchanter, level: 60, equipment: Equipment(shine!), hasPowerOfLove: true);
 
         // The capture's own figures, from the CHANGEPARAM block covering all 93 damaging hits.
         var captured = new Dictionary<Stat, int>
@@ -232,15 +228,24 @@ public class SimAgreesWithTheCaptureTests(ITestOutputHelper output)
             [Stat.Str] = 47, [Stat.Con] = 147, [Stat.Dex] = 166, [Stat.Int] = 288, [Stat.Men] = 197,
         };
 
+        var bare = without.EffectiveStats();
+        var loved = with.EffectiveStats();
         foreach (var (stat, capture) in captured)
         {
-            var mine = built[stat];
-            var withFivePercent = mine + (int)(mine * 5 / 100.0);
-            output.WriteLine($"{stat,-4} rebuilt {mine,4}  +5% -> {withFivePercent,4}  capture {capture,4}");
-            withFivePercent.ShouldBe(capture,
-                $"{stat} should be the rebuilt value plus a truncated 5%; if this breaks, either the "
-                + "residual is not 5% after all or something in the base chain has moved");
+            output.WriteLine($"{stat,-4} without {bare[stat],4}  with {loved[stat],4}  capture {capture,4}");
+            loved[stat].ShouldBe(capture, $"{stat} should match the capture exactly once Power of Love applies");
+
+            // ...and the difference is exactly the +5% rate, applied to the un-loved value.
+            (bare[stat] + bare[stat] * CharacterParameters.PowerOfLoveRateBonus / 1000).ShouldBe(capture,
+                $"without Power of Love the rebuild is {bare[stat]}, and a truncated +5% on that should be "
+                + $"the capture's {capture}");
         }
+
+        // ...and it is a TRUNCATED multiply, not a rounded one: 159 * 1.05 = 166.95 -> 166.
+        loved[Stat.Dex].ShouldBe(166);
+        ((int)(bare[Stat.Dex] * 1.05)).ShouldBe(166, "truncation, not rounding");
+
+        with.MaxHp.ShouldBe(1290, "MaxHp follows Con, so it lands exactly too");
     }
 
     /// <summary>⚠️ THE FIXTURE, NOT THE ENGINE. The same Orc against the integration test's invented

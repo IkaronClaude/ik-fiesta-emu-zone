@@ -356,6 +356,23 @@ public sealed class LevelingBotHarness
         ["casting"] = _ => DynValue.NewBoolean(_api.casting()),
         ["skillReadyInMs"] = a => DynValue.NewNumber(_api.skillReadyInMs((int)a[0].Number)),
         ["skillCooldowns"] = _ => DynValue.NewTable(_api.skillCooldowns()),
+        ["skillDamageAvg"] = a => DynValue.NewNumber(_api.skillDamageAvg((int)a[0].Number)),
+        ["skillDamageSamples"] = a => DynValue.NewNumber(_api.skillDamageSamples((int)a[0].Number)),
+        ["money"] = _ => DynValue.NewNumber(_api.money()),
+        ["bagFreeSlots"] = _ => DynValue.NewNumber(_api.bagFreeSlots()),
+        ["bagFull"] = _ => DynValue.NewBoolean(_api.bagFull()),
+        ["inventory"] = _ => DynValue.NewTable(_api.inventory()),
+        ["equipment"] = _ => DynValue.NewTable(_api.equipment()),
+        ["traveling"] = _ => DynValue.NewBoolean(_api.traveling()),
+        ["exp"] = _ => DynValue.NewNumber(_api.exp()),
+        ["classId"] = _ => DynValue.NewNumber(_api.classId()),
+        ["freeStatPoints"] = _ => DynValue.NewNumber(_api.freeStatPoints()),
+        ["announce"] = a => { _api.announce(a[0].CastToString() ?? ""); return DynValue.Nil; },
+        ["pendingInvite"] = _ => DynValue.NewBoolean(_api.pendingInvite()),
+        ["partyAccept"] = _ => DynValue.NewBoolean(_api.partyAccept()),
+        ["pendingFriend"] = _ => DynValue.NewBoolean(_api.pendingFriend()),
+        ["friendAccept"] = _ => DynValue.NewBoolean(_api.friendAccept()),
+        ["npcSeedCount"] = _ => DynValue.NewNumber(_api.npcSeedCount()),
         ["recentDamage"] = a => DynValue.NewNumber(_api.recentDamage(a.Count > 0 ? (int)a[0].Number : 5000)),
         ["activeQuests"] = _ =>
         {
@@ -429,7 +446,11 @@ public sealed class LevelingBotHarness
             _api.walkTo((int)a[0].Number, (int)a[1].Number);
             return DynValue.True;
         },
-        ["attack"] = a => DynValue.NewBoolean(_api.attack((int)a[0].Number)),
+        // ⚠️ `attack` is the LIVE signature -- (skill, target), a cast. `swing` is the sim's own
+        // one-shot melee primitive. See SimBotApi.attack for what conflating them cost.
+        ["attack"] = a => DynValue.NewBoolean(_api.attack(
+            (int)a[0].Number, a.Count > 1 ? (int)a[1].Number : 0)),
+        ["swing"] = a => DynValue.NewBoolean(_api.swing((int)a[0].Number)),
         // ⚠️ A MODE, NOT ONE SWING. `bot.autoAttack(h)` live sends BASHSTART and the server then streams
         // swings until the target dies; mapping it to a single `attack()` meant the driver hit a mob once
         // and stood there. See SimPlayer.AutoAttackTarget.

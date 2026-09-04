@@ -76,7 +76,7 @@ public class TickControlTests
                 function on_tick()
                   local m = bot.nearbyMobs()
                   if #m == 0 then return end
-                  if not bot.attack(m[1].handle) then bot.walkTo(m[1].x, m[1].y) end
+                  if not bot.swing(m[1].handle) then bot.walkTo(m[1].x, m[1].y) end
                 end
                 """);
             return sim;
@@ -107,7 +107,7 @@ public class TickControlTests
         sim.LoadScript("""
             function on_tick()
               local m = bot.nearbyMobs()
-              if #m > 0 then bot.attack(m[1].handle) end
+              if #m > 0 then bot.swing(m[1].handle) end
             end
             """);
 

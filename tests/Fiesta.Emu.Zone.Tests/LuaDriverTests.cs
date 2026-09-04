@@ -18,7 +18,7 @@ public class LuaDriverTests
           for i = 1, #mobs do
             if mobs[i].dist < bestDist then best, bestDist = mobs[i], mobs[i].dist end
           end
-          if not bot.attack(best.handle) then
+          if not bot.swing(best.handle) then
             bot.walkTo(best.x, best.y)
           end
         end

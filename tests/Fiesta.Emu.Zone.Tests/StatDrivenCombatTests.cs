@@ -110,7 +110,7 @@ public class StatDrivenCombatTests
             sim.LoadScript("""
                 function on_tick()
                   local m = bot.nearbyMobs()
-                  if #m > 0 then bot.attack(m[1].handle) end
+                  if #m > 0 then bot.swing(m[1].handle) end
                 end
                 """);
             sim.RunUntil(s => s.Kills > 0, maxTicks: 100_000);
@@ -146,7 +146,7 @@ public class StatDrivenCombatTests
             sim.LoadScript("""
                 function on_tick()
                   local m = bot.nearbyMobs()
-                  if #m > 0 then bot.attack(m[1].handle) end
+                  if #m > 0 then bot.swing(m[1].handle) end
                 end
                 """);
             sim.Run(maxTicks: 400);

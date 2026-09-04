@@ -31,9 +31,9 @@ public class LevelingBotHarnessTests
         const string src = """
             function tick()
               local m = bot.nearbyMobs()
-              local inv = bot.inventory()
+              local q = bot.availableQuests()           -- still unbacked: the sim spawns no quest NPCs
               local healthy = bot.hpPct() > 10          -- evaluated first: `#m > 0 and ...` short-circuits
-              if healthy and #m > 0 then bot.attack(m[1].handle) end
+              if healthy and #m > 0 then bot.swing(m[1].handle) end
               log("tick " .. tostring(bot.level()))
             end
             """;
@@ -45,7 +45,10 @@ public class LevelingBotHarnessTests
         h.RealCalled.ShouldContain("nearbyMobs");
         h.RealCalled.ShouldContain("hpPct");
         h.RealCalled.ShouldContain("level");
-        h.StubsCalled.ShouldContain("inventory");
+        // ⚠️ This names a call the simulation genuinely does NOT back, and it has to be kept honest: it
+        // used to name `inventory`, which is now real, and the test failed for the right reason. Pick a
+        // replacement that is still missing rather than weakening the assertion.
+        h.StubsCalled.ShouldContain("availableQuests");
         h.Output.ShouldNotBeEmpty("the host-provided log globals must exist");
     }
 
