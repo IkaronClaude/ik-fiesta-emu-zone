@@ -65,7 +65,7 @@ public static class ScenarioRunner
     public static ScenarioResult? Run(
         string shineDirectory, string ressystemDirectory, string driverSource,
         string className, int level, bool dungeon,
-        int ticks = DefaultTicks, uint seed = 42)
+        int ticks = DefaultTicks, uint seed = 42, bool withWalls = false)
     {
         var band = ScenarioCatalog.For(level);
         if (band is null) return null;
@@ -88,6 +88,20 @@ public static class ScenarioRunner
         };
 
         var map = MobRegenData.Load(Path.Combine(shineDirectory, "MobRegen", $"{area.Map}.txt"));
+
+        // ⚠️ WALLS ARE OPT-IN UNTIL THE SIMULATION CAN PATH AROUND THEM.
+        //
+        // The grid itself is sound -- from Burning Hill's grind spot all 16 directions are fully reachable
+        // at 300 units and the immediate neighbourhood is 169/169 walkable. The problem is `walkTo`: here
+        // it is a straight line, while the LIVE `bot.walkTo` goes through the bot's own pathfinder
+        // (`CoarsePathFinder` / `NavMeshPath`), which routes around geometry. Turning walls on without
+        // that makes the simulation punish the driver for a harness gap -- measured, a level-25 Warrior on
+        // Burning Hill fell from 19 kills to 1, having wandered into terrain it could not path out of.
+        //
+        // So the matrix runs on open ground by default, exactly as it did before, and the wall-aware mode
+        // is available for kite diagnosis. See the P1 ticket.
+        if (withWalls)
+            sim.Walkable = WalkabilityGrid.Load(Path.Combine(shineDirectory, "BlockInfo"), area.Map);
 
         // ⭐ Normal population only. The operator's rule for the matrix: a dungeon's five or six repeated
         // bosses are a party's problem, and sending a solo character at them measures dying, not grinding.

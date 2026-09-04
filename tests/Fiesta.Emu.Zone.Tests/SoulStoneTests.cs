@@ -93,6 +93,59 @@ public class SoulStoneTests
         sim.Api.sustainableHealDps().ShouldBe(50, 0.001);   // 300 hp / 6 s
     }
 
+    /// <summary>⭐ SEVEN SECONDS, FROM THE BINARY. `ShinePlayer::sp_HPStoneUse` (0x00589180) does
+    /// <c>add eax, 0x46</c> — 70 — onto the clockwatch counter at `[0x14D41A70]`, which counts TENTHS of a
+    /// second (docs/TICKRATE.md). `sp_SPStoneUse` is the same function shape with the same constants.
+    ///
+    /// <para>⚠️ It was 5,000 ms, invented, with a doc line that admitted the value had never been read.
+    /// That is a 40% overstatement of sustained healing — 91 dps against the true 65 — which is exactly the
+    /// margin that decides whether a fight can be won standing still, and it made a driver that never
+    /// kites look closer to viable than it is.</para></summary>
+    [Fact]
+    public void TheCooldownIsSevenSecondsBecauseTheBinarySaysSeventyTenths()
+    {
+        var sim = Stocked();
+
+        sim.Player.HpStoneCooldownMs.ShouldBe(7000u);
+        sim.Player.SpStoneCooldownMs.ShouldBe(7000u);
+        sim.Player.StoneQueueWindowMs.ShouldBe(5000u);
+    }
+
+    /// <summary>⭐ THE QUEUE WINDOW — a press between 5 and 7 seconds is ACCEPTED and fires when the
+    /// cooldown expires; before 5 seconds it is refused.
+    ///
+    /// <para>`sp_NC_SOULSTONE_HP_USE_REQ` reads both timestamps: <c>[+0x173B4] &lt;= now</c> uses it,
+    /// <c>[+0x173B8] &gt; now</c> rejects, and anything between parks a deferred action at
+    /// <c>[+0x173BC]</c>. Modelling one cooldown would have missed this entirely — and it matters, because
+    /// a bot may pre-press and get its charge at the earliest legal instant.</para></summary>
+    [Fact]
+    public void APressInsideTheQueueWindowIsAcceptedAndFiresLater()
+    {
+        var sim = Stocked(restore: 300);
+        sim.Player.Hp = 100;
+        sim.Api.soulstoneHp().ShouldBeTrue();
+        var afterFirst = sim.Player.Hp;
+        sim.Player.HpStones.ShouldBe(9);
+
+        // Too early: refused outright, nothing queued.
+        while (sim.Now < 4000) sim.Tick();
+        sim.Api.soulstoneHp().ShouldBeFalse("inside the first 5 seconds the server rejects the request");
+        sim.Player.HpStoneUseQueued.ShouldBeFalse();
+
+        // Inside the window: accepted, but nothing has happened yet.
+        while (sim.Now < 5500) sim.Tick();
+        sim.Api.soulstoneHp().ShouldBeTrue("between 5 and 7 seconds the press is queued");
+        sim.Player.HpStoneUseQueued.ShouldBeTrue();
+        sim.Player.Hp.ShouldBe(afterFirst, "queued is not yet spent");
+        sim.Player.HpStones.ShouldBe(9);
+
+        // ...and it fires by itself the moment the cooldown expires.
+        while (sim.Now < 7500) sim.Tick();
+        sim.Player.HpStoneUseQueued.ShouldBeFalse();
+        sim.Player.HpStones.ShouldBe(8);
+        sim.Player.Hp.ShouldBeGreaterThan(afterFirst);
+    }
+
     /// <summary>...and an empty reserve is also -1 rather than 0: "I have no healing" and "I have not
     /// learned my healing" are different states, and only the second may stop the driver judging.</summary>
     [Fact]
@@ -106,15 +159,17 @@ public class SoulStoneTests
     /// <summary>⭐ THE POINT OF ALL OF IT: with stones modelled, a character can be given its REAL maximum
     /// HP and the question "does it survive" becomes answerable.
     ///
-    /// <para>Ten charges of 300 against 1,000 max HP is 3,000 HP of healing on a 5-second cooldown — a
-    /// sustained 60 dps, which is what `outmatched()` needs on the other side of `incomingDps` before it
-    /// can decide anything at all.</para></summary>
+    /// <para>Ten charges of 300 against 1,000 max HP is 3,000 HP of healing on the server's 7-second
+    /// cooldown — a sustained 43 dps, which is what `outmatched()` needs on the other side of
+    /// `incomingDps` before it can decide anything at all.</para></summary>
     [Fact]
     public void AStockedCharacterHasARealHealDpsToWeighAgainstIncomingDamage()
     {
         var sim = Stocked();
 
-        sim.Api.sustainableHealDps().ShouldBe(60, 0.001);
+        // 300 HP per 7-SECOND cooldown. This read 60 while the cooldown was the invented 5,000 ms -- the
+        // wrong constant had been baked into an expectation, which is how an invented number survives.
+        sim.Api.sustainableHealDps().ShouldBe(300 / 7.0, 0.01);
         sim.Api.incomingDps(5000).ShouldBe(-1, "nothing has hit us yet, and that is not zero damage");
     }
 

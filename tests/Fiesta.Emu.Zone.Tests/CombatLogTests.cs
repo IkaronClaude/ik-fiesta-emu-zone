@@ -46,7 +46,7 @@ public class CombatLogTests
     public void NotWalkingIsNotAKiteIntoACrowd()
     {
         var standing = new CombatLogEntry(0, "m", 1, 10, 900, 1000, 0, 5, false, false, true, 1,
-                                          5, 0, 5, 0, MobsNearby: 3, MobsNearWalkTarget: -1, []);
+                                          5, 0, 5, 0, MobsNearby: 3, MobsNearWalkTarget: -1, WalkTargetReachableFraction: 1.0, []);
         standing.KitingIntoACrowd.ShouldBeFalse();
         standing.Format().ShouldContain("crowd  3");
 
@@ -56,6 +56,14 @@ public class CombatLogTests
         var into = standing with { Walking = true, MobsNearWalkTarget = 7 };
         into.KitingIntoACrowd.ShouldBeTrue();
         into.Format().ShouldContain("3->7");
+
+        // ...and the other half of the operator's report: fleeing at something it cannot get through.
+        var wall = standing with { Walking = true, MobsNearWalkTarget = 0, WalkTargetReachableFraction = 0.1 };
+        wall.KitingIntoAWall.ShouldBeTrue();
+        wall.KitingIntoACrowd.ShouldBeFalse("an empty destination is not a crowd, even behind a wall");
+        wall.Format().ShouldContain("WALL");
+
+        standing.KitingIntoAWall.ShouldBeFalse("a stationary character is not kiting anywhere");
     }
 
     /// <summary>A skill counts as usable only when it is BOTH off cooldown and affordable — "every skill
@@ -79,7 +87,7 @@ public class CombatLogTests
     {
         var log = new CombatLog { Capacity = 3 };
         for (uint i = 0; i < 10; i++)
-            log.Add(new CombatLogEntry(i, "m", 1, 1, 1, 1, 0, 0, false, false, false, 0, 0, 0, 0, 0, 0, -1, []));
+            log.Add(new CombatLogEntry(i, "m", 1, 1, 1, 1, 0, 0, false, false, false, 0, 0, 0, 0, 0, 0, -1, 1.0, []));
 
         log.Entries.Count.ShouldBe(3);
         log.Entries[^1].At.ShouldBe(9u, "the newest hit must survive");

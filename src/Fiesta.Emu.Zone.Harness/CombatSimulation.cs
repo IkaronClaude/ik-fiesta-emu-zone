@@ -510,7 +510,8 @@ public sealed class CombatSimulation
         // The player keeps walking toward wherever `bot.walkTo` last pointed. Live, a walk continues
         // without the script asking again; a simulation that only moves when called makes the driver's own
         // movement detector read STANDING STILL. See SimPlayer.WalkTarget.
-        Player.AdvanceWalk(TickMs);
+        Player.AdvanceWalk(TickMs, Walkable);
+        AdvanceQueuedStones();
         AdvanceAutoAttack();
         AdvanceCast();
 
@@ -579,6 +580,47 @@ public sealed class CombatSimulation
     /// nothing — a full scenario matrix does not want a readiness list per skill per hit.</summary>
     public CombatLog? CombatLog { get; set; }
 
+    /// <summary>Spend one HP charge now. Shared by an immediate use and by a queued one firing.</summary>
+    public void SpendHpStone()
+    {
+        var p = Player;
+        if (p.HpStones <= 0) { p.HpStoneDepleted = true; return; }
+        p.HpStones--;
+        p.HpStoneReadyAt = Now + p.HpStoneCooldownMs;
+        p.Hp = Math.Min(p.MaxHp, p.Hp + p.HpStoneRestore);
+        if (p.HpStones == 0) p.HpStoneDepleted = true;
+    }
+
+    public void SpendSpStone()
+    {
+        var p = Player;
+        if (p.SpStones <= 0) { p.SpStoneDepleted = true; return; }
+        p.SpStones--;
+        p.SpStoneReadyAt = Now + p.SpStoneCooldownMs;
+        p.Sp = Math.Min(p.MaxSp, p.Sp + p.SpStoneRestore);
+        if (p.SpStones == 0) p.SpStoneDepleted = true;
+    }
+
+    /// <summary>Fire any queued stone use whose cooldown has now expired — the deferred action the server
+    /// parks at `[player + 0x173BC]`.</summary>
+    private void AdvanceQueuedStones()
+    {
+        if (Player.HpStoneUseQueued && Now >= Player.HpStoneReadyAt)
+        {
+            Player.HpStoneUseQueued = false;
+            SpendHpStone();
+        }
+        if (Player.SpStoneUseQueued && Now >= Player.SpStoneReadyAt)
+        {
+            Player.SpStoneUseQueued = false;
+            SpendSpStone();
+        }
+    }
+
+    /// <summary>The map's `.shbd` walls, when loaded. Null means open ground everywhere, which is what the
+    /// simulation did before this existed — and a kite validated against open ground is not validated.</summary>
+    public WalkabilityGrid? Walkable { get; set; }
+
     /// <summary>⭐ THE ROW THE OPERATOR ASKED FOR: on each enemy hit, every stone and skill cooldown.
     ///
     /// <para>Captured HERE, at the moment the damage lands, because that is the only instant at which the
@@ -618,6 +660,9 @@ public sealed class CombatSimulation
             SpStoneReadyInMs: StoneReady(p.SpStones, p.SpStoneReadyAt),
             MobsNearby: Crowd(p.X, p.Y),
             MobsNearWalkTarget: p.WalkTarget is { } w ? Crowd(w.X, w.Y) : -1,
+            WalkTargetReachableFraction: p.WalkTarget is not { } wt || Walkable is null
+                                         ? 1
+                                         : Walkable.ReachableFraction(p.X, p.Y, wt.X, wt.Y),
             Skills: skills));
     }
 

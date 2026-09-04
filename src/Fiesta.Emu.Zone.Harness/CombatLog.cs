@@ -43,6 +43,9 @@ public sealed record SkillReadiness(int Id, string Name, double ReadyInMs, bool 
 /// play that the driver "kites straight into a nearby wall or group of multiple mobs"; a kite whose
 /// destination is more crowded than where it started is a kite into trouble, and this is the column that
 /// says so.</param>
+/// <param name="WalkTargetReachableFraction">⭐ How much of the way to the walk target the character can
+/// actually get, 0..1. <b>The other half of the operator's report</b> — "kites straight into a nearby
+/// wall". 1 when not walking, so it never accuses a stationary character.</param>
 /// <param name="Skills">Every learned skill and whether it was usable.</param>
 public sealed record CombatLogEntry(
     uint At,
@@ -63,6 +66,7 @@ public sealed record CombatLogEntry(
     double SpStoneReadyInMs,
     int MobsNearby,
     int MobsNearWalkTarget,
+    double WalkTargetReachableFraction,
     IReadOnlyList<SkillReadiness> Skills)
 {
     /// <summary>What counts as "around" the player for the crowd columns. Roughly the aggro radius of a
@@ -74,6 +78,14 @@ public sealed record CombatLogEntry(
     /// <summary>⚠️ A kite that ends somewhere MORE crowded than it started. -1 (not walking) is not a bad
     /// kite, it is no kite — the two must not be conflated.</summary>
     public bool KitingIntoACrowd => MobsNearWalkTarget >= 0 && MobsNearWalkTarget > MobsNearby;
+
+    /// <summary>Fleeing at something it cannot get through — less than half the requested distance is
+    /// reachable. A threshold, not a clear-line test, because a long path over open ground will always
+    /// clip the odd blocked tile.</summary>
+    public const double WallFractionThreshold = 0.5;
+
+    public bool KitingIntoAWall
+        => MobsNearWalkTarget >= 0 && WalkTargetReachableFraction < WallFractionThreshold;
 
     /// <summary>Skills that were off cooldown AND affordable — what the driver chose not to use.</summary>
     public IReadOnlyList<SkillReadiness> Usable => [.. Skills.Where(s => s.Usable)];
@@ -89,7 +101,8 @@ public sealed record CombatLogEntry(
         var ready = Usable;
         var names = ready.Count == 0 ? "-" : string.Join(",", ready.Take(4).Select(s => s.Name));
         var crowd = MobsNearWalkTarget < 0 ? $"crowd {MobsNearby,2}"
-                  : $"crowd {MobsNearby,2}->{MobsNearWalkTarget,-2}{(KitingIntoACrowd ? "!" : " ")}";
+                  : $"crowd {MobsNearby,2}->{MobsNearWalkTarget,-2}{(KitingIntoACrowd ? "!" : " ")}"
+                    + (KitingIntoAWall ? " WALL" : "");
         return $"[{At,7}] -{Damage,5} hp {Hp,6}/{MaxHp} ({HpPercent,3}%) sp {Sp,6} | "
              + $"{Attacker}#{AttackerHandle} at {DistanceToAttacker,5:F0}u | {state,-8} aggro={Aggressors} {crowd} | "
              + $"hpStone {HpStones,3}x {stone,-7} spStone {SpStones,3} | "
@@ -135,6 +148,7 @@ public sealed class CombatLog
         var median = _entries.Select(e => e.DistanceToAttacker).Order().ElementAt(_entries.Count / 2);
         var kites = _entries.Where(e => e.MobsNearWalkTarget >= 0).ToList();
         var badKites = kites.Count(e => e.KitingIntoACrowd);
+        var wallKites = kites.Count(e => e.KitingIntoAWall);
 
         return $"""
             {_entries.Count} hits over {span:F0}s -- {total} damage, {total / span:F0} dps incoming
@@ -143,6 +157,7 @@ public sealed class CombatLog
               a skill was usable ..... {skillsReady,5} ({100.0 * skillsReady / _entries.Count:F0}%)
               median attacker range .. {median,5:F0}u
               kiting INTO a crowd .... {badKites,5} of {kites.Count} kites   <- destination more crowded than the start
+              kiting INTO a wall ..... {wallKites,5} of {kites.Count} kites   <- straight line to the target is blocked
             """;
     }
 }

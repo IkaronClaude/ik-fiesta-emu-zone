@@ -165,8 +165,40 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
     /// <summary>HP restored by one charge. 0 means "not known", as it does live.</summary>
     public int HpStoneRestore { get; set; }
 
-    /// <summary>Cooldown between charges. The live value comes off the USE/USEFAIL pair.</summary>
-    public uint HpStoneCooldownMs { get; set; } = 5000;
+    /// <summary>⭐ SEVEN SECONDS, READ OUT OF `ShinePlayer::sp_HPStoneUse` (0x00589180):
+    /// <code>
+    /// mov eax, [0x14D41A70]      ; the clockwatch counter
+    /// add eax, 0x46              ; +70
+    /// mov [esi + 0x173B4], eax   ; the "ready to use" gate
+    /// </code>
+    /// and `[0x14D41A70]` counts TENTHS OF A SECOND (docs/TICKRATE.md), so 70 is <b>7,000 ms</b>. The SP
+    /// stone is the same function shape with the same two constants.
+    ///
+    /// <para>⚠️ <b>This was 5000, a number I invented</b>, and the doc line above it admitted as much
+    /// ("the live value comes off the USE/USEFAIL pair" — i.e. it had never been read). The operator's
+    /// rule, and it is the right one: <b>invented, guessed or "I think" = failure.</b> The invented value
+    /// was not even harmlessly wrong — it made sustained healing 40% stronger than the server allows
+    /// (454 HP per 5 s = 91 dps against the true 65 dps), which is precisely the margin that decides
+    /// whether a fight is survivable by standing still. It also happened to collide with the OTHER
+    /// constant in the same function, so it looked plausible.</para></summary>
+    public uint HpStoneCooldownMs { get; set; } = 7000;
+
+    /// <summary>⭐ THE SECOND GATE, and it is not a cooldown — it is where a request gets QUEUED.
+    ///
+    /// <para>`sp_NC_SOULSTONE_HP_USE_REQ` (0x00589510) reads both timestamps:</para>
+    /// <code>
+    /// if ([+0x173B4] &lt;= now)      -> use it now
+    /// else if ([+0x173B8] &gt; now)  -> REJECT outright
+    /// else                          -> [+0x173BC] = 0x589410   ; queue a deferred use
+    /// </code>
+    /// <para>So a press inside the first 5 seconds is refused, and a press between 5 and 7 seconds is
+    /// ACCEPTED and fires automatically when the cooldown expires. A bot may therefore pre-press and get
+    /// the charge at the earliest legal instant — behaviour that would have been missed entirely by
+    /// modelling one cooldown.</para></summary>
+    public uint StoneQueueWindowMs { get; set; } = 5000;
+
+    /// <summary>A use accepted inside the queue window, waiting for the cooldown to expire.</summary>
+    public bool HpStoneUseQueued { get; set; }
 
     /// <summary>When the next charge may be used.</summary>
     public uint HpStoneReadyAt { get; set; }
@@ -189,7 +221,11 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
     /// <summary>SP restored by one charge. 0 means "not known".</summary>
     public int SpStoneRestore { get; set; }
 
-    public uint SpStoneCooldownMs { get; set; } = 5000;
+    /// <summary>The same 70 tenths as the HP stone — `sp_SPStoneUse` is the same shape with the same two
+    /// constants (<c>add eax, 0x46</c> / <c>add ecx, 0x32</c>).</summary>
+    public uint SpStoneCooldownMs { get; set; } = 7000;
+
+    public bool SpStoneUseQueued { get; set; }
 
     public uint SpStoneReadyAt { get; set; }
 
@@ -197,16 +233,53 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
 
     /// <summary>Advance toward <see cref="WalkTarget"/> for one tick. Clears the target on arrival, which
     /// is what makes `bot.walking()` go false.</summary>
-    public void AdvanceWalk(uint elapsedMs)
+    /// <summary>Whether the last walk step was refused by geometry — the character is against a wall.
+    ///
+    /// <para>⭐ THIS IS HALF OF WHAT MAKES A KITE BAD. The operator reports the driver "kites straight into
+    /// a nearby wall"; without a walkability grid the simulation walked through mountains and the claim
+    /// could not be examined at all.</para></summary>
+    public bool BlockedByGeometry { get; private set; }
+
+    public void AdvanceWalk(uint elapsedMs, WalkabilityGrid? walkable = null)
     {
+        BlockedByGeometry = false;
         if (WalkTarget is not { } t) return;
 
         var step = Math.Max(1, MoveSpeed * (int)elapsedMs / 1000);
         double dx = t.X - X, dy = t.Y - Y;
         var d = Math.Sqrt(dx * dx + dy * dy);
-        if (d <= step) { X = t.X; Y = t.Y; WalkTarget = null; return; }
-        X += (int)Math.Round(dx / d * step);
-        Y += (int)Math.Round(dy / d * step);
+
+        var (nx, ny) = d <= step
+            ? (t.X, t.Y)
+            : (X + (int)Math.Round(dx / d * step), Y + (int)Math.Round(dy / d * step));
+
+        if (walkable is not null && !walkable.IsWalkable(nx, ny))
+        {
+            // ⚠️ SLIDE ALONG THE WALL rather than stopping dead.
+            //
+            // Refusing the step outright was tried first and it is too harsh: a character that touches
+            // geometry stays touched forever, and the measured cost was severe -- a level-25 Warrior on
+            // Burning Hill went from 19 kills to 1, not because it fought worse but because it wedged.
+            // That is the simulation inventing a failure and then blaming the driver for it.
+            //
+            // One axis at a time is the cheap approximation of what the client does. It is an
+            // APPROXIMATION and worth saying so: the real client resolves collision against its own mesh
+            // with a proper slide vector. What matters here is that a wall stops PROGRESS TOWARD THE
+            // TARGET without freezing the character, so `BlockedByGeometry` still marks a kite that ran
+            // into geometry.
+            BlockedByGeometry = true;
+
+            if (walkable.IsWalkable(nx, Y)) { X = nx; }
+            else if (walkable.IsWalkable(X, ny)) { Y = ny; }
+            else { WalkTarget = null; return; }        // a corner: genuinely nowhere to go
+        }
+        else
+        {
+            X = nx;
+            Y = ny;
+        }
+
+        if (d <= step) WalkTarget = null;
     }
 
     /// <summary>The character's stat layers. Always present — an empty container is a real character with
@@ -438,12 +511,18 @@ public sealed class SimBotApi
     {
         var p = _sim.Player;
         if (p.HpStones <= 0) { p.HpStoneDepleted = true; return false; }
-        if (_sim.Now < p.HpStoneReadyAt) return false;
 
-        p.HpStones--;
-        p.HpStoneReadyAt = _sim.Now + p.HpStoneCooldownMs;
-        p.Hp = Math.Min(p.MaxHp, p.Hp + p.HpStoneRestore);
-        if (p.HpStones == 0) p.HpStoneDepleted = true;
+        if (_sim.Now < p.HpStoneReadyAt)
+        {
+            // Inside the queue window the server ACCEPTS the press and fires it when the cooldown ends;
+            // before that it refuses. See StoneQueueWindowMs.
+            var queueOpensAt = p.HpStoneReadyAt - (p.HpStoneCooldownMs - p.StoneQueueWindowMs);
+            if (_sim.Now < queueOpensAt) return false;
+            p.HpStoneUseQueued = true;
+            return true;
+        }
+
+        _sim.SpendHpStone();
         return true;
     }
 
@@ -452,12 +531,16 @@ public sealed class SimBotApi
     {
         var p = _sim.Player;
         if (p.SpStones <= 0) { p.SpStoneDepleted = true; return false; }
-        if (_sim.Now < p.SpStoneReadyAt) return false;
 
-        p.SpStones--;
-        p.SpStoneReadyAt = _sim.Now + p.SpStoneCooldownMs;
-        p.Sp = Math.Min(p.MaxSp, p.Sp + p.SpStoneRestore);
-        if (p.SpStones == 0) p.SpStoneDepleted = true;
+        if (_sim.Now < p.SpStoneReadyAt)
+        {
+            var queueOpensAt = p.SpStoneReadyAt - (p.SpStoneCooldownMs - p.StoneQueueWindowMs);
+            if (_sim.Now < queueOpensAt) return false;
+            p.SpStoneUseQueued = true;
+            return true;
+        }
+
+        _sim.SpendSpStone();
         return true;
     }
 
