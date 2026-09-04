@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ⭐ THE BOT HARNESS — everything built to DRIVE and SCORE the Lua bot, kept out of the port.
+
+    `Fiesta.Emu.Zone` is a 1:1 translation of Zone.exe: its damage engine, parameter container, mob AI and
+    data tables are answerable to the binary and to packet captures. Nothing in THIS assembly is. The
+    simulation clock, the synthetic player, the `bot.*` surface, the MoonSharp host and the scenario matrix
+    exist so `level_quest.lua` can be run and measured, and they invent behaviour the server does not have
+    (a tick loop the server has no analogue for, a player object that is not a ShinePlayer, a spawner that
+    picks "the busiest area").
+
+    Keeping them in a separate assembly makes the divergence structural rather than a matter of discipline:
+    the dependency arrow only ever points harness -> port, the port cannot accidentally grow a reference to
+    a simulation type, and when this project becomes a pure emulator this whole directory is deleted in one
+    move. Operator, 2026-09-04.
+
+    The proof it worked: MoonSharp is referenced HERE and no longer by the port.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Fiesta.Emu.Zone.Lua</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Fiesta.Emu.Zone/Fiesta.Emu.Zone.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The bot driver is Lua and runs under MoonSharp in ik-fiesta-bots; the harness hosts the same
+         interpreter so the SAME script can be run against simulated mobs instead of a live server. -->
+    <PackageReference Include="MoonSharp" Version="2.0.0" />
+  </ItemGroup>
+
+</Project>

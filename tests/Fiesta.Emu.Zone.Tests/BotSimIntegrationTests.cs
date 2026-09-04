@@ -18,6 +18,7 @@ namespace Fiesta.Emu.Zone.Tests;
 /// does not back, guessing a shape from the call site, and a stubbed call returns a plausible constant
 /// forever. That is why the stub COUNT is asserted next to the pass: without it, "the driver ran for
 /// 4,000 ticks" is a statement about the stubs, not about the bot.</para></summary>
+[Collection(HeavySimulationCollection.Name)]
 public class BotSimIntegrationTests(ITestOutputHelper output)
 {
     private static string? Shine()

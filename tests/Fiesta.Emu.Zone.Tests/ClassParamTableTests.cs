@@ -80,8 +80,28 @@ public class ClassParamTableTests
         container.Base[Stat.Int].ShouldBe(1);
     }
 
+    /// <summary>⭐ FREE-STAT POINTS DO NOT REACH THE BASE CLUSTER — the reverse of what this test used to
+    /// assert.
+    ///
+    /// <para>It claimed <c>base = table + points</c>, from `c_Storepure` computing each primary as
+    /// <c>call [vtable+0x8E0] + classRow[column]</c>. The call is real; reading it as "this stat's free
+    /// allocation" is not — it is the SAME no-argument virtual invoked five times, so it cannot carry a
+    /// per-stat allocation.</para>
+    ///
+    /// <para>`MageDamageLvl60` settles it. The character allocates 50 Int and 25 MentalPower, and its
+    /// reported Int is <b>288</b>. The wire's primaries are `Total` (proved by `c_compare@Cluster`, and by
+    /// the pet's equip moving them), and the level-60 Enchanter row is 273:</para>
+    ///
+    /// <code>
+    /// (273 class row + 2 pet) * 1.05 Power of Love = 288.75 -> 288   ... matches
+    ///  273 + 50 points                              = 323, x1.05    = 341   ... does not
+    /// </code>
+    ///
+    /// <para>The points feed the DERIVED tables instead — `Int.MAAbsolute`, `Con.MaxHP`, `Men.MaxSP`,
+    /// `Dex.THRate`, `Men.CriRate` — which is where `MaxHp`, `MaxSp` and the damage path now take
+    /// them, each as an explicit argument rather than by inflating a primary.</para></summary>
     [SkippableFact]
-    public void FreeStatPointsAddOnTopOfTheTableValue()
+    public void FreeStatPointsDoNotReachTheBaseCluster()
     {
         var dir = WorldDir();
         Skip.If(dir is null, "server data not present; set SHINE_DATA");
@@ -91,9 +111,14 @@ public class ClassParamTableTests
         var plain = CharacterParameters.Build(cleric, level: 20);
         var spent = CharacterParameters.Build(cleric, level: 20, new FreeStats(Str: 10, Men: 5));
 
-        spent.Base[Stat.Str].ShouldBe(plain.Base[Stat.Str] + 10);
-        spent.Base[Stat.Men].ShouldBe(plain.Base[Stat.Men] + 5);
+        spent.Base[Stat.Str].ShouldBe(plain.Base[Stat.Str], "allocation does not raise the primary");
+        spent.Base[Stat.Men].ShouldBe(plain.Base[Stat.Men]);
         spent.Base[Stat.Dex].ShouldBe(plain.Base[Stat.Dex]);
+
+        // ...but the HP and SP they buy are still real, taken from the free-stat table.
+        CharacterParameters.MaxHp(cleric, 20, spent.MakeTotal(), freeStatConPoints: 4)
+            .ShouldBe(CharacterParameters.MaxHp(cleric, 20, plain.MakeTotal())
+                      + 4 * CharacterParameters.HpPerConstitutionPoint);
     }
 
     /// <summary>`c_Storepure` clamps the level against 0x96 before indexing the class's per-level array.</summary>

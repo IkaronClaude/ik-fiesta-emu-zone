@@ -23,6 +23,7 @@ namespace Fiesta.Emu.Zone.Tests;
 /// so 931 casts were handed a skill id as a mob handle, matched no mob, and returned false. The run
 /// still looked healthy: no errors, mobs dying, 15 kills. <b>An arity that happens to accept the call is
 /// worse than one that throws.</b></para></summary>
+[Collection(HeavySimulationCollection.Name)]
 public class DriverFightsInTheSimulationTests(ITestOutputHelper output)
 {
     private const int Ticks = 4000;
@@ -228,21 +229,46 @@ public class DriverFightsInTheSimulationTests(ITestOutputHelper output)
             + "bottleneck'");
     }
 
-    /// <summary>⚠️ <b>A KNOWN LIMIT, ASSERTED SO IT CANNOT BE MISTAKEN FOR HEALTH.</b> The real driver's
-    /// kill rate is NOT damage-limited: ten times the weapon damage moves it from 23 kills to 24, while
-    /// the minimal driver above goes 6 to 17 on the same change.
+    /// <summary>⚠️ <b>A DRIVER-SIDE CEILING, MEASURED RATHER THAN GUESSED.</b> `level_quest.lua` kills
+    /// <b>24 mobs in 400 seconds no matter how hard it hits</b> — the same 24 across a <b>1000x</b> range
+    /// of weapon damage — while a walk-up-and-swing script on the identical map scales 6 → 62.
     ///
-    /// <para>So `level_quest.lua` saturates on something other than combat, and the candidate is named:
-    /// the quest subsystem is the last unbacked surface — `availableQuests`, `eligibleQuests`, `npcCoord`,
-    /// `canPick` and `drops` are still stubbed, because the simulation spawns fightable mobs only and has
-    /// no NPC to hand a quest in to. The driver spends its budget cycling phases it cannot complete.</para>
+    /// <code>
+    /// weapon        minimal driver     level_quest.lua
+    ///     60-95            6 kills          23 kills   (145 casts)
+    ///    600-840          17               24          (100)
+    ///   5000-6000         58               24           (24)
+    ///  50000-60000        62               24           (20)
+    /// </code>
     ///
-    /// <para>This test exists because the flat result WOULD HAVE PASSED a naive
-    /// <c>strong &gt; weak</c> assertion on a margin of one kill, and that is the shape of green run this
-    /// file exists to refuse. It pins the flatness as a fact so the next change to the quest surface has
-    /// something to move.</para></summary>
+    /// <para>Three things this rules out. It is <b>not damage</b>: a thousandfold increase moves nothing.
+    /// It is <b>not the environment's ceiling</b>: the same map yields 62 to a simpler script. It is
+    /// <b>not the rotation failing</b>: casts fall from 145 to 20 precisely because mobs die faster, so
+    /// the kills it does make get cheaper — the driver simply does not make more of them.</para>
+    ///
+    /// <para>The cadence names the shape. Kills arrive in bursts of four inside ~17 seconds, then a
+    /// <b>~28-second gap</b>, repeating, after a 34.7-second cold start:</para>
+    ///
+    /// <code>
+    /// 34.7 34.9 43.6 51.4 | 79.1 99.7 108.8 116.2 | 143.8 164.2 172.6 180.7 | 208.7 ...
+    ///                gap 27.7s          gap 27.6s              gap 28.0s
+    /// </code>
+    ///
+    /// <para>So roughly <b>28 of every 64 seconds go somewhere that is not fighting</b>. The driver's own
+    /// log shows it thrashing <c>PHASE =&gt; xpgrind</c> / <c>PHASE =&gt; kill (quest mobs)</c> every tick
+    /// against <c>"no active quests KNOWN yet (n=0, lists still loading or genuinely none)"</c> — it
+    /// cannot tell an empty quest list from an unloaded one, and this simulation has no NPC to load one
+    /// from.</para>
+    ///
+    /// <para><b>This is a driver defect, not a simulation gap</b>, and the operator has said as much
+    /// ("our questing logic is pretty shit and wastes a ton of time, will need improvement"). It is pinned
+    /// here because the simulation is now the cheapest place to measure it: 400 simulated seconds per run,
+    /// and the number is exact.</para>
+    ///
+    /// <para>⚠️ It would also have passed a naive <c>strong &gt; weak</c> assertion on a margin of ONE
+    /// kill. That is the shape of green run this file exists to refuse.</para></summary>
     [SkippableFact]
-    public void TheRealDriverIsNotDamageLimited_KNOWN_LIMIT()
+    public void TheRealDriverIsPinnedAtItsOwnCeiling_KNOWN_LIMIT()
     {
         var (shine, ressystem, driver) = (Shine(), Ressystem(), DriverPath());
         Skip.If(shine is null, "server data not present; set SHINE_DATA");
@@ -250,18 +276,22 @@ public class DriverFightsInTheSimulationTests(ITestOutputHelper output)
         Skip.If(driver is null, "level_quest.lua not present; set LEVEL_QUEST_LUA");
 
         var (weak, _) = Run(shine!, ressystem!, driver!, wcMin: 60, wcMax: 95);
-        var (strong, _) = Run(shine!, ressystem!, driver!, wcMin: 600, wcMax: 840);
+        var (absurd, _) = Run(shine!, ressystem!, driver!, wcMin: 50_000, wcMax: 60_000);
 
-        output.WriteLine($"level_quest.lua: weapon  60-95 -> kills={weak.Kills} casts={weak.Casts} exp={weak.Player.Experience}");
-        output.WriteLine($"level_quest.lua: weapon 600-840 -> kills={strong.Kills} casts={strong.Casts} exp={strong.Player.Experience}");
+        output.WriteLine($"level_quest.lua: weapon 60-95      -> kills={weak.Kills} casts={weak.Casts}");
+        output.WriteLine($"level_quest.lua: weapon 50k-60k    -> kills={absurd.Kills} casts={absurd.Casts}");
 
-        // It still out-kills the minimal driver at low damage, because it uses its rotation.
-        weak.Kills.ShouldBeGreaterThan(10,
-            "even damage-starved, the driver's rotation should beat bare melee");
+        // It out-kills bare melee at low damage, because it uses its rotation.
+        weak.Kills.ShouldBeGreaterThan(10, "even damage-starved, the rotation should beat bare melee");
 
-        // ...and it barely moves when damage is multiplied by ten. THIS IS THE BUG BEING TRACKED.
-        (strong.Kills - weak.Kills).ShouldBeLessThan(weak.Kills / 2,
-            "if the driver has become damage-responsive, the quest-phase bottleneck has been fixed -- "
-            + "delete this test and tighten AHarderHittingWeaponKillsMore to cover the real driver too");
+        // ...and a THOUSANDFOLD damage increase buys it almost nothing. THIS IS THE TRACKED DEFECT.
+        (absurd.Kills - weak.Kills).ShouldBeLessThan(10,
+            "if the driver has become damage-responsive, the phase thrash has been fixed -- delete this "
+            + "test and fold the real driver into AHarderHittingWeaponKillsMore");
+
+        // The same map yields far more to a simpler script, so the ceiling is the DRIVER's, not the map's.
+        absurd.Kills.ShouldBeLessThan(40,
+            "a walk-up-and-swing script reaches 62 kills here; if the driver passes 40 it has started "
+            + "closing that gap and these bounds need re-measuring");
     }
 }

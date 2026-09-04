@@ -28,7 +28,8 @@ public sealed record ClassParamRow(
     int MaxHp, int MaxSp,
     int SoulHp, int MaxSoulHp, int PriceHpStone,
     int SoulSp, int MaxSoulSp, int PriceSpStone,
-    int JobChangeDmgUp);
+    int JobChangeDmgUp,
+    int SkillPwrPt = 0);
 
 /// <summary>The per-class, per-level base stat tables — `9Data/Shine/World/Param&lt;Class&gt;Server.txt`.
 ///
@@ -80,7 +81,9 @@ public sealed class ClassParamTable
                 SoulSp: Col(r, "SoulSP"),
                 MaxSoulSp: Col(r, "MAXSoulSP"),
                 PriceSpStone: Col(r, "PriceSPStone"),
-                JobChangeDmgUp: Col(r, "JobChangeDmgUp")))
+                JobChangeDmgUp: Col(r, "JobChangeDmgUp"),
+                // `SkillPwrPt` -- empower levels earned by this level. 29 for a level-60 Enchanter.
+                SkillPwrPt: Col(r, "SkillPwrPt")))
             .ToDictionary(r => r.Level);
 
         var name = Path.GetFileNameWithoutExtension(path);

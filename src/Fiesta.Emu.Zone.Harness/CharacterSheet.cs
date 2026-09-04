@@ -29,16 +29,24 @@ public static class CharacterSheet
         FreeStats? freeStats = null,
         IEnumerable<EquipmentPiece>? equipment = null,
         Data.SkillCatalog? skills = null,
-        bool hasPowerOfLove = false)
+        bool hasPowerOfLove = false,
+        Data.PassiveCatalog? passives = null,
+        IEnumerable<int>? learnedPassives = null)
     {
         var container = CharacterParameters.Build(table, level, freeStats, equipment, hasPowerOfLove);
         var total = container.MakeTotal();
 
         player.Parameters = container;
         player.Level = level;
-        player.MaxHp = CharacterParameters.MaxHp(table, level, total);
+        player.MaxHp = CharacterParameters.MaxHp(table, level, total,
+                                                 freeStatConPoints: freeStats?.Con ?? 0);
         player.Hp = player.MaxHp;
-        player.MaxSp = CharacterParameters.MaxSp(table, level, total);
+        var passiveSp = passives is not null && learnedPassives is not null
+            ? passives.MaxSpFrom(learnedPassives)
+            : 0;
+        player.MaxSp = CharacterParameters.MaxSp(table, level, total,
+                                                 freeStatMenPoints: freeStats?.Men ?? 0,
+                                                 passiveMaxSp: passiveSp);
         player.Sp = player.MaxSp;
         player.UsesStatFormula = true;
         player.JobChangeDamageUpPermille = table.At(level)?.JobChangeDmgUp;

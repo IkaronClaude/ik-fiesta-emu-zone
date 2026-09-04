@@ -58,13 +58,29 @@ public static class MapSpawner
         MobRegenData map,
         MobDataBox data,
         uint spawnSeed = 1,
-        ushort firstHandle = 100)
+        ushort firstHandle = 100,
+        int maxRank = int.MaxValue)
     {
         var all = sim.SpawnAll(map, data, spawnSeed: spawnSeed, firstHandle: firstHandle);
-        foreach (var node in all.Where(m => !data.IsFightable(m.Name)).ToList())
+
+        bool Wanted(SimMob m)
+            => data.IsFightable(m.Name) && (data.ServerFor(m.Name)?.Rank ?? 0) <= maxRank;
+
+        foreach (var node in all.Where(m => !Wanted(m)).ToList())
             sim.Remove(node);
-        return all.Where(m => data.IsFightable(m.Name)).ToList();
+        return all.Where(Wanted).ToList();
     }
+
+    /// <summary>⭐ THE RANK AT WHICH A MOB STOPS BEING ORDINARY POPULATION.
+    ///
+    /// <para>A dungeon carries five or six repeated spawns of one high-rank mob — `ForDn01` has 76
+    /// `D_SpadeGuardTrumpy` at rank 3, `GblDn01` has 86 `GoblinCaptain` at rank 4 — and the operator's
+    /// instruction for the scenario matrix is to fight the normal mobs, <b>not</b> those. A solo character
+    /// sent at them measures how fast it dies, not how well it grinds.</para>
+    ///
+    /// <para>Rank 1 and below is the ordinary population; this is the cap to pass as
+    /// <c>maxRank</c>.</para></summary>
+    public const int NormalMobMaxRank = 1;
 
     /// <summary>The spawn names in a map that are gathering nodes or scenery rather than enemies.</summary>
     public static IReadOnlyList<string> NonCombatSpawns(this MobRegenData map, MobDataBox data)

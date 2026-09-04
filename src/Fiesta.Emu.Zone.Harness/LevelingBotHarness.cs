@@ -513,28 +513,50 @@ public sealed class LevelingBotHarness
     ///
     /// <para>Errors are captured rather than thrown: a driver that dies on tick 3 has still told us which
     /// 40 functions it reached first, and that is the useful part.</para></summary>
-    public void Run(string luaSource, int ticks)
+    /// <summary>Load the script and fire its entry points. <b>Call this ONCE per run.</b></summary>
+    /// <returns>false when the source would not load; the reason is in <see cref="Errors"/>.</returns>
+    public bool Load(string luaSource)
     {
-        var script = _sim.Script;
         try
         {
-            script.DoString(luaSource);
+            _sim.Script.DoString(luaSource);
         }
         catch (Exception e)
         {
             Errors.Add($"load: {Summarise(e)}");
-            return;
+            return false;
         }
 
         foreach (var entry in new[] { "on_enter", "on_start" })
             Invoke(entry, optional: true);
+        return true;
+    }
 
+    /// <summary>⭐ ADVANCE AN ALREADY-LOADED SCRIPT. This is what to call in a loop.
+    ///
+    /// <para>⚠️ <b><see cref="Run"/> RELOADS.</b> It calls `DoString` on the source and re-fires
+    /// `on_enter`/`on_start` every time, so calling it in slices restarts the driver from scratch on every
+    /// slice — every Lua local (its phase, its target, its cooldown and learned-damage tables) is thrown
+    /// away. A scenario runner that sliced `Run` to find WHEN a character died was silently resetting the
+    /// bot every five simulated seconds, and the kill counts moved between otherwise identical runs.
+    /// That is the tell to watch for: a same-seed run whose numbers change.</para></summary>
+    /// <returns>false if the script stopped raising or has no tick entry point.</returns>
+    public bool Step(int ticks)
+    {
         for (var i = 0; i < ticks; i++)
         {
             _sim.Step();
             if (!Invoke("tick", optional: false) && !Invoke("on_tick", optional: false))
-                return;
+                return false;
         }
+        return true;
+    }
+
+    /// <summary>Load and run, in one call. Convenient for a single fixed-length run; use
+    /// <see cref="Load"/> + <see cref="Step"/> when the run has to be observed part-way.</summary>
+    public void Run(string luaSource, int ticks)
+    {
+        if (Load(luaSource)) Step(ticks);
     }
 
     private bool Invoke(string fn, bool optional)

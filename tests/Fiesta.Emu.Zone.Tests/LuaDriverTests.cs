@@ -8,6 +8,7 @@ namespace Fiesta.Emu.Zone.Tests;
 ///
 /// The scripts here are written the way the bot's driver is: poll `bot.*`, decide, act, return. Nothing
 /// is stubbed on the Lua side.</summary>
+[Collection(HeavySimulationCollection.Name)]
 public class LuaDriverTests
 {
     private const string KillNearest = """

@@ -331,7 +331,11 @@ public class BaseCombatStatTests
         var beefy = CharacterParameters.Build(table, 10, new FreeStats(Con: 12));
 
         CharacterParameters.MaxHp(table, 10, plain.MakeTotal()).ShouldBe(500);
-        CharacterParameters.MaxHp(table, 10, beefy.MakeTotal()).ShouldBe(500 + 12 * 5);
+        // ⚠️ The points are passed EXPLICITLY. They do not reach the base cluster -- `MageDamageLvl60`
+        // shows a character with 50 Int / 25 Men allocated whose reported primaries are the class row --
+        // so the HP they buy comes from the free-stat table's `Con.MaxHP = 5n`, not from `cluster[Con]`.
+        CharacterParameters.MaxHp(table, 10, beefy.MakeTotal(), freeStatConPoints: 12)
+            .ShouldBe(500 + 12 * 5);
     }
 
     [Fact]
@@ -340,7 +344,8 @@ public class BaseCombatStatTests
         var table = TinyTable();
         var wise = CharacterParameters.Build(table, 10, new FreeStats(Men: 8));
 
-        CharacterParameters.MaxSp(table, 10, wise.MakeTotal()).ShouldBe(200 + 8 * 5);
+        CharacterParameters.MaxSp(table, 10, wise.MakeTotal(), freeStatMenPoints: 8)
+            .ShouldBe(200 + 8 * 5);
     }
 
     /// <summary>A two-row stand-in, so these run without a server-files tree.</summary>

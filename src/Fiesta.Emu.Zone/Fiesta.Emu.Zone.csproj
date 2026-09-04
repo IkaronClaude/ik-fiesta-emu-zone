@@ -5,9 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
-  <ItemGroup>
-    <!-- The bot driver is Lua and runs under MoonSharp in ik-fiesta-bots; the simulator hosts the same
-         interpreter so the SAME script can be run against simulated mobs instead of a live server. -->
-    <PackageReference Include="MoonSharp" Version="2.0.0" />
-  </ItemGroup>
+  <!-- ⭐ NO MoonSharp, and no simulation types. This assembly is the 1:1 Zone.exe port and nothing else;
+       the bot harness that hosts Lua lives in Fiesta.Emu.Zone.Harness and depends on THIS, never the
+       reverse. If a PackageReference to MoonSharp ever reappears here, the boundary has leaked. -->
 </Project>

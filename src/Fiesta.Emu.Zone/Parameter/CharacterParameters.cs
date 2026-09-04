@@ -77,12 +77,29 @@ public static class CharacterParameters
         var free = freeStats ?? new FreeStats();
         var row = Row(table, level);
 
+        // ⭐ THE CLASS ROW ALONE. Free-stat points do NOT enter the base cluster.
+        //
+        // ⚠️ This used to read `row.Str + free.Str`, on the strength of `c_Storepure` computing each
+        // primary as `call [vtable+0x8E0] + classRow[column]`. The call is real; reading it as "the free
+        // stat for this stat" is not — it is the SAME no-argument virtual invoked five times, so it cannot
+        // carry a per-stat allocation, and `MageDamageLvl60` shows it returning 0:
+        //
+        //     login, no gear, free stat all zero -> reported Str 43 Con 138 Dex 157 Int 273 Men 186,
+        //     the level-60 Enchanter class row to the unit.
+        //
+        // And later, with 50 Int / 25 Men allocated, the reported Int is 288. The wire's primaries are
+        // `Total` (proved by `c_compare@Cluster`, and by the pet's equip moving them), and
+        // (273 + 2 pet) * 1.05 = 288. Had the base carried the 50 points it would read 341.
+        //
+        // Free-stat points feed the DERIVED tables instead -- `Int.MAAbsolute`, `Con.ACAbsoulte`,
+        // `Men.MaxSP`, `Dex.THRate`, `Men.CriRate` -- which is where the damage path already adds them.
         var b = container.Base;
-        b[Stat.Str] = row.Str + free.Str;
-        b[Stat.Con] = row.Con + free.Con;
-        b[Stat.Dex] = row.Dex + free.Dex;
-        b[Stat.Int] = row.Int + free.Int;
-        b[Stat.Men] = row.Men + free.Men;
+        b[Stat.Str] = row.Str;
+        b[Stat.Con] = row.Con;
+        b[Stat.Dex] = row.Dex;
+        b[Stat.Int] = row.Int;
+        b[Stat.Men] = row.Men;
+        _ = free;
 
         // Slots 5..14 (WCmin..MB) stay zero -- see the remark above; that is the ported behaviour, not a gap.
 
@@ -118,10 +135,17 @@ public static class CharacterParameters
     /// <para>The row's MaxHP is read as a <b>word</b> (<c>movzx eax, word ptr [ecx+0x74]</c>), and 0x74 is
     /// column 29, which is <c>MaxHP</c>, typed <c>Word</c> in the table header. The offset and the schema
     /// agree, which is the check that the column identification is right.</para></summary>
-    public static int MaxHp(ClassParamTable table, int level, ParameterCluster cluster)
+    public static int MaxHp(ClassParamTable table, int level, ParameterCluster cluster,
+                            int freeStatConPoints = 0)
     {
         var row = Row(table, level);
-        return row.MaxHp + (cluster[Stat.Con] - row.Con) * HpPerConstitutionPoint;
+        // Two distinct sources, and they must not be conflated. The cluster term picks up Constitution
+        // from GEAR and the rate layers; the free-stat term is `Con.MaxHP = 5n` from the free-stat table.
+        // Spent points do not enter the base cluster -- see `StorePure` -- so without the second term a
+        // character loses every point of HP it bought.
+        return row.MaxHp
+               + (cluster[Stat.Con] - row.Con) * HpPerConstitutionPoint
+               + freeStatConPoints * HpPerConstitutionPoint;
     }
 
     /// <summary>`CharClass::MaxSP` (0x00449660) — the same shape over MentalPower.
@@ -134,11 +158,30 @@ public static class CharacterParameters
     /// one name survives there — so the symbol search UNDER-COUNTS overrides. Reading vtable slot 9 across
     /// the family (`tools/vtables.py --family CharClass --overrides`) finds both, because a slot holds an
     /// address whether or not a symbol was emitted for it.</para></summary>
-    public static int MaxSp(ClassParamTable table, int level, ParameterCluster cluster)
+    public static int MaxSp(ClassParamTable table, int level, ParameterCluster cluster,
+                            int freeStatMenPoints = 0, int passiveMaxSp = 0)
     {
         var row = Row(table, level);
-        return row.MaxSp + (cluster[Stat.Men] - row.Men) * SpPerMentalPowerPoint;
+
+        // ⭐ THREE TERMS, and the capture pins all of them. `MageDamageLvl60`'s level-60 Enchanter:
+        //
+        //     class row                                              1826
+        //     + (Men 197 - row 186) * 5                              +  55   = 1881
+        //     + WisdomMastery06's MaxSP column                       + 360   = 2241
+        //     + 25 MentalPower free-stat points at Men.MaxSP = 5n    + 125   = 2366   <- reported
+        //
+        // The middle term comes from the passive's own row; the last from the free-stat table, which is a
+        // SEPARATE contribution and not the same thing as the points already showing up in `cluster[Men]`
+        // -- free-stat points do not raise the primary, they feed the derived tables.
+        return row.MaxSp
+               + (cluster[Stat.Men] - row.Men) * SpPerMentalPowerPoint
+               + passiveMaxSp
+               + freeStatMenPoints * FreeStatMenSpPerPoint;
     }
+
+    /// <summary>`Men.MaxSP` in the free-stat table is <c>5n</c> — verified across all 181 entries by
+    /// reading a live zone server.</summary>
+    public const int FreeStatMenSpPerPoint = 5;
 
     /// <summary>Fold an equipped item into the container.
     ///

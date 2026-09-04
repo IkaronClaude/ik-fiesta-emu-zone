@@ -28,3 +28,12 @@ _scratch/
 # live character's gear and stats, and they are only meaningful next to their own pcap. Keep them beside
 # the capture, not in git.
 state-*.json
+
+# ---- bot Lua: NEVER in this repo, not even once ----------------------------------------------------
+# The levelling driver lives in the bots-lua repo and ONLY there. This simulation reads it from an
+# external path (LEVEL_QUEST_LUA, default C:/Projects/ik-fiesta-bots/scripts/level_quest.lua) and every
+# test that needs it SKIPS when it is absent -- so nothing here depends on a copy existing.
+#
+# Referencing the filename in a path or a comment is fine. Committing the CONTENT is not, and a stray
+# copy would be far harder to remove from history than to prevent. Operator, 2026-09-04.
+*.lua

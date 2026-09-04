@@ -17,5 +17,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Fiesta.Emu.Zone/Fiesta.Emu.Zone.csproj" />
+    <ProjectReference Include="../../src/Fiesta.Emu.Zone.Harness/Fiesta.Emu.Zone.Harness.csproj" />
   </ItemGroup>
 </Project>
