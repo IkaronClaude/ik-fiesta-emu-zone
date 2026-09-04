@@ -546,6 +546,7 @@ public sealed class CombatSimulation
                     // quantity in the live bot -- it learns it from the damage packets -- so the
                     // simulation has to learn it the same way rather than being told.
                     _incoming.Add((Now, landed.Damage));
+                    RecordHit(m, p, landed.Damage);
 
                     // `smo_SwingDamage+0x4B5`, the tail of a hit that connected: the ATTACKER sheds hate for
                     // whoever it just hit. Guarded on > 0 there, so a zero column is not "shed nothing by
@@ -572,6 +573,67 @@ public sealed class CombatSimulation
                 }
             }
         }
+    }
+
+    /// <summary>Set to capture a <see cref="CombatLogEntry"/> per incoming hit. Null (the default) costs
+    /// nothing — a full scenario matrix does not want a readiness list per skill per hit.</summary>
+    public CombatLog? CombatLog { get; set; }
+
+    /// <summary>⭐ THE ROW THE OPERATOR ASKED FOR: on each enemy hit, every stone and skill cooldown.
+    ///
+    /// <para>Captured HERE, at the moment the damage lands, because that is the only instant at which the
+    /// question "what could it have done instead" has a definite answer. Reconstructing it afterwards from
+    /// the tick loop would be guessing at state that has already moved on.</para></summary>
+    private void RecordHit(SimMob attacker, SimPlayer p, int damage)
+    {
+        if (CombatLog is null) return;
+
+        var skills = new List<SkillReadiness>(p.LearnedSkills.Count);
+        foreach (var s in p.LearnedSkills)
+        {
+            var ready = p.SkillReadyAt.TryGetValue(s.Id, out var at) && Now < at ? at - Now : 0;
+            skills.Add(new SkillReadiness(s.Id, s.InxName, ready, p.Sp >= s.Sp));
+        }
+
+        double StoneReady(int charges, uint readyAt)
+            => charges <= 0 ? -1 : Now >= readyAt ? 0 : readyAt - Now;
+
+        var dx = attacker.Mob.X - p.X;
+        var dy = attacker.Mob.Y - p.Y;
+
+        CombatLog.Add(new CombatLogEntry(
+            At: Now,
+            Attacker: attacker.Name,
+            AttackerHandle: attacker.Mob.Handle,
+            Damage: damage,
+            Hp: p.Hp, MaxHp: p.MaxHp, Sp: p.Sp,
+            DistanceToAttacker: Math.Sqrt((double)dx * dx + (double)dy * dy),
+            Walking: p.WalkTarget is not null,
+            Casting: p.CastingSkill is not null,
+            AutoAttacking: p.AutoAttackTarget is not null,
+            Aggressors: _mobs.Count(x => x.Mob.IsAlive && x.Arg.Target is SimPlayer),
+            HpStones: p.HpStones,
+            HpStoneReadyInMs: StoneReady(p.HpStones, p.HpStoneReadyAt),
+            SpStones: p.SpStones,
+            SpStoneReadyInMs: StoneReady(p.SpStones, p.SpStoneReadyAt),
+            MobsNearby: Crowd(p.X, p.Y),
+            MobsNearWalkTarget: p.WalkTarget is { } w ? Crowd(w.X, w.Y) : -1,
+            Skills: skills));
+    }
+
+    /// <summary>Live mobs within <see cref="CombatLogEntry.CrowdRadius"/> of a point. Used to compare where
+    /// the character IS against where it is walking TO — see `CombatLogEntry.KitingIntoACrowd`.</summary>
+    private int Crowd(int x, int y)
+    {
+        var r = (long)CombatLogEntry.CrowdRadius * CombatLogEntry.CrowdRadius;
+        var n = 0;
+        foreach (var m in _mobs)
+        {
+            if (!m.Mob.IsAlive) continue;
+            long dx = m.Mob.X - x, dy = m.Mob.Y - y;
+            if (dx * dx + dy * dy <= r) n++;
+        }
+        return n;
     }
 
     /// <summary>Load a driver script. It should define a global `on_tick()`.</summary>
