@@ -530,14 +530,17 @@ public sealed class SimBotApi
         var m = _sim.Find((ushort)handle);
         if (m is null || !m.Mob.IsAlive) return false;
         if (_sim.Walkable is not { } grid) return true;
-        return TilePathFinder.FindPath(grid, _sim.Player.X, _sim.Player.Y, m.Mob.X, m.Mob.Y) is not null;
+        return Connected(grid, m.Mob.X, m.Mob.Y);
     }
+
+    /// <summary>Whether a route exists to a point, via the bot's own navmesh reachability.</summary>
+    private bool Connected(WalkabilityGrid grid, int x, int y)
+        => TilePathFinder.Reachable(grid, _sim.Player.X, _sim.Player.Y, x, y);
 
     /// <summary>`bot.canReachPoint` — the same question about a place rather than a mob, for a kite
     /// destination.</summary>
     public bool canReachPoint(int x, int y)
-        => _sim.Walkable is not { } grid
-           || TilePathFinder.FindPath(grid, _sim.Player.X, _sim.Player.Y, x, y) is not null;
+        => _sim.Walkable is not { } grid || Connected(grid, x, y);
 
     /// <summary>`bot.walking` — is the character still on its way somewhere.</summary>
     public bool walking() => _sim.Player.WalkTarget is not null;
