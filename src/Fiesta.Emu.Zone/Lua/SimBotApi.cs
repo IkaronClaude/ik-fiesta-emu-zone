@@ -41,7 +41,52 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
     public int? JobChangeDamageUpPermille { get; set; }
 
     public int AttackRange { get; set; } = 12;
-    public int MoveSpeed { get; set; } = 6;
+    /// <summary>Movement speed in units PER SECOND, the same unit the mobs use — `MobInfo.RunSpeed`, where
+    /// an Orc is 127 and a MushRoom 105.
+    ///
+    /// <para>⚠️ <b>It used to be units per CALL, and that was a semantic mismatch rather than a bad
+    /// number.</b> Live, `bot.walkTo(x, y)` starts a walk that the character continues under its own
+    /// steam; here it moved 6 units and stopped. The driver's `moving()` detects movement by looking for a
+    /// position change of more than 30 units between observations, so a 6-unit step read as STANDING
+    /// STILL, and the pull logic — <c>elseif not moving() and bot.now() - lastAct &gt; 400</c> — crawled
+    /// the character 6 units every 400 ms toward a mob 1,475 units away.</para></summary>
+    public int MoveSpeed { get; set; } = 130;
+
+    /// <summary>Where `bot.walkTo` last told the character to go, or null when it is standing.
+    ///
+    /// <para>This is the whole point of the change: a walk is a DESTINATION the simulation keeps making
+    /// progress toward on every tick, not an instantaneous step taken only when the script calls.</para></summary>
+    public (int X, int Y)? WalkTarget { get; set; }
+
+    /// <summary>The mob `bot.autoAttack` last locked on to, or null when not attacking.
+    ///
+    /// <para>⚠️ <b>Auto-attack is a MODE.</b> Live, `bot.autoAttack(h)` sends BASHSTART once and the
+    /// SERVER then streams swings until the target dies — the script does not swing per tick and does not
+    /// expect to. Modelling it as a single swing made the driver walk up to an Orc, hit it once for a
+    /// fraction of its 3,562 HP, and stand there.</para></summary>
+    public ushort? AutoAttackTarget { get; set; }
+
+    /// <summary>When the next auto-attack swing lands. The real interval comes from `AttackRhythm` and the
+    /// weapon's `AtkSpeed`; until that is ported (see docs/COMBAT_SIM_PLAN.md) this is a documented
+    /// stand-in, not a measurement.</summary>
+    public uint SwingIntervalMs { get; set; } = 1500;
+
+    /// <summary>Simulation clock at which the next auto-attack swing is due.</summary>
+    public uint NextSwingAt { get; set; }
+
+    /// <summary>Advance toward <see cref="WalkTarget"/> for one tick. Clears the target on arrival, which
+    /// is what makes `bot.walking()` go false.</summary>
+    public void AdvanceWalk(uint elapsedMs)
+    {
+        if (WalkTarget is not { } t) return;
+
+        var step = Math.Max(1, MoveSpeed * (int)elapsedMs / 1000);
+        double dx = t.X - X, dy = t.Y - Y;
+        var d = Math.Sqrt(dx * dx + dy * dy);
+        if (d <= step) { X = t.X; Y = t.Y; WalkTarget = null; return; }
+        X += (int)Math.Round(dx / d * step);
+        Y += (int)Math.Round(dy / d * step);
+    }
 
     /// <summary>The character's stat layers. Always present — an empty container is a real character with
     /// no stats, which is different from "not configured", and keeping it non-null means the damage formula
@@ -169,17 +214,16 @@ public sealed class SimBotApi
 
     // ---- actions -------------------------------------------------------------------------------------
 
-    /// <summary>`bot.walkTo` — step toward a point at the player's move speed. One tick of movement, not
-    /// a blocking walk: the driver is expected to call it repeatedly, as it does against a real server.</summary>
-    public void walkTo(int tx, int ty)
-    {
-        var p = _sim.Player;
-        double dx = tx - p.X, dy = ty - p.Y;
-        var d = Math.Sqrt(dx * dx + dy * dy);
-        if (d <= p.MoveSpeed) { p.X = tx; p.Y = ty; return; }
-        p.X += (int)Math.Round(dx / d * p.MoveSpeed);
-        p.Y += (int)Math.Round(dy / d * p.MoveSpeed);
-    }
+    /// <summary>`bot.walkTo` — start walking to a point. NOT a step: the simulation keeps closing the
+    /// distance every tick until it arrives or something else sets a new destination, which is what the
+    /// live call does. See <see cref="SimPlayer.WalkTarget"/> for why the difference mattered.</summary>
+    public void walkTo(int tx, int ty) => _sim.Player.WalkTarget = (tx, ty);
+
+    /// <summary>`bot.walking` — is the character still on its way somewhere.</summary>
+    public bool walking() => _sim.Player.WalkTarget is not null;
+
+    /// <summary>`bot.commitStop` / `bot.stopTravel` — stop where you are.</summary>
+    public void commitStop() => _sim.Player.WalkTarget = null;
 
     /// <summary>`bot.attack` — swing at a mob. Returns false when out of range or the mob is gone, which
     /// is what the real API does rather than throwing.</summary>
@@ -197,6 +241,24 @@ public sealed class SimBotApi
     }
 
     public bool isAlive(int handle) => _sim.Find((ushort)handle)?.Mob.IsAlive ?? false;
+
+    /// <summary>`bot.autoAttack` — lock on and keep swinging. See <see cref="SimPlayer.AutoAttackTarget"/>:
+    /// this starts a MODE the simulation sustains, it does not deal a hit.
+    ///
+    /// <para>⚠️ It does NOT close the distance, and neither does the live one. `BotManager.AutoAttackAsync`
+    /// sends a short face-step and a stop before BASHSTART — that sets FACING, it does not travel. The
+    /// caller must already be in weapon range; if we do not walk, nobody walks.</para></summary>
+    public bool autoAttack(int handle)
+    {
+        var m = _sim.Find((ushort)handle);
+        if (m is null || !m.Mob.IsAlive) return false;
+        _sim.Player.AutoAttackTarget = (ushort)handle;
+        _sim.Player.NextSwingAt = _sim.Now;      // the first swing lands on the next tick
+        return true;
+    }
+
+    /// <summary>`bot.stopAttack` — drop out of auto-attack.</summary>
+    public void stopAttack() => _sim.Player.AutoAttackTarget = null;
 
     // ---- what the driver measures about a fight -------------------------------------------------------
 

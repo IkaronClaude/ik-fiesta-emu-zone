@@ -313,8 +313,12 @@ public sealed class LevelingBotHarness
         ["killsByMe"] = _ => DynValue.NewNumber(_sim.Kills),
         ["dist"] = a => DynValue.NewNumber(_api.dist((int)a[0].Number)),
         ["isAlive"] = a => DynValue.NewBoolean(_api.isAlive((int)a[0].Number)),
-        ["walkTo"] = a => { _api.walkTo((int)a[0].Number, (int)a[1].Number); return DynValue.Nil; },
-        ["attack"] = a => DynValue.NewBoolean(_api.attack((int)a[0].Number)),
+        ["walking"] = _ => DynValue.NewBoolean(_api.walking()),
+        ["commitStop"] = _ => { _api.commitStop(); return DynValue.Nil; },
+        ["stopTravel"] = _ => { _api.commitStop(); return DynValue.Nil; },
+        // The simulation has no mounts. FALSE is a reading, not a stub: a truthy stub makes the driver
+        // spend every tick trying to dismount before it will attack.
+        ["mounted"] = _ => DynValue.NewBoolean(false),
 
         // ⚠️ THESE GATE A FLEE DECISION, so a stub is not acceptable for them -- and the auto-stub's shape
         // guess made `incomingDps` a TABLE, which raised "attempt to compare table with number" and killed
@@ -396,7 +400,13 @@ public sealed class LevelingBotHarness
             return DynValue.True;
         },
         ["attack"] = a => DynValue.NewBoolean(_api.attack((int)a[0].Number)),
-        ["autoAttack"] = a => DynValue.NewBoolean(_api.attack((int)a[0].Number)),
+        // ⚠️ A MODE, NOT ONE SWING. `bot.autoAttack(h)` live sends BASHSTART and the server then streams
+        // swings until the target dies; mapping it to a single `attack()` meant the driver hit a mob once
+        // and stood there. See SimPlayer.AutoAttackTarget.
+        ["autoAttack"] = a => DynValue.NewBoolean(_api.autoAttack((int)a[0].Number)),
+        ["stopAttack"] = _ => { _api.stopAttack(); return DynValue.Nil; },
+        ["bashing"] = _ => DynValue.NewBoolean(_sim.Player.AutoAttackTarget is not null),
+        ["target"] = _ => _sim.Player.AutoAttackTarget is { } h ? DynValue.NewNumber(h) : DynValue.Nil,
         ["mobLocation"] = a => MobField(a, m => DynValue.NewTable(Pair(m.Mob.X, m.Mob.Y))),
         ["mobMaxHp"] = a => MobField(a, m => DynValue.NewNumber(m.MaxHp)),
         ["mobLevel"] = a => MobField(a, m => DynValue.NewNumber(m.Level)),

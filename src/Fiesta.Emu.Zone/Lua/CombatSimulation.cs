@@ -278,6 +278,29 @@ public sealed class CombatSimulation
     };
 
     /// <summary>The player swings at a mob: damage now, aggro now, both through the ported paths.</summary>
+    /// <summary>Sustain `bot.autoAttack`: swing at the locked target whenever one is due and it is in
+    /// range, and drop the lock when it dies or walks out of reach.
+    ///
+    /// <para>This is the server's half of an auto-attack — the client sends BASHSTART once and the server
+    /// streams the swings. Without it the driver's one call produced one hit.</para></summary>
+    private void AdvanceAutoAttack()
+    {
+        if (Player.AutoAttackTarget is not { } handle) return;
+
+        var m = Find(handle);
+        if (m is null || !m.Mob.IsAlive) { Player.AutoAttackTarget = null; return; }
+        if (!Player.IsAlive) { Player.AutoAttackTarget = null; return; }
+
+        // Out of reach is not "stop attacking" -- live the swings simply do not connect, and the driver
+        // is the thing that decides to close or give up.
+        var range = (long)Player.AttackRange * Player.AttackRange;
+        if (MobTargetSelector.SquaredDistance(Player, m.Mob) > range) return;
+
+        if (Now < Player.NextSwingAt) return;
+        Player.NextSwingAt = Now + Math.Max(1u, Player.SwingIntervalMs);
+        PlayerAttack(m);
+    }
+
     public void PlayerAttack(SimMob target)
     {
         var damage = SwingDamage(Player, target, Player.AttackDamage);
@@ -317,6 +340,12 @@ public sealed class CombatSimulation
     public void Tick()
     {
         Now += TickMs;
+
+        // The player keeps walking toward wherever `bot.walkTo` last pointed. Live, a walk continues
+        // without the script asking again; a simulation that only moves when called makes the driver's own
+        // movement detector read STANDING STILL. See SimPlayer.WalkTarget.
+        Player.AdvanceWalk(TickMs);
+        AdvanceAutoAttack();
 
         // Respawn anything whose timer has come up, back in its own spawn area.
         foreach (var dead in _mobs.Where(m => !m.Mob.IsAlive && m.RespawnAt is not null && Now >= m.RespawnAt))

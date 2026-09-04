@@ -80,13 +80,20 @@ public class BotSimIntegrationTests(ITestOutputHelper output)
     /// <summary>⭐ THE STUB RATCHET. These three numbers ARE the integration status, and the assertions
     /// are bounds that may only move one way.
     ///
-    /// <para>Measured at the time of writing: <b>53</b> distinct `bot.*` reached, <b>17</b> backed by the
-    /// simulation, <b>36</b> auto-stubbed, out of 181 mentioned anywhere in the driver. Tightening a bound
-    /// is the deliverable; loosening one needs a reason in the commit message.</para>
+    /// <para>Measured at the time of writing: <b>57</b> distinct `bot.*` reached, <b>20</b> backed by the
+    /// simulation, <b>37</b> auto-stubbed, out of 181 mentioned anywhere in the driver.</para>
     ///
-    /// <para>⚠️ These are MEASURED, not aspirational. The first version of this test asserted 19/31 —
-    /// numbers written before running it — and failed on its own guess. An assertion invented ahead of the
-    /// measurement is a wish, and it fails for the wrong reason.</para></summary>
+    /// <para>⚠️ <b>THE RAW STUB COUNT IS NOT A PROGRESS METRIC, and asserting it as one was wrong.</b>
+    /// This test first bounded stubs at 36 and then failed at 37 — after a change that made things
+    /// strictly better. Backing `walkTo` and `autoAttack` properly let the driver get FURTHER into its own
+    /// logic, which reached 57 distinct calls instead of 53, which surfaced new stubs. Going deeper always
+    /// finds more gaps, so the gap count rises exactly when progress is made.</para>
+    ///
+    /// <para>The two bounds that do mean something: the number BACKED (a floor that only rises), and the
+    /// list of calls that gate a combat decision (which must never be stubbed at all).</para>
+    ///
+    /// <para>⚠️ And these are MEASURED, not aspirational. The first version asserted 19/31 — numbers
+    /// written before running it — and failed on its own guess.</para></summary>
     [SkippableFact]
     public void TheSimulationBacksAGrowingShareOfWhatTheDriverCalls()
     {
@@ -103,10 +110,13 @@ public class BotSimIntegrationTests(ITestOutputHelper output)
         output.WriteLine(h.Report());
 
         // Ratchet. Raise the floor as the simulation grows; never lower it silently.
-        h.RealCalled.Count.ShouldBeGreaterThanOrEqualTo(17,
+        h.RealCalled.Count.ShouldBeGreaterThanOrEqualTo(20,
             "the simulation should back at least as many calls as it did last time");
-        h.StubsCalled.Count.ShouldBeLessThanOrEqualTo(36,
-            "auto-stubs are the gap; this may only shrink");
+
+        // ⚠️ NO BOUND ON THE STUB COUNT -- see the summary. It rises when the driver gets further, so
+        // bounding it punishes progress. Reported, not asserted.
+        output.WriteLine($"stubbed: {h.StubsCalled.Count} of {h.Calls.Count} reached "
+                         + $"({h.RealCalled.Count} backed), {h.Surface.Count} in the source");
 
         // ⚠️ The calls that gate a COMBAT decision must never be stubbed: a stub there is a bot that looks
         // like it handled a case it never saw. `incomingDps` was one, and its stub returned a TABLE, which
@@ -115,6 +125,40 @@ public class BotSimIntegrationTests(ITestOutputHelper output)
                                           "incomingDps", "sustainableHealDps" })
             h.StubsCalled.ShouldNotContain(required,
                 $"`{required}` gates a combat decision and must be simulated, not stubbed");
+    }
+
+    /// <summary>⭐ STAGE 2's FIRST MILESTONE: the driver actually fights. It went 0 kills for a long time
+    /// while looking perfectly healthy, because two calls were modelled as EVENTS where the live ones are
+    /// MODES:
+    ///
+    /// <list type="bullet">
+    ///   <item><c>bot.walkTo</c> live starts a walk the character continues; the simulation moved it six
+    ///         units and stopped. The driver's own `moving()` calls a change of under 30 units standing
+    ///         still, so it crawled six units every 400 ms toward a mob 1,475 units away.</item>
+    ///   <item><c>bot.autoAttack</c> live sends BASHSTART once and the SERVER streams swings until the
+    ///         target dies; the simulation dealt exactly one hit, against an Orc with 3,562 HP.</item>
+    /// </list>
+    ///
+    /// <para>⚠️ One kill in seven simulated minutes is a long way from a working bot — it is the
+    /// difference between "never fights" and "fights", and it is asserted here so it cannot go back to
+    /// zero unnoticed. Raise this bound as stage 2 lands skills, consumables and target selection.</para></summary>
+    [SkippableFact]
+    public void TheDriverKillsSomething()
+    {
+        var shine = Shine();
+        var driver = DriverPath();
+        Skip.If(shine is null, "server data not present; set SHINE_DATA");
+        Skip.If(driver is null, "level_quest.lua not present; set LEVEL_QUEST_LUA");
+
+        var src = File.ReadAllText(driver!);
+        var sim = Uruga(shine!);
+        var h = LevelingBotHarness.Attach(sim, src);
+        h.Run(src, ticks: 4000);
+
+        output.WriteLine($"kills={sim.Kills} player=({sim.Player.X},{sim.Player.Y}) hp={sim.Player.Hp}");
+        output.WriteLine(h.Report());
+
+        sim.Kills.ShouldBeGreaterThan(0, "the driver walked up to a mob and never swung");
     }
 
     /// <summary>Speed, so a regression in it is visible. The point of the simulation is to run a grind
