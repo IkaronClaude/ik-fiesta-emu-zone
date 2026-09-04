@@ -319,6 +319,14 @@ public sealed class LevelingBotHarness
         // The simulation has no mounts. FALSE is a reading, not a stub: a truthy stub makes the driver
         // spend every tick trying to dismount before it will attack.
         ["mounted"] = _ => DynValue.NewBoolean(false),
+        // ⚠️ A NAME, not a number. The auto-stub's number made every map comparison in the driver false,
+        // 45,849 times per run.
+        ["map"] = _ => DynValue.NewString(_sim.MapName),
+        ["mapInside"] = _ => DynValue.NewBoolean(false),
+        // Pure telemetry in the live bot -- it records what the bot is doing for the operator's dashboard
+        // and nothing reads it back. Declared inert rather than simulated.
+        ["setFocus"] = _ => DynValue.Nil,
+        ["notePhase"] = _ => DynValue.Nil,
 
         // ⚠️ THESE GATE A FLEE DECISION, so a stub is not acceptable for them -- and the auto-stub's shape
         // guess made `incomingDps` a TABLE, which raised "attempt to compare table with number" and killed

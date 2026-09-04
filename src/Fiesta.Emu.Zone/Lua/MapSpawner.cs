@@ -37,6 +37,8 @@ public static class MapSpawner
         uint spawnSeed = 1,
         ushort firstHandle = 100)
     {
+        sim.MapName = map.MapName;
+
         var spawned = sim.SpawnAll(map, statsFor, spawnSeed, firstHandle);
         foreach (var mob in spawned)
             if (MobCombatant.Build(data, mob.Name) is { } definition)

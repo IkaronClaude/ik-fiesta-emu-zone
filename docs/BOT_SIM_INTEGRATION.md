@@ -24,6 +24,8 @@ Run `LevelingBotHarness.Attach(sim, src)` over the real driver, 2000 ticks:
 | script errors | **1** — `chunk_0:(1360,9-49): table index is nil` |
 | kills | **0** |
 
+**Since then** (see stage 1 and 2 below): 0 errors, 57 calls reached, 20 backed, 1 kill, ~200x realtime.
+
 ⭐ **Speed is not the problem and never was.** 128x is already past the ask; a batch of 100 seeds is
 minutes, not hours. The problem is that the driver crashes 1360 lines in and never throws a punch. Every
 stage below is about FIDELITY, and the speed work at the end is only about turning fidelity into search.
@@ -100,6 +102,43 @@ ported, the skill cascade is ported. This stage is wiring, not research.
 
 **Exit:** the driver kills mobs unaided, and `kills`, `deaths` and `exp/hour` are non-zero and stable
 across seeds.
+
+### Progress, and what it exposed
+
+`walkTo` and `autoAttack` were both modelled as EVENTS where the live ones are MODES, and both failures
+looked like healthy behaviour:
+
+- **`walkTo`** live starts a walk the character continues on its own. The simulation moved it six units and
+  stopped — and six was units-per-CALL where every mob in the same simulation moves in units-per-SECOND
+  (`MobInfo.RunSpeed`; an Orc is 127). The driver's `moving()` reads a position change under 30 units as
+  standing still, so its pull logic crawled six units every 400 ms toward a mob 1,475 units away.
+- **`autoAttack`** live sends BASHSTART once and the SERVER streams swings until the target dies. The
+  simulation dealt exactly one hit, against an Orc with 3,562 HP.
+
+Fixing both took kills from 0 to 1.
+
+⭐ **And then 1 was the answer no matter what.** Three scenarios, same seed, same 400 simulated seconds:
+
+| character | swing vs Orc (61, 3562 hp) | time-to-kill | kills |
+|---|---|---|---|
+| lvl 40, weapon 60-95 | 34-40 | ~144 s | **1** |
+| lvl 60, weapon 60-95 | 71-80 | ~70 s | **1** |
+| lvl 60, weapon 300-420 | 131-162 | ~36 s | **1** |
+
+A 4x improvement in kill speed produced no more kills. **The limit is not the combat engine — it is the
+driver's loop.** The bot calls `autoAttack` twice in 4,000 ticks, kills one mob and does not re-engage,
+while its own log flip-flops `PHASE => xpgrind` / `PHASE => kill (quest mobs)` every tick. That oscillation
+is stub-driven: `activeQuests` and `eligibleQuests` return empty stubs, so the driver keeps deciding it has
+no quests, falling back to xp-grind, then re-entering the quest phase.
+
+**So stage 2's remaining work is QUEST STATE, not combat.** That is worth knowing before optimising a
+combat rotation against a simulation where combat is not the bottleneck.
+
+⚠️ It also shows how easily the two get confused. The first scenario — a level-40 Cleric in Uruga, a
+level-61 zone — takes 639-746 damage per mob swing against a real max HP of 879, and only survives because
+the fixture hands it 2,000,000 HP. Read without the level-gap numbers, "the bot barely kills anything and
+is always nearly dead" reads as a bad bot. It is a badly chosen fixture, and the engine reporting it
+faithfully.
 
 ---
 

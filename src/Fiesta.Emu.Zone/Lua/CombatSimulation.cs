@@ -161,6 +161,14 @@ public sealed class CombatSimulation
 
     public List<string> Log { get; } = new();
 
+    /// <summary>The map the simulation is on, as `MobRegen/&lt;name&gt;.txt` names it — "Urg" for Uruga.
+    ///
+    /// <para>⚠️ <b>`bot.map()` returns a NAME, and the harness's auto-stub returned a number.</b> It is the
+    /// single most-called stub in the driver — 45,849 calls in a 4,000-tick run — and every one of them
+    /// fed a comparison against a map name that could never match. `SpawnAll` sets this from the regen
+    /// data it was handed, so it is a reading rather than a setting.</para></summary>
+    public string MapName { get; set; } = "";
+
     private readonly List<(uint At, int Damage)> _incoming = new();
 
     /// <summary>Damage the player has taken in the last <paramref name="windowMs"/>, per second.
