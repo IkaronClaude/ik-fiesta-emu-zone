@@ -243,3 +243,44 @@ port step — which is the point. What can still go wrong:
   stub defaults are zeros.
 - **A green run with 36 stubs is a fast wrong answer.** The stub count belongs in the test output next to
   the score, always.
+
+---
+
+## ⚠️ 2026-09-04 — EVERY DRIVER MEASUREMENT IN THIS DOCUMENT IS CONFOUNDED
+
+`level_quest.lua` thrashes `PHASE => xpgrind` / `PHASE => kill (quest mobs)` on **every tick of every
+run**, against its own crutch line:
+
+> `no active quests KNOWN yet (n=0, lists still loading or genuinely none) — xp-grinding until they
+> arrive. NOT the same as 'all my quests are unsolvable'.`
+
+`activeQuests` is backed and always empty; `availableQuests`, `eligibleQuests`, `npcCoord` and `canPick`
+are still stubs, because the spawner places **fightable mobs only** and there is no NPC to take a quest
+from. So the phase machine that decides WHERE to grind and WHAT to kill spends the entire run in a crutch
+loop.
+
+**What that invalidates.** The driver behaviours measured here — ping-ponging between two fixed
+destinations, 1,370-unit legs where walls-off does 293-unit hops, spending the run in transit, and
+probably the 6-kills-with-walls against 19-without gap — are downstream of a MISSING SUBSYSTEM, not of
+combat or navigation. It also explains why the driver looked equally odd with walls off, which no
+navigation theory accounted for.
+
+**What it does not invalidate.** The combat engine (capture-exact on every stat), the soul-stone model
+(cooldown read from the binary), the navmesh (0 blocked ticks, every route found), and the API
+conformance fixes — `attack(skill, target)`, `walkTo` returning bool, `hpPct` returning -1 — are all
+independently verified and stand.
+
+**Judging a quest-driven bot in a world with no quests measures the crutch, not the bot.** The quest
+surface is the next thing to back, ahead of the kiting work, which cannot be honestly assessed until the
+driver's own decision loop is being fed.
+
+### Hypotheses this session tested and DISPROVED — do not repeat without new evidence
+
+| Hypothesis | Killed by |
+|---|---|
+| The stone cooldown is wrong / too short | It was: 5,000 ms was invented. The real 7,000 is in `sp_HPStoneUse` — but the operator's rule stands, mobs are MEANT to outdamage in dungeons |
+| The driver dies because it cannot out-heal | It was healing at its ceiling; it never kited — 3 of 48 hits moving, median attacker range 0u |
+| Missing armour enhancement explains the DEF gap | The whole stat vector was short, not just AC; it was "Power of Love" |
+| Items cannot grant primary stats | `GradeItemOption.shn`, and a pet granting +2 to all five |
+| The driver chases mobs it cannot reach | `walkTo` refused **0 of 12** calls once the navmesh landed |
+| Walls-on kills collapse because of geometry | Leg length: ~1,370u legs against ~293u, so the run is spent travelling |
