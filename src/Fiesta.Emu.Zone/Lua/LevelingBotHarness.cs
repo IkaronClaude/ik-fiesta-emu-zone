@@ -334,6 +334,22 @@ public sealed class LevelingBotHarness
         // script's own "not learned yet"; see SimBotApi.
         ["incomingDps"] = a => DynValue.NewNumber(_api.incomingDps(a.Count > 0 ? (int)a[0].Number : 5000)),
         ["sustainableHealDps"] = _ => DynValue.NewNumber(_api.sustainableHealDps()),
+        ["soulstoneHp"] = _ => DynValue.NewBoolean(_api.soulstoneHp()),
+        ["hpStones"] = _ => DynValue.NewNumber(_api.hpStones()),
+        ["maxHpStones"] = _ => DynValue.NewNumber(_api.maxHpStones()),
+        ["hpStoneRestore"] = _ => DynValue.NewNumber(_api.hpStoneRestore()),
+        ["hpStoneDepleted"] = _ => DynValue.NewBoolean(_api.hpStoneDepleted()),
+        ["hpStoneReadyInMs"] = _ => DynValue.NewNumber(_api.hpStoneReadyInMs()),
+        ["sp"] = _ => DynValue.NewNumber(_api.sp()),
+        ["maxSp"] = _ => DynValue.NewNumber(_api.maxSp()),
+        ["spPct"] = _ => DynValue.NewNumber(_api.spPct()),
+        ["soulstoneSp"] = _ => DynValue.NewBoolean(_api.soulstoneSp()),
+        ["spStones"] = _ => DynValue.NewNumber(_api.spStones()),
+        ["maxSpStones"] = _ => DynValue.NewNumber(_api.maxSpStones()),
+        ["spStoneRestore"] = _ => DynValue.NewNumber(_api.spStoneRestore()),
+        ["spStoneDepleted"] = _ => DynValue.NewBoolean(_api.spStoneDepleted()),
+        ["spStoneCooldownMs"] = _ => DynValue.NewNumber(_api.spStoneCooldownMs()),
+        ["spStoneReadyIn"] = _ => DynValue.NewNumber(_api.spStoneReadyIn()),
         ["recentDamage"] = a => DynValue.NewNumber(_api.recentDamage(a.Count > 0 ? (int)a[0].Number : 5000)),
         ["activeQuests"] = _ =>
         {

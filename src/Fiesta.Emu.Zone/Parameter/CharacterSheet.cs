@@ -36,6 +36,8 @@ public static class CharacterSheet
         player.Level = level;
         player.MaxHp = CharacterParameters.MaxHp(table, level, total);
         player.Hp = player.MaxHp;
+        player.MaxSp = CharacterParameters.MaxSp(table, level, total);
+        player.Sp = player.MaxSp;
         player.UsesStatFormula = true;
         player.JobChangeDamageUpPermille = table.At(level)?.JobChangeDmgUp;
         return container;

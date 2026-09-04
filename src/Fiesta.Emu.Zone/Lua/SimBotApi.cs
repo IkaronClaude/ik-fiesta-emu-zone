@@ -13,6 +13,16 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
 
     public int Hp { get; set; } = 1000;
     public int MaxHp { get; set; } = 1000;
+
+    /// <summary>The SP pool. Skills spend it, and the driver gates a whole rotation on it — so a
+    /// simulation that leaves it at zero makes every caster look like it cannot cast.</summary>
+    public int Sp { get; set; }
+
+    /// <summary><c>CharacterParameters.MaxSp</c> fills this in <c>Become</c>, the same way MaxHp is
+    /// filled. <b>0 means "not known"</b>, which is what makes <c>spPct()</c> return -1 rather than
+    /// claiming an empty bar.</summary>
+    public int MaxSp { get; set; }
+
     public int Level { get; set; } = 1;
 
     /// <summary>Damage this player deals per attack. A stand-in until the damage engine is migrated in
@@ -85,6 +95,52 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
     /// <summary>Simulation clock at which the next auto-attack swing is due.</summary>
     public uint NextSwingAt { get; set; }
 
+    // ---- HP soul stones ------------------------------------------------------------------------------
+    //
+    // ⚠️ Until this existed, survival could not be evaluated AT ALL: the integration fixture had to hand
+    // the character 2,000,000 HP to keep it standing, which makes every flee, heal and stone decision in
+    // level_quest.lua untestable, and `sustainableHealDps` a permanent -1.
+
+    /// <summary>Charges left in the HP soul stone. <b>-1 is "not learned yet"</b>, which is what the live
+    /// `bot.hpStones` returns before the reserve has been seen — and the driver reads it that way.</summary>
+    public int HpStones { get; set; } = -1;
+
+    /// <summary>Reserve capacity, from the soul-stone shop packet live.</summary>
+    public int MaxHpStones { get; set; }
+
+    /// <summary>HP restored by one charge. 0 means "not known", as it does live.</summary>
+    public int HpStoneRestore { get; set; }
+
+    /// <summary>Cooldown between charges. The live value comes off the USE/USEFAIL pair.</summary>
+    public uint HpStoneCooldownMs { get; set; } = 5000;
+
+    /// <summary>When the next charge may be used.</summary>
+    public uint HpStoneReadyAt { get; set; }
+
+    /// <summary>Set once a USE has failed for an empty reserve — the live flag the driver gates on.</summary>
+    public bool HpStoneDepleted { get; set; }
+
+    // ---- SP soul stones ------------------------------------------------------------------------------
+    //
+    // The exact mirror of the HP reserve. It is a separate reserve live (a separate item, a separate
+    // shop line, its own USE opcode), and `level_quest.lua` reads the two independently — `spStones`
+    // and `spStoneDepleted` were between them the third and fourth most-leaned-on stubs in the harness
+    // report, at 11,785 calls each.
+
+    /// <summary>Charges left in the SP soul stone. -1 is "not learned yet".</summary>
+    public int SpStones { get; set; } = -1;
+
+    public int MaxSpStones { get; set; }
+
+    /// <summary>SP restored by one charge. 0 means "not known".</summary>
+    public int SpStoneRestore { get; set; }
+
+    public uint SpStoneCooldownMs { get; set; } = 5000;
+
+    public uint SpStoneReadyAt { get; set; }
+
+    public bool SpStoneDepleted { get; set; }
+
     /// <summary>Advance toward <see cref="WalkTarget"/> for one tick. Clears the target on arrival, which
     /// is what makes `bot.walking()` go false.</summary>
     public void AdvanceWalk(uint elapsedMs)
@@ -141,7 +197,20 @@ public sealed class SimBotApi
     public int y() => _sim.Player.Y;
     public int hp() => _sim.Player.Hp;
     public int maxHp() => _sim.Player.MaxHp;
-    public double hpPct() => _sim.Player.MaxHp == 0 ? 0 : 100.0 * _sim.Player.Hp / _sim.Player.MaxHp;
+    /// <summary>`bot.hpPct` — HP as a percentage. <b>-1 when the maximum is not known</b>, matching the
+    /// live accessor exactly.
+    ///
+    /// <para>⚠️ This returned <b>0</b> for the unknown case, and 0 is a VALID percentage: it reads as
+    /// "dead", and every `hpp &gt;= 0 and hpp &lt; HEAL_PCT` gate in the driver fires on it. The live
+    /// call has always returned -1 there. A conformance difference of one sentinel is enough to make the
+    /// simulated bot behave unlike the real one under exactly the conditions being tested.</para></summary>
+    public double hpPct() => _sim.Player.MaxHp == 0 ? -1 : 100.0 * _sim.Player.Hp / _sim.Player.MaxHp;
+
+    public int sp() => _sim.Player.Sp;
+    public int maxSp() => _sim.Player.MaxSp;
+
+    /// <summary>`bot.spPct` — SP as a percentage, -1 when the maximum is not known.</summary>
+    public double spPct() => _sim.Player.MaxSp == 0 ? -1 : 100.0 * _sim.Player.Sp / _sim.Player.MaxSp;
     public int level() => _sim.Player.Level;
     public bool alive() => _sim.Player.IsAlive;
 
@@ -271,6 +340,81 @@ public sealed class SimBotApi
     /// <summary>`bot.stopAttack` — drop out of auto-attack.</summary>
     public void stopAttack() => _sim.Player.AutoAttackTarget = null;
 
+    // ---- consumables ---------------------------------------------------------------------------------
+
+    /// <summary>`bot.soulstoneHp` — spend one HP soul-stone charge.
+    ///
+    /// <para>⚠️ <b>A MISSING ACK IS THE SIGNAL.</b> Live, a stone only restores near a Healer and a failed
+    /// use sends `USEFAIL` (or nothing at all), which is how the driver learns the reserve is empty. So
+    /// this returns false and sets <see cref="SimPlayer.HpStoneDepleted"/> rather than silently doing
+    /// nothing — a stub that returned true would tell the bot it healed when it did not.</para></summary>
+    public bool soulstoneHp()
+    {
+        var p = _sim.Player;
+        if (p.HpStones <= 0) { p.HpStoneDepleted = true; return false; }
+        if (_sim.Now < p.HpStoneReadyAt) return false;
+
+        p.HpStones--;
+        p.HpStoneReadyAt = _sim.Now + p.HpStoneCooldownMs;
+        p.Hp = Math.Min(p.MaxHp, p.Hp + p.HpStoneRestore);
+        if (p.HpStones == 0) p.HpStoneDepleted = true;
+        return true;
+    }
+
+    /// <summary>`bot.soulstoneSp` — the SP reserve, worked exactly like the HP one.</summary>
+    public bool soulstoneSp()
+    {
+        var p = _sim.Player;
+        if (p.SpStones <= 0) { p.SpStoneDepleted = true; return false; }
+        if (_sim.Now < p.SpStoneReadyAt) return false;
+
+        p.SpStones--;
+        p.SpStoneReadyAt = _sim.Now + p.SpStoneCooldownMs;
+        p.Sp = Math.Min(p.MaxSp, p.Sp + p.SpStoneRestore);
+        if (p.SpStones == 0) p.SpStoneDepleted = true;
+        return true;
+    }
+
+    public int spStones() => _sim.Player.SpStones;
+    public int maxSpStones() => _sim.Player.MaxSpStones;
+    public int spStoneRestore() => _sim.Player.SpStoneRestore;
+    public bool spStoneDepleted() => _sim.Player.SpStoneDepleted;
+    public double spStoneCooldownMs() => _sim.Player.SpStoneCooldownMs;
+
+    public double spStoneReadyIn()
+    {
+        var p = _sim.Player;
+        if (p.SpStones <= 0) return -1;
+        return _sim.Now >= p.SpStoneReadyAt ? 0 : p.SpStoneReadyAt - _sim.Now;
+    }
+
+    public int hpStones() => _sim.Player.HpStones;
+    public int maxHpStones() => _sim.Player.MaxHpStones;
+    public int hpStoneRestore() => _sim.Player.HpStoneRestore;
+    public bool hpStoneDepleted() => _sim.Player.HpStoneDepleted;
+
+    /// <summary>`bot.hpStoneReadyInMs` — milliseconds until the next charge. <b>-1 when there is nothing
+    /// to wait for</b>, matching the live call.</summary>
+    public double hpStoneReadyInMs()
+    {
+        var p = _sim.Player;
+        if (p.HpStones <= 0) return -1;
+        return _sim.Now >= p.HpStoneReadyAt ? 0 : p.HpStoneReadyAt - _sim.Now;
+    }
+
+    /// <summary>`bot.sustainableHealDps` — healing throughput the character can keep up indefinitely.
+    ///
+    /// <para>One charge per cooldown is the whole of it while soul stones are the only healing modelled.
+    /// <b>-1 while the restore amount is unknown</b>, because the driver's `outmatched()` treats -1 as
+    /// "not learned" and declines to judge — which is the correct behaviour for a bot that has not
+    /// measured it, and is why this must not return 0.</para></summary>
+    public double sustainableHealDps()
+    {
+        var p = _sim.Player;
+        if (p.HpStoneRestore <= 0 || p.HpStones <= 0) return -1;
+        return p.HpStoneRestore * 1000.0 / Math.Max(1u, p.HpStoneCooldownMs);
+    }
+
     // ---- what the driver measures about a fight -------------------------------------------------------
 
     /// <summary>`bot.incomingDps(windowMs)` — damage taken per second over the last window.
@@ -284,18 +428,6 @@ public sealed class SimBotApi
     /// -1 is 'not learned yet' (never 0-as-sentinel); an unknown must not fake a verdict." Zero would
     /// tell it the fight costs nothing.</para></summary>
     public double incomingDps(int windowMs) => _sim.IncomingDps((uint)Math.Max(0, windowMs));
-
-    /// <summary>`bot.sustainableHealDps` — the healing throughput the character can keep up.
-    ///
-    /// <para>⚠️ <b>-1, because the simulation does not model healing yet</b> — no HP stones, no heal
-    /// skills, no regen. That is a REFUSAL, not a value: paired with <see cref="incomingDps"/> it makes
-    /// `outmatched()` return false and the driver never flees on this basis, which is the correct
-    /// behaviour for a bot that has not learned the number.</para>
-    ///
-    /// <para>It becomes a real number when stage 2 of `docs/BOT_SIM_INTEGRATION.md` lands consumables and
-    /// heal skills. Until then this is one of the calls that makes a flee decision untestable here, and
-    /// it is listed as such rather than faked.</para></summary>
-    public double sustainableHealDps() => -1;
 
     /// <summary>`bot.recentDamage(windowMs)` — total damage taken in the window, not a rate.</summary>
     public double recentDamage(int windowMs)
