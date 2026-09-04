@@ -92,9 +92,13 @@ public class SimAgreesWithTheCaptureTests(ITestOutputHelper output)
         var box = MobDataBox.Load(shine!);
         var enchanter = ClassParamTable.Load(Path.Combine(shine!, "World", "ParamEnchanterServer.txt"));
 
+        // ⚠️ NO FREE STATS. The capture's char-base block reports an allocation of Int 50 / Men 25, but
+        // its BASE stats carry none of it -- reported Int is 288 where the class row plus the pet gives
+        // 275, not 325. Free-stat points feed the derived tables (`Int.MAAbsolute`, `Con.ACAbsoulte`,
+        // `Men.MaxSP`), which is where the magical-damage fix already adds them; passing them here as well
+        // would double-count into the base cluster and move armour by a number the wire does not show.
         var player = new CombatSimulation().Player;
-        player.Become(enchanter, level: 60, freeStats: new FreeStats(Int: 50, Men: 25),
-                      equipment: Equipment(shine!));
+        player.Become(enchanter, level: 60, equipment: Equipment(shine!));
 
         var orc = MobCombatant.Build(box, "Orc")!;
         var gaps = LevelGapTable.Load(shine!);
@@ -179,6 +183,64 @@ public class SimAgreesWithTheCaptureTests(ITestOutputHelper output)
 
         DamageCalculator.ArmourClass(player).ShouldBe(138, 0.5,
             "with no equipment the capture's reported AC equalled its Constitution exactly");
+    }
+
+    /// <summary>⭐ WHAT IS LEFT OF THE GAP IS A UNIFORM <b>+5% ON EVERY PRIMARY STAT</b>, and naming its
+    /// shape is the whole value of this test.
+    ///
+    /// <para>Two things were found and fixed before this residual came into focus. The class row
+    /// reproduces the login state exactly, and the <b>Mini Phino pet</b> grants +2 to all five stats
+    /// through `GradeItemOption.shn` — the operator named that mechanic, and the wire shows the equip
+    /// packet followed 35 ms later by exactly those five increments. With both modelled the rebuild
+    /// reaches <c>Str 45, Con 140, Dex 159, Int 275, Men 188</c>.</para>
+    ///
+    /// <para>The capture reports <c>47, 147, 166, 288, 197</c>. Every one of those is the rebuilt value
+    /// plus <b>floor(value × 5%)</b>:</para>
+    /// <code>
+    /// Str  45 + floor(2.25)  = 47      Int  275 + floor(13.75) = 288
+    /// Con 140 + floor(7.00)  = 147     Men  188 + floor( 9.40) = 197
+    /// Dex 159 + floor(7.95)  = 166
+    /// </code>
+    ///
+    /// <para>Five exact hits from a one-parameter model, and the truncation is what pins it: 7.95 gives 7,
+    /// not 8. <b>Whatever the source is, it multiplies — it does not add.</b></para>
+    ///
+    /// <para>The source is not identified. Ruled out from the wire and the tables, each checked rather
+    /// than assumed: the level (all five `NC_CHAR_CLIENT_BASE_CMD` blocks say 60), free-stat allocation
+    /// (all 93 hits share one block, Int 50 / Men 25, nothing in Str/Con/Dex), the remaining equipment
+    /// (`GradeItemOption` has rows for the pet alone), set effects, the 18 learned passives, the character
+    /// title (`NC_CHAR_CLIENT_CHARTITLE_CMD` reports none), `BT_Inx` (it indexes `BelongTypeInfo` —
+    /// binding flags), and the only self-abstate in the capture (index 291, `StaImmortal`, a GM state).
+    /// The character IS an admin, so a hand-applied buff is the leading guess and stays a guess.</para>
+    ///
+    /// <para>This test asserts the SHAPE, so the next session inherits a signature to search for rather
+    /// than a number to nudge.</para></summary>
+    [SkippableFact]
+    public void TheResidualAgainstTheCaptureIsAUniformFivePercentOnEveryStat()
+    {
+        var shine = Shine();
+        Skip.If(shine is null, "server data not present; set SHINE_DATA");
+
+        var enchanter = ClassParamTable.Load(Path.Combine(shine!, "World", "ParamEnchanterServer.txt"));
+        var player = new CombatSimulation().Player;
+        player.Become(enchanter, level: 60, equipment: Equipment(shine!));
+        var built = player.EffectiveStats();
+
+        // The capture's own figures, from the CHANGEPARAM block covering all 93 damaging hits.
+        var captured = new Dictionary<Stat, int>
+        {
+            [Stat.Str] = 47, [Stat.Con] = 147, [Stat.Dex] = 166, [Stat.Int] = 288, [Stat.Men] = 197,
+        };
+
+        foreach (var (stat, capture) in captured)
+        {
+            var mine = built[stat];
+            var withFivePercent = mine + (int)(mine * 5 / 100.0);
+            output.WriteLine($"{stat,-4} rebuilt {mine,4}  +5% -> {withFivePercent,4}  capture {capture,4}");
+            withFivePercent.ShouldBe(capture,
+                $"{stat} should be the rebuilt value plus a truncated 5%; if this breaks, either the "
+                + "residual is not 5% after all or something in the base chain has moved");
+        }
     }
 
     /// <summary>⚠️ THE FIXTURE, NOT THE ENGINE. The same Orc against the integration test's invented

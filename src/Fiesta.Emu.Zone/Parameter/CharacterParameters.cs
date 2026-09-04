@@ -20,7 +20,8 @@ public sealed record EquipmentPiece(
     int MRRate = ParameterCluster.RateIdentity,
     int CriRate = 0, int CrlTB = 0, int ShieldAC = 0,
     int HitRatePlus = 0, int EvaRatePlus = 0, int MACriPlus = 0,
-    int CriDamPlus = 0, int MagCriDamPlus = 0);
+    int CriDamPlus = 0, int MagCriDamPlus = 0,
+    int Str = 0, int Con = 0, int Dex = 0, int Int = 0, int Men = 0);
 
 /// <summary>Points the player has spent raising a primary beyond its class-table value.
 ///
@@ -159,6 +160,26 @@ public static class CharacterParameters
     public static void Equip(ParameterContainer container, EquipmentPiece item)
     {
         var plus = container.Plus(StatModifier.Item);
+
+        // ⭐ PRIMARY STATS FROM `GradeItemOption.shn`, and they are NOT in `ItemInfo.shn` at all.
+        //
+        // The operator named the mechanic ("it's like an accessory but +5 on all stats") and the wire
+        // confirms it exactly: in `MageDamageLvl60.pcapng`, `EQUIP slot 25 <- 30817` (`MiniPino01_7`, the
+        // Mini Phino pet) is followed 35 ms later by a `CHANGEPARAM` moving Str 43->45, Con 138->140,
+        // Dex 157->159, Int 273->275 and Men 186->188 -- <b>+2 on every one</b>, matching that item's
+        // `GradeItemOption` row to the unit, with AC following Con (+2) and MaxHp following it by five
+        // (+10).
+        //
+        // ⚠️ An earlier pass here dismissed the four cosmetics as "cosmetics" after checking `ItemInfo`
+        // and finding no stat columns. `ItemInfo` HAS no stat columns -- for any item. Concluding "no
+        // stats" from that file was reading absence in the wrong table, and it is the second time these
+        // same four items have hidden something (the first was their `CriRate`).
+        plus[Stat.Str] += item.Str;
+        plus[Stat.Con] += item.Con;
+        plus[Stat.Dex] += item.Dex;
+        plus[Stat.Int] += item.Int;
+        plus[Stat.Men] += item.Men;
+
         plus[Stat.WCmin] += item.MinWC;
         plus[Stat.WCmax] += item.MaxWC;
         plus[Stat.AC] += item.AC;

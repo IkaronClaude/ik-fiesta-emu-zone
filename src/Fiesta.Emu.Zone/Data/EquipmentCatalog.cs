@@ -8,7 +8,8 @@ public sealed record ItemDefinition(
     int EquipSlot, int UseClass, int DemandLv, int Grade,
     int MinWc, int MaxWc, int Ac, int MinMa, int MaxMa, int Mr, int Th, int Tb,
     int WcRate, int MaRate, int AcRate, int MrRate,
-    int ShieldAc, int HitRatePlus, int EvaRatePlus, int CriRate)
+    int ShieldAc, int HitRatePlus, int EvaRatePlus, int CriRate,
+    int Str = 0, int Con = 0, int Dex = 0, int Int = 0, int Men = 0)
 {
     /// <summary>Turn a catalogue entry into the shape <see cref="CharacterParameters.Equip"/> takes.</summary>
     public EquipmentPiece ToPiece() => new(
@@ -21,7 +22,8 @@ public sealed record ItemDefinition(
         ACRate: AcRate == 0 ? ParameterCluster.RateIdentity : AcRate,
         MRRate: MrRate == 0 ? ParameterCluster.RateIdentity : MrRate,
         CriRate: CriRate, ShieldAC: ShieldAc,
-        HitRatePlus: HitRatePlus, EvaRatePlus: EvaRatePlus);
+        HitRatePlus: HitRatePlus, EvaRatePlus: EvaRatePlus,
+        Str: Str, Con: Con, Dex: Dex, Int: Int, Men: Men);
 }
 
 /// <summary>Which items a class may wear, from the server's own tables.
@@ -93,6 +95,17 @@ public sealed class EquipmentCatalog
         var matrix = ShnFile.Load(Path.Combine(shineDirectory, "UseClassTypeInfo.shn"));
         var names = ShnFile.Load(Path.Combine(shineDirectory, "ClassName.shn"));
 
+        // `GradeItemOption.shn` -- the primary-stat bonuses, keyed by the item's `InxName` rather than its
+        // id, and the ONLY table that carries them. 3,857 rows against 14,999 items, so most items have
+        // none; a missing row is zeroes, not a parse failure.
+        var grade = ShnFile.Load(Path.Combine(shineDirectory, "GradeItemOption.shn"));
+        var bonuses = new Dictionary<string, (int Str, int Con, int Dex, int Int, int Men)>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var r in grade.Rows)
+            bonuses.TryAdd(ShnFile.Str(r, "ItemIndex"),
+                (ShnFile.Int(r, "STR"), ShnFile.Int(r, "CON"), ShnFile.Int(r, "DEX"),
+                 ShnFile.Int(r, "INT"), ShnFile.Int(r, "MEN")));
+
         static int I(IReadOnlyDictionary<string, object> r, string c) => ShnFile.Int(r, c);
         static string S(IReadOnlyDictionary<string, object> r, string c) => ShnFile.Str(r, c);
 
@@ -119,13 +132,18 @@ public sealed class EquipmentCatalog
         }
 
         var defs = items.Rows
-            .Select(r => new ItemDefinition(
-                I(r, "ID"), S(r, "InxName"), S(r, "Name"),
-                I(r, "Equip"), I(r, "UseClass"), I(r, "DemandLv"), I(r, "Grade"),
-                I(r, "MinWC"), I(r, "MaxWC"), I(r, "AC"), I(r, "MinMA"), I(r, "MaxMA"), I(r, "MR"),
-                I(r, "TH"), I(r, "TB"),
-                I(r, "WCRate"), I(r, "MARate"), I(r, "ACRate"), I(r, "MRRate"),
-                I(r, "ShieldAC"), I(r, "HitRatePlus"), I(r, "EvaRatePlus"), I(r, "CriRate")))
+            .Select(r =>
+            {
+                var b = bonuses.GetValueOrDefault(S(r, "InxName"));
+                return new ItemDefinition(
+                    I(r, "ID"), S(r, "InxName"), S(r, "Name"),
+                    I(r, "Equip"), I(r, "UseClass"), I(r, "DemandLv"), I(r, "Grade"),
+                    I(r, "MinWC"), I(r, "MaxWC"), I(r, "AC"), I(r, "MinMA"), I(r, "MaxMA"), I(r, "MR"),
+                    I(r, "TH"), I(r, "TB"),
+                    I(r, "WCRate"), I(r, "MARate"), I(r, "ACRate"), I(r, "MRRate"),
+                    I(r, "ShieldAC"), I(r, "HitRatePlus"), I(r, "EvaRatePlus"), I(r, "CriRate"),
+                    b.Str, b.Con, b.Dex, b.Int, b.Men);
+            })
             .Where(i => i.InxName.Length > 0)
             .ToList();
 

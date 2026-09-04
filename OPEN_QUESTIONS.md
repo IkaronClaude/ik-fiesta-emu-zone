@@ -218,6 +218,7 @@ level-60 class row on *every* primary stat:
 | | Str | Con | Dex | Int | Men | AC | MaxHp |
 |---|---|---|---|---|---|---|---|
 | class row 60 | 43 | 138 | 157 | 273 | 186 | — | 1245 |
+| + the Mini Phino pet | 45 | 140 | 159 | 275 | 188 | 329 | 1255 |
 | capture, at the hits | 47 | 147 | 166 | 288 | 197 | 336 | 1290 |
 
 Armour was never the odd one out. Reading only the AC column made a whole-vector difference look like an
@@ -259,6 +260,62 @@ Why the base stats are elevated at all. The wire rules out the obvious answers:
 `NC_ACT_NOTICE_CMD` "Admin level is 100", and `NC_CHAR_STAT_REMAINPOINT_CMD` reports 75 unspent points at
 login. Hand-set stats would explain it and are not derivable from any table. **This is a plausible cause,
 not a proven one, and it is recorded as such.**
+
+### The pet — found, and how it was missed
+
+The **Mini Phino pet** grants **+2 to every primary stat**, through `GradeItemOption.shn`. The wire shows
+it directly: `EQUIP slot 25 <- 30817` is followed 35 ms later by a CHANGEPARAM moving Str 43->45, Con
+138->140, Dex 157->159, Int 273->275, Men 186->188, with AC following Con (+2) and MaxHp following it by
+five (+10). `EquipmentCatalog` now joins that table and reproduces all seven exactly.
+
+**The operator supplied this from play experience after the analysis here had ruled it out.** The ruling
+was: "No Str/Con/Dex/Int/Men columns exist in `ItemInfo.shn` at all. So items cannot add base stats."
+The first sentence is true; the second does not follow. `ItemInfo.shn` has no primary-stat column for ANY
+item in the game — which is the signature of reading the wrong table, not of the answer being no.
+**An absent COLUMN is evidence about a schema; only an absent VALUE, in the right table, is evidence
+about the entity.** The same four cosmetics had already caught this project once before, dismissed as
+"cosmetics" after a check of their `MinMA` when they carry `CriRate`.
+
+Fixed structurally rather than by resolution: `ItemTableDiscovery` scans every server table for columns
+that resolve to item ids or `InxName`s — it finds **52** — and `ItemTableCoverageTests` fails the build
+unless every one is named as either modelled or, with a statement about the data, not combat-relevant.
+`EquipmentCatalog` reading `ItemInfo.shn` alone had the same blind spot as the reasoning did, so nothing
+could have caught it.
+
+### What is still open: a uniform +5% on every stat
+
+With the class row and the pet both modelled the rebuild reaches `Str 45, Con 140, Dex 159, Int 275,
+Men 188`. The capture reports `47, 147, 166, 288, 197` — each one the rebuilt value plus
+**floor(value x 5%)**:
+
+```
+Str  45 + floor( 2.25) = 47      Int  275 + floor(13.75) = 288
+Con 140 + floor( 7.00) = 147     Men  188 + floor( 9.40) = 197
+Dex 159 + floor( 7.95) = 166
+```
+
+Five exact hits from a one-parameter model, and the truncation pins it: 7.95 gives 7, not 8. **The source
+multiplies; it does not add.** DEF follows Con, so the remaining armour gap is 7 points and is entirely
+this.
+
+Ruled out, each checked rather than assumed:
+
+- **Level** — all five `NC_CHAR_CLIENT_BASE_CMD` blocks report 60. (Level 65's row matches Str/Con/Dex
+  exactly by coincidence; that is the trap this question is most likely to fall into next.)
+- **Free-stat allocation** — all 93 hits share one block, `Int 50 / Men 25`, nothing in Str/Con/Dex.
+- **Remaining equipment** — `GradeItemOption` has a row for the pet and for none of the other eight.
+- **`ChargedEffect.shn`** — the four cosmetics carry `EffectEnum 9`, which is 3,692 of 4,546 rows and
+  takes only the values 0 and 1: a costume flag. Its rate-bearing enums (13 HPIncrease, 14 SPIncrease,
+  15 DIncrease, 10-12 A/D/AD Power) are permille and single-purpose; none touches all five primaries.
+- **`MinimonInfo.shn`** — `{MinimonEquipPos, MinimonRole}` only; a pet's stats are in `GradeItemOption`.
+- **Set effects, the 18 learned passives, `StateItem.shn`, and the character title** (the client reports
+  `CurrentTitle 0, NumOfTitle 0`).
+- **The only self-abstate in the capture** — index 291, `StaImmortal`, a GM state. (Index 731,
+  `StaE_UserNewbie04`, is on handle 9280, not the player's 9282.)
+
+The character IS an admin — `NC_ACT_NOTICE_CMD` "Admin level is 100" — so a hand-applied buff remains the
+leading guess and stays a guess. `TheResidualAgainstTheCaptureIsAUniformFivePercentOnEveryStat` asserts
+the shape, so the next session inherits a signature to search for rather than a number to nudge.
 
 ### A second thing this turned up
 
