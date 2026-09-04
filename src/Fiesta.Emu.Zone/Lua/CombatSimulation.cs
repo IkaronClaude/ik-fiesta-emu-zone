@@ -161,6 +161,25 @@ public sealed class CombatSimulation
 
     public List<string> Log { get; } = new();
 
+    private readonly List<(uint At, int Damage)> _incoming = new();
+
+    /// <summary>Damage the player has taken in the last <paramref name="windowMs"/>, per second.
+    ///
+    /// <para><b>-1 means "not learned yet", and that is a real answer.</b> The live `bot.incomingDps`
+    /// derives this from observed damage packets, so before anything has hit the player there is nothing
+    /// to derive it from — and `level_quest.lua` reads -1 as "unknown" and declines to judge. Returning 0
+    /// instead would tell it the fight is free.</para></summary>
+    public double IncomingDps(uint windowMs)
+    {
+        if (windowMs == 0) return -1;
+        var from = Now > windowMs ? Now - windowMs : 0;
+        var total = 0;
+        var seen = false;
+        foreach (var (at, damage) in _incoming)
+            if (at >= from) { total += damage; seen = true; }
+        return seen ? total * 1000.0 / windowMs : -1;
+    }
+
     public SimMob? Find(ushort handle) => _mobs.FirstOrDefault(m => m.Mob.Handle == handle);
 
     public SimMob AddMob(ushort handle, int x, int y, Action<SimMob>? configure = null)
@@ -327,6 +346,10 @@ public sealed class CombatSimulation
                 if (landed.Target is SimPlayer p && p.IsAlive)
                 {
                     p.Hp -= landed.Damage;
+                    // Every hit the player takes, with when it landed. `bot.incomingDps` is a MEASURED
+                    // quantity in the live bot -- it learns it from the damage packets -- so the
+                    // simulation has to learn it the same way rather than being told.
+                    _incoming.Add((Now, landed.Damage));
 
                     // `smo_SwingDamage+0x4B5`, the tail of a hit that connected: the ATTACKER sheds hate for
                     // whoever it just hit. Guarded on > 0 there, so a zero column is not "shed nothing by

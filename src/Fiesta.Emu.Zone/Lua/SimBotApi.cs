@@ -105,26 +105,60 @@ public sealed class SimBotApi
 
     // ---- the world -----------------------------------------------------------------------------------
 
-    /// <summary>`bot.nearbyMobs` — every living mob, as tables with the fields the driver reads.</summary>
+    /// <summary>`bot.nearbyMobs` — every living mob, in the SAME SHAPE the live `BotApi` produces.
+    ///
+    /// <para>⚠️ <b>The field names are a contract, and a missing one is not a missing feature — it is a
+    /// nil.</b> This method used to emit seven fields; the live one emits fifteen. `level_quest.lua:1360`
+    /// does <c>mobs[m.mobId] = (mobs[m.mobId] or 0) + 1</c>, and a nil `mobId` is not a zero, it is
+    /// "table index is nil" — the driver died there, 1360 lines in, having never reached combat.</para>
+    ///
+    /// <para>⚠️ <b>And the spelling is part of the contract.</b> The live entry is <c>maxhp</c>, lower
+    /// case, while every other entity table in the API uses <c>maxHp</c>. The scripts read both — 10 of
+    /// one, 7 of the other — so emitting the tidier name silently returns nil to seven call sites. Keep
+    /// the server's inconsistency; it is what the scripts were written against.</para>
+    ///
+    /// <para>Fields with no meaning in the simulation are still EMITTED, with the type the script expects
+    /// and a value it reads as absent. Omitting the key is what produces the nil-index class of bug.</para></summary>
     public Table nearbyMobs()
     {
         var t = new Table(_sim.Script);
         var i = 1;
         foreach (var m in _sim.Mobs.Where(m => m.Mob.IsAlive))
-        {
-            var e = new Table(_sim.Script)
-            {
-                ["handle"] = (double)m.Mob.Handle,
-                ["x"] = (double)m.Mob.X,
-                ["y"] = (double)m.Mob.Y,
-                ["hp"] = (double)m.Hp,
-                ["maxHp"] = (double)m.MaxHp,
-                ["dist"] = Math.Sqrt(MobTargetSelector.SquaredDistance(_sim.Player, m.Mob)),
-                ["targetingMe"] = m.Arg.Target is SimPlayer,
-            };
-            t[i++] = e;
-        }
+            t[i++] = MobEntry(m);
         return t;
+    }
+
+    /// <summary>One mob as the live `BotApi` shapes it. See <see cref="nearbyMobs"/> for why every field
+    /// is present even when the simulation has nothing to put in it.</summary>
+    private Table MobEntry(SimMob m)
+    {
+        var info = m.Definition?.Info;
+        return new Table(_sim.Script)
+        {
+            ["handle"] = (double)m.Mob.Handle,
+            ["x"] = (double)m.Mob.X,
+            ["y"] = (double)m.Mob.Y,
+            ["hp"] = (double)m.Hp,
+            // ⚠️ lower-case `hp`, matching the live API. Not a typo.
+            ["maxhp"] = (double)m.MaxHp,
+            ["dist"] = Math.Sqrt(MobTargetSelector.SquaredDistance(_sim.Player, m.Mob)),
+            ["mobId"] = (double)(info?.Id ?? 0),
+            ["name"] = m.Name,
+            ["level"] = (double)m.Level,
+            // `IsFightable` already excludes gathering nodes, scenery and NPCs.
+            ["isHuntable"] = info?.IsFightable ?? true,
+            ["isNpc"] = info?.IsNpc ?? false,
+            // The simulation has no gates, no polymorph clones and no facing/battle-mode broadcast yet.
+            // Emitted anyway, at the value the scripts treat as "not one of those".
+            ["isGate"] = false,
+            ["isClone"] = false,
+            ["linkMap"] = "",
+            ["dir"] = 0d,
+            ["mode"] = 0d,
+            // ⚠️ SIM-ONLY: the live API has no such field. A script that came to depend on it would work
+            // here and read nil live, so it stays documented rather than quietly useful.
+            ["targetingMe"] = m.Arg.Target is SimPlayer,
+        };
     }
 
     public double dist(int handle)
@@ -163,4 +197,37 @@ public sealed class SimBotApi
     }
 
     public bool isAlive(int handle) => _sim.Find((ushort)handle)?.Mob.IsAlive ?? false;
+
+    // ---- what the driver measures about a fight -------------------------------------------------------
+
+    /// <summary>`bot.incomingDps(windowMs)` — damage taken per second over the last window.
+    ///
+    /// <para>⚠️ <b>This gates a combat decision, so it must not be stubbed.</b> `level_quest.lua`'s
+    /// `outmatched()` compares it against `sustainableHealDps()` to decide whether to flee, and the
+    /// harness's auto-stub returned a TABLE — <c>inDps &lt;= 0</c> then raised "attempt to compare table
+    /// with number" and killed the driver 2516 lines in.</para>
+    ///
+    /// <para><b>-1 is the honest unknown</b>, and the script is written for it: "Both must be MEASURED.
+    /// -1 is 'not learned yet' (never 0-as-sentinel); an unknown must not fake a verdict." Zero would
+    /// tell it the fight costs nothing.</para></summary>
+    public double incomingDps(int windowMs) => _sim.IncomingDps((uint)Math.Max(0, windowMs));
+
+    /// <summary>`bot.sustainableHealDps` — the healing throughput the character can keep up.
+    ///
+    /// <para>⚠️ <b>-1, because the simulation does not model healing yet</b> — no HP stones, no heal
+    /// skills, no regen. That is a REFUSAL, not a value: paired with <see cref="incomingDps"/> it makes
+    /// `outmatched()` return false and the driver never flees on this basis, which is the correct
+    /// behaviour for a bot that has not learned the number.</para>
+    ///
+    /// <para>It becomes a real number when stage 2 of `docs/BOT_SIM_INTEGRATION.md` lands consumables and
+    /// heal skills. Until then this is one of the calls that makes a flee decision untestable here, and
+    /// it is listed as such rather than faked.</para></summary>
+    public double sustainableHealDps() => -1;
+
+    /// <summary>`bot.recentDamage(windowMs)` — total damage taken in the window, not a rate.</summary>
+    public double recentDamage(int windowMs)
+    {
+        var dps = _sim.IncomingDps((uint)Math.Max(0, windowMs));
+        return dps < 0 ? 0 : dps * windowMs / 1000.0;
+    }
 }

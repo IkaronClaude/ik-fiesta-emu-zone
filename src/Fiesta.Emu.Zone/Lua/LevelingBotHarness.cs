@@ -311,6 +311,18 @@ public sealed class LevelingBotHarness
         ["aggressors"] = _ => DynValue.NewNumber(_sim.Mobs.Count(m => m.Arg.Target is SimPlayer)),
         ["nearbyMobs"] = _ => DynValue.NewTable(_api.nearbyMobs()),
         ["killsByMe"] = _ => DynValue.NewNumber(_sim.Kills),
+        ["dist"] = a => DynValue.NewNumber(_api.dist((int)a[0].Number)),
+        ["isAlive"] = a => DynValue.NewBoolean(_api.isAlive((int)a[0].Number)),
+        ["walkTo"] = a => { _api.walkTo((int)a[0].Number, (int)a[1].Number); return DynValue.Nil; },
+        ["attack"] = a => DynValue.NewBoolean(_api.attack((int)a[0].Number)),
+
+        // ⚠️ THESE GATE A FLEE DECISION, so a stub is not acceptable for them -- and the auto-stub's shape
+        // guess made `incomingDps` a TABLE, which raised "attempt to compare table with number" and killed
+        // the driver at level_quest.lua:2516. Both are MEASURED quantities in the live bot, and -1 is the
+        // script's own "not learned yet"; see SimBotApi.
+        ["incomingDps"] = a => DynValue.NewNumber(_api.incomingDps(a.Count > 0 ? (int)a[0].Number : 5000)),
+        ["sustainableHealDps"] = _ => DynValue.NewNumber(_api.sustainableHealDps()),
+        ["recentDamage"] = a => DynValue.NewNumber(_api.recentDamage(a.Count > 0 ? (int)a[0].Number : 5000)),
         ["activeQuests"] = _ =>
         {
             var t = new Table(_sim.Script);
