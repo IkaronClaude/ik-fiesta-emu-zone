@@ -312,3 +312,29 @@ That splits the remaining work cleanly, and the split matters:
   a real driver inefficiency and it is measurable here.
 - **Measuring QUEST decision-making needs towns and cross-map travel**, which is a subsystem of its own
   and pairs with the P3 manual quest-difficulty table.
+
+### 2026-09-04 (later) — walls are ON by default, and the harness stopped lying
+
+The `.shbd` reader and navmesh are now the BOT'S OWN, copied verbatim into `Pathfinding/` on the
+operator's instruction. `walkTo` refusals went from **394 of 395 to 0 of 27**, and geometry is on by
+default because a real zone has it.
+
+That reverses the earlier decision to keep walls opt-in, and the measurements reverse with it:
+
+| cell | walls off | walls on |
+|---|---|---|
+| Warrior L25 dungeon | **DIED at 125s** | survived 150s |
+| HighCleric L25 dungeon | **DIED at 45s** | survived 150s |
+| Warrior L75 field | 10 kills | 10 kills |
+| HighCleric L75 field | 7 kills | 7 kills |
+| Warrior L25 field | 19 kills | 6 kills |
+
+Geometry **prevents** deaths at low level and costs nothing at all at high level. It does cost kills at
+level 25, which is the price of walking real terrain instead of through it — a number to improve, not to
+hide by switching the walls off.
+
+⚠️ **This also invalidates the earlier "dies in five of six dungeon cells" figure**, which was measured
+with walls off and a straight-line `walkTo`. Re-measure before quoting it.
+
+The genuinely open driver defect is unchanged and now measurable on honest ground: it does not kite, and
+HighCleric L75 still dies in Trumpy Remains at 10 seconds with or without geometry.

@@ -65,7 +65,7 @@ public static class ScenarioRunner
     public static ScenarioResult? Run(
         string shineDirectory, string ressystemDirectory, string driverSource,
         string className, int level, bool dungeon,
-        int ticks = DefaultTicks, uint seed = 42, bool withWalls = false)
+        int ticks = DefaultTicks, uint seed = 42, bool withWalls = true)
     {
         var band = ScenarioCatalog.For(level);
         if (band is null) return null;
@@ -91,17 +91,21 @@ public static class ScenarioRunner
 
         var map = MobRegenData.Load(Path.Combine(shineDirectory, "MobRegen", $"{area.Map}.txt"));
 
-        // ⚠️ WALLS ARE OPT-IN UNTIL THE SIMULATION CAN PATH AROUND THEM.
+        // ⭐ WALLS ARE ON BY DEFAULT — a real zone has geometry, and the matrix is meant to be zone
+        // equivalent.
         //
-        // The grid itself is sound -- from Burning Hill's grind spot all 16 directions are fully reachable
-        // at 300 units and the immediate neighbourhood is 169/169 walkable. The problem is `walkTo`: here
-        // it is a straight line, while the LIVE `bot.walkTo` goes through the bot's own pathfinder
-        // (`CoarsePathFinder` / `NavMeshPath`), which routes around geometry. Turning walls on without
-        // that makes the simulation punish the driver for a harness gap -- measured, a level-25 Warrior on
-        // Burning Hill fell from 19 kills to 1, having wandered into terrain it could not path out of.
+        // ⚠️ They were opt-in for exactly as long as the harness could not route around them. With a
+        // hand-rolled pathfinder `walkTo` was refused 394 times out of 395 and the character wedged; using
+        // the BOT'S OWN navmesh (see Pathfinding/) that is 0 of 27, and the picture reverses:
         //
-        // So the matrix runs on open ground by default, exactly as it did before, and the wall-aware mode
-        // is available for kite diagnosis. See the P1 ticket.
+        //     Warrior L25 dungeon    walls off: DIED at 125s      walls on: survived 150s
+        //     HighCleric L25 dungeon walls off: DIED at  45s      walls on: survived 150s
+        //     Warrior L75 field      walls off: 10 kills          walls on: 10 kills  (identical)
+        //     HighCleric L75 field   walls off:  7 kills          walls on:  7 kills  (identical)
+        //
+        // Geometry PREVENTS deaths at low level and costs nothing at all at high level. It does cost kills
+        // at level 25 (19 -> 6 on Burning Hill), which is the honest price of walking real terrain rather
+        // than through it -- and a number to improve, not to hide by turning the walls off.
         if (withWalls)
             sim.Walkable = WalkabilityGrid.Load(Path.Combine(shineDirectory, "BlockInfo"), area.Map);
 
