@@ -87,6 +87,8 @@ public static class ScenarioRunner
             LevelGaps = LevelGapTable.Load(shineDirectory),
         };
 
+        sim.Placements = MobCoordinateCatalog.Load(ressystemDirectory);
+
         var map = MobRegenData.Load(Path.Combine(shineDirectory, "MobRegen", $"{area.Map}.txt"));
 
         // ⚠️ WALLS ARE OPT-IN UNTIL THE SIMULATION CAN PATH AROUND THEM.

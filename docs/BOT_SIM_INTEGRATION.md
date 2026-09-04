@@ -284,3 +284,31 @@ driver's own decision loop is being fed.
 | Items cannot grant primary stats | `GradeItemOption.shn`, and a pet granting +2 to all five |
 | The driver chases mobs it cannot reach | `walkTo` refused **0 of 12** calls once the navmesh landed |
 | Walls-on kills collapse because of geometry | Leg length: ~1,370u legs against ~293u, so the run is spent travelling |
+
+### Follow-up: NPCs are in `MobCoordinate.shn`, and the grind maps have none
+
+`npcCoord` and `npcSeedCount` are now backed by `MobCoordinateCatalog` (3,523 placements), which is the
+same table the live `npcCoord` reads. The note they used to carry — "the spawner places fightable mobs
+only, so there is no NPC in the world" — had a true first half and a wrong conclusion: NPCs were never
+going to come from `MobRegen`, which carries spawn GROUPS. Burning Hill's eleven non-combat entries are
+Herb, Wood and Mine nodes.
+
+**But the grind maps still have no quest givers, and that is the game, not a gap:**
+
+| map | placements | of them NPCs |
+|---|---|---|
+| `RouVal02` Burning Hill (field) | 38 | **0** |
+| `ValDn01` Marlone Clan's Hideout (dungeon) | 62 | **0** |
+| `Urg` Uruga (town-ish) | 121 | 25 |
+
+Quest NPCs live in towns. A character dropped into a field or a dungeon has nobody to take a quest from,
+so `activeQuests` is legitimately empty and the crutch loop is the driver doing what it says it does.
+
+That splits the remaining work cleanly, and the split matters:
+
+- **The matrix is a GRIND benchmark and should stay one.** The operator specified it as one field map and
+  one dungeon per level band; measuring combat there is the point. What the driver should do with no
+  quests is settle into `xpgrind`, not thrash `xpgrind` / `kill (quest mobs)` every tick — that thrash is
+  a real driver inefficiency and it is measurable here.
+- **Measuring QUEST decision-making needs towns and cross-map travel**, which is a subsystem of its own
+  and pairs with the P3 manual quest-difficulty table.

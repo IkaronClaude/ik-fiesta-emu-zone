@@ -373,6 +373,7 @@ public sealed class LevelingBotHarness
         ["pendingFriend"] = _ => DynValue.NewBoolean(_api.pendingFriend()),
         ["friendAccept"] = _ => DynValue.NewBoolean(_api.friendAccept()),
         ["npcSeedCount"] = _ => DynValue.NewNumber(_api.npcSeedCount()),
+        ["npcCoord"] = a => _api.npcCoord((int)a[0].Number),
         ["recentDamage"] = a => DynValue.NewNumber(_api.recentDamage(a.Count > 0 ? (int)a[0].Number : 5000)),
         ["activeQuests"] = _ =>
         {

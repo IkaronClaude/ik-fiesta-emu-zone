@@ -691,10 +691,28 @@ public sealed class SimBotApi
     public bool pendingFriend() => false;
     public bool friendAccept() => false;
 
-    /// <summary>`bot.npcSeedCount` — how many NPCs the bot has learned. 0, honestly: the spawner places
-    /// FIGHTABLE mobs only, so there is no NPC in the world to have seen. A quest hand-in cannot be
-    /// exercised here, and that is a known limit rather than a hidden one.</summary>
-    public int npcSeedCount() => 0;
+    /// <summary>`bot.npcSeedCount` — how many placements this map has, from `MobCoordinate.shn`.
+    ///
+    /// <para>⚠️ This returned a hard 0 with a note claiming "the spawner places FIGHTABLE mobs only, so
+    /// there is no NPC in the world". The first half is true and the conclusion was wrong: NPCs were never
+    /// going to come from `MobRegen`, which carries spawn GROUPS — Burning Hill's eleven non-combat
+    /// entries are Herb, Wood and Mine nodes. Quest givers live in `MobCoordinate.shn`, keyed by mob id
+    /// and map, which is the same table the live `npcCoord` reads.</para></summary>
+    public int npcSeedCount()
+        => _sim.Placements is null ? 0 : _sim.Placements.OnMap(_sim.MapName ?? "").Count;
+
+    /// <summary>`bot.npcCoord` — where an NPC stands, as `{map, x, y}`. Nil when the map does not place
+    /// it, matching the live call.</summary>
+    public DynValue npcCoord(int npcId)
+    {
+        if (_sim.Placements?.For(npcId, _sim.MapName ?? "") is not { } placement) return DynValue.Nil;
+
+        var t = new Table(_sim.Script);
+        t["map"] = placement.Map;
+        t["x"] = placement.CenterX;
+        t["y"] = placement.CenterY;
+        return DynValue.NewTable(t);
+    }
 
     public int money() => _sim.Player.Money;
     public int bagFreeSlots() => Math.Max(0, _sim.Player.BagSlots - _sim.Player.BagUsed);

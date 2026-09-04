@@ -630,6 +630,10 @@ public sealed class CombatSimulation
     public int WalkToNoPath { get; set; }
     public int WalkToAlreadyThere { get; set; }
 
+    /// <summary>NPC and mob placements for this map, from `MobCoordinate.shn`. Null until a scenario
+    /// supplies one, and `npcCoord` then answers nil exactly as the live call does without client data.</summary>
+    public Data.MobCoordinateCatalog? Placements { get; set; }
+
     /// <summary>The map's `.shbd` walls, when loaded. Null means open ground everywhere, which is what the
     /// simulation did before this existed — and a kite validated against open ground is not validated.</summary>
     /// <para>⚠️ <b>THE PLAYER ONLY. Mobs do not pathfind — once aggro'd they phase straight through
