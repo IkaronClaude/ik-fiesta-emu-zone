@@ -24,7 +24,8 @@ Run `LevelingBotHarness.Attach(sim, src)` over the real driver, 2000 ticks:
 | script errors | **1** — `chunk_0:(1360,9-49): table index is nil` |
 | kills | **0** |
 
-**Since then** (see stage 1 and 2 below): 0 errors, 57 calls reached, 20 backed, 1 kill, ~200x realtime.
+**Since then** (see stages 1 and 2 below): 0 errors, 57 calls reached, 20 backed, **2-9 kills** depending
+on gear, ~200x realtime.
 
 ⭐ **Speed is not the problem and never was.** 128x is already past the ask; a batch of 100 seeds is
 minutes, not hours. The problem is that the driver crashes 1360 lines in and never throws a punch. Every
@@ -117,22 +118,34 @@ looked like healthy behaviour:
 
 Fixing both took kills from 0 to 1.
 
-⭐ **And then 1 was the answer no matter what.** Three scenarios, same seed, same 400 simulated seconds:
+⭐ **Then 1 was the answer no matter what — and reading that as a bottleneck was WRONG.** Three scenarios,
+same seed, same 400 simulated seconds:
 
-| character | swing vs Orc (61, 3562 hp) | time-to-kill | kills |
-|---|---|---|---|
-| lvl 40, weapon 60-95 | 34-40 | ~144 s | **1** |
-| lvl 60, weapon 60-95 | 71-80 | ~70 s | **1** |
-| lvl 60, weapon 300-420 | 131-162 | ~36 s | **1** |
+| character | swing vs Orc (61, 3562 hp) | time-to-kill | kills BEFORE | kills AFTER |
+|---|---|---|---|---|
+| lvl 40, weapon 60-95 | 34-40 | ~144 s | 1 | **2** |
+| lvl 60, weapon 60-95 | 71-80 | ~70 s | 1 | **5** |
+| lvl 60, weapon 300-420 | 131-162 | ~36 s | 1 | **9** |
 
-A 4x improvement in kill speed produced no more kills. **The limit is not the combat engine — it is the
-driver's loop.** The bot calls `autoAttack` twice in 4,000 ticks, kills one mob and does not re-engage,
-while its own log flip-flops `PHASE => xpgrind` / `PHASE => kill (quest mobs)` every tick. That oscillation
-is stub-driven: `activeQuests` and `eligibleQuests` return empty stubs, so the driver keeps deciding it has
-no quests, falling back to xp-grind, then re-entering the quest phase.
+A 4x improvement in kill speed had bought nothing, and I concluded from that "the limit is the driver's
+loop, not combat — the remaining work is quest state". **That was the wrong conclusion from the right
+observation.**
 
-**So stage 2's remaining work is QUEST STATE, not combat.** That is worth knowing before optimising a
-combat rotation against a simulation where combat is not the bottleneck.
+The cause was a third instance of the same units family: `SimPlayer.AttackRange` was **12** where a melee
+weapon reaches **100** (`DamageCalculator.MeleeAttackRange`). `level_quest.lua` closes to `MELEE = 45` and
+stands off at about 34 before bashing, so every swing found the target out of range and did nothing. The
+one kill was the bot happening to end up inside 12 units. The symptom was a log line reading
+`BASH inCombat=true` at `dist=14` for 221 seconds with the mob at full HP — which looks like a broken
+rotation, not a wrong constant.
+
+⚠️ **A flat response to an input is evidence of a BROKEN input, not of a different bottleneck.** Treating
+"more damage changes nothing" as information about the rest of the system, rather than about the damage
+never being applied, sent the plan off after quest state. The phase flip-flopping is real and still there;
+it simply was not what was stopping the bot.
+
+With the reach corrected, kills track `1/ttk` at about 80% of theory (2.8, 5.7, 11.1 predicted), and the
+gap is travel and retargeting — real behaviour. `MoreDamageMeansMoreKills` now asserts the ordering, so a
+regression of this kind fails instead of being interpreted.
 
 ⚠️ It also shows how easily the two get confused. The first scenario — a level-40 Cleric in Uruga, a
 level-61 zone — takes 639-746 damage per mob swing against a real max HP of 879, and only survives because

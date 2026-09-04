@@ -139,9 +139,16 @@ public class BotSimIntegrationTests(ITestOutputHelper output)
     ///         target dies; the simulation dealt exactly one hit, against an Orc with 3,562 HP.</item>
     /// </list>
     ///
-    /// <para>⚠️ One kill in seven simulated minutes is a long way from a working bot — it is the
-    /// difference between "never fights" and "fights", and it is asserted here so it cannot go back to
-    /// zero unnoticed. Raise this bound as stage 2 lands skills, consumables and target selection.</para></summary>
+    /// <para>And a third of the same family, which is the one that actually mattered:
+    /// <c>SimPlayer.AttackRange</c> was <b>12</b> where a melee weapon reaches <b>100</b>. The driver
+    /// closes to <c>MELEE = 45</c> and stands off at about 34 before bashing, so every swing found the
+    /// target out of range and did nothing. The symptom was a bot logging `BASH inCombat=true` at
+    /// `dist=14` for 221 seconds with the mob at full HP — which reads as a broken rotation, not a wrong
+    /// constant.</para>
+    ///
+    /// <para>⚠️ <b>A plausible small number in the wrong unit is harder to see than a missing feature.</b>
+    /// All three failures — units-per-call, one-shot swing, 12-unit reach — presented as the bot behaving
+    /// sensibly and getting nowhere.</para></summary>
     [SkippableFact]
     public void TheDriverKillsSomething()
     {
@@ -158,7 +165,65 @@ public class BotSimIntegrationTests(ITestOutputHelper output)
         output.WriteLine($"kills={sim.Kills} player=({sim.Player.X},{sim.Player.Y}) hp={sim.Player.Hp}");
         output.WriteLine(h.Report());
 
-        sim.Kills.ShouldBeGreaterThan(0, "the driver walked up to a mob and never swung");
+        sim.Kills.ShouldBeGreaterThanOrEqualTo(2, "the driver walked up to a mob and never swung");
+    }
+
+    /// <summary>⭐⭐ THE PROPERTY THAT PROVES THE COMBAT LOOP RUNS: give the character a bigger weapon and
+    /// it kills more, roughly in proportion.
+    ///
+    /// <para>This is the test that caught the range bug, and it caught it by DISAGREEING WITH A
+    /// CONCLUSION. Before the fix the three scenarios below killed 1, 1 and 1 — a 4x improvement in
+    /// time-to-kill buying nothing — and I read that as "the bottleneck is the driver's quest loop, not
+    /// combat", which was wrong. Kills were pinned at 1 because swings never landed at all; the single
+    /// kill was the bot happening to stand inside 12 units. After the fix: 2, 5 and 9 against a
+    /// theoretical 2.8, 5.7 and 11.1.</para>
+    ///
+    /// <para>⚠️ <b>A flat response to an input is evidence of a BROKEN input, not of a different
+    /// bottleneck.</b> The reasoning that went wrong was treating "more damage changes nothing" as
+    /// information about the rest of the system, when it was information about the damage never being
+    /// applied.</para>
+    ///
+    /// <para>The bound is loose on purpose — the shortfall against theory is travel and retargeting time,
+    /// which is real behaviour and will move as the driver improves. What must hold is the ORDERING.</para></summary>
+    [SkippableFact]
+    public void MoreDamageMeansMoreKills()
+    {
+        var shine = Shine();
+        var driver = DriverPath();
+        Skip.If(shine is null, "server data not present; set SHINE_DATA");
+        Skip.If(driver is null, "level_quest.lua not present; set LEVEL_QUEST_LUA");
+
+        var src = File.ReadAllText(driver!);
+
+        int KillsWith(int level, int wcMin, int wcMax)
+        {
+            var box = MobDataBox.Load(shine!);
+            var map = MobRegenData.Load(Path.Combine(shine!, "MobRegen", "Urg.txt"));
+            var cleric = ClassParamTable.Load(Path.Combine(shine!, "World", "ParamClericServer.txt"));
+
+            var sim = new CombatSimulation(seed: 42);
+            sim.SpawnFightable(map, box, spawnSeed: 7);
+            sim.Player.Become(cleric, level: level, freeStats: new FreeStats(Str: 20, Con: 20), equipment:
+                [new EquipmentPiece("mace", MinWC: wcMin, MaxWC: wcMax), new EquipmentPiece("robe", AC: 40)]);
+            sim.Player.Hp = sim.Player.MaxHp = 2_000_000;
+            var (x, y) = map.BusiestArea();
+            sim.Player.X = x;
+            sim.Player.Y = y;
+
+            var h = LevelingBotHarness.Attach(sim, src);
+            h.Run(src, ticks: 4000);
+            return sim.Kills;
+        }
+
+        var weak = KillsWith(40, 60, 95);      // ~144 s per Orc
+        var mid = KillsWith(60, 60, 95);       // ~70 s
+        var strong = KillsWith(60, 300, 420);  // ~36 s
+
+        output.WriteLine($"kills in 400 simulated seconds: weak={weak} mid={mid} strong={strong}");
+
+        weak.ShouldBeGreaterThan(0, "even the weakest character should kill something in 400 seconds");
+        mid.ShouldBeGreaterThan(weak, "halving time-to-kill should raise the kill count");
+        strong.ShouldBeGreaterThan(mid, "halving it again should raise it again");
     }
 
     /// <summary>Speed, so a regression in it is visible. The point of the simulation is to run a grind

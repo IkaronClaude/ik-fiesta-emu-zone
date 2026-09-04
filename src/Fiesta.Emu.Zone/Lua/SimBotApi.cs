@@ -40,7 +40,18 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
     /// "base class" for a first-job character that should be hitting twice as hard.</para></summary>
     public int? JobChangeDamageUpPermille { get; set; }
 
-    public int AttackRange { get; set; } = 12;
+    /// <summary>Weapon reach in world units — `so_AttackRange`, which
+    /// <see cref="Combat.DamageCalculator.MeleeAttackRange"/> puts at 100 for an ordinary melee weapon.
+    ///
+    /// <para>⚠️ <b>It was 12, and that silently cancelled every swing.</b> `level_quest.lua` closes to
+    /// <c>MELEE = 45</c> and then stands off at 0.75 of it — about 34 units — before bashing, so a reach of
+    /// 12 meant the auto-attack loop found the target out of range on every tick and did nothing. The
+    /// symptom was a bot logging `BASH inCombat=true` at `dist=14` for 221 seconds without the mob losing
+    /// any HP, which reads as a broken rotation rather than a wrong constant.</para>
+    ///
+    /// <para>Third of the same family, after `walkTo`'s units-per-call and `autoAttack`'s one-shot swing:
+    /// <b>a plausible small number in the wrong unit is harder to see than a missing feature.</b></para></summary>
+    public int AttackRange { get; set; } = Combat.DamageCalculator.MeleeAttackRange;
     /// <summary>Movement speed in units PER SECOND, the same unit the mobs use — `MobInfo.RunSpeed`, where
     /// an Orc is 127 and a MushRoom 105.
     ///

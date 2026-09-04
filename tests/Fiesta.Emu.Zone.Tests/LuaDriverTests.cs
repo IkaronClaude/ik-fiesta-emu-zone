@@ -54,12 +54,18 @@ public class LuaDriverTests
         r.Tuple[4].Number.ShouldBe(sim.Now);
     }
 
-    /// <summary>The end-to-end case: a Lua driver closes the distance and kills a mob, unaided.</summary>
+    /// <summary>The end-to-end case: a Lua driver closes the distance and kills a mob, unaided.
+    ///
+    /// <para>⚠️ The mob sits at 400 units, not 60. It used to be 60, back when `SimPlayer.AttackRange` was
+    /// 12 — with the corrected melee reach of 100 (`DamageCalculator.MeleeAttackRange`) a mob at 60 is
+    /// ALREADY in range, so the driver killed it without moving and the "it actually walked" assertion
+    /// failed. The distance is now outside weapon reach so the walk is genuinely required, which is what
+    /// this test was always about.</para></summary>
     [Fact]
     public void ALuaDriverWalksToAMobAndKillsIt()
     {
         var sim = Sim();
-        var mob = sim.AddMob(handle: 10, x: 60, y: 0, configure: m => m.Hp = m.MaxHp = 200);
+        var mob = sim.AddMob(handle: 10, x: 400, y: 0, configure: m => m.Hp = m.MaxHp = 200);
         sim.LoadScript(KillNearest);
 
         // Stop AT the kill rather than running a fixed budget and inspecting the aftermath -- the mob has
