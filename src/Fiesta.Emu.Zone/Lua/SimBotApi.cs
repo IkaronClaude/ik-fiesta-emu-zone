@@ -18,6 +18,11 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
     /// simulation that leaves it at zero makes every caster look like it cannot cast.</summary>
     public int Sp { get; set; }
 
+    /// <summary>SP regenerated per second while out of combat. 0 until measured — the sim does not invent
+    /// a regen curve, and a caster that cannot recover SP is a visible, honest limitation rather than an
+    /// invisible wrong number.</summary>
+    public double SpRegenPerSecond { get; set; }
+
     /// <summary><c>CharacterParameters.MaxSp</c> fills this in <c>Become</c>, the same way MaxHp is
     /// filled. <b>0 means "not known"</b>, which is what makes <c>spPct()</c> return -1 rather than
     /// claiming an empty bar.</summary>
@@ -94,6 +99,30 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
 
     /// <summary>Simulation clock at which the next auto-attack swing is due.</summary>
     public uint NextSwingAt { get; set; }
+
+    // ---- skills --------------------------------------------------------------------------------------
+    //
+    // ⚠️ Without these the simulation could only MELEE, and that is not a small gap for a caster: a
+    // level-60 Enchanter rebuilt from the capture's own gear hits an Orc for 20-23 with its wand and needs
+    // 154 swings, while the mob kills it in 4. Measured, not guessed. A bot evaluated in that world learns
+    // to do things no real character would.
+
+    /// <summary>Every skill this character knows. Live this is the zone-login skill list the server sends;
+    /// here <c>Become</c> derives it from the class and level through
+    /// <see cref="Data.SkillCatalog.LearnedBy"/> when a catalog is supplied.</summary>
+    public IReadOnlyList<Data.SkillDefinition> LearnedSkills { get; set; } = [];
+
+    /// <summary>The skill currently being cast, or null when not casting.</summary>
+    public Data.SkillDefinition? CastingSkill { get; set; }
+
+    /// <summary>The handle the in-flight cast is aimed at.</summary>
+    public ushort CastTarget { get; set; }
+
+    /// <summary>When the in-flight cast lands.</summary>
+    public uint CastEndsAt { get; set; }
+
+    /// <summary>Per skill id, the clock at which it comes off cooldown.</summary>
+    public Dictionary<int, uint> SkillReadyAt { get; } = [];
 
     // ---- HP soul stones ------------------------------------------------------------------------------
     //
@@ -386,6 +415,85 @@ public sealed class SimBotApi
         var p = _sim.Player;
         if (p.SpStones <= 0) return -1;
         return _sim.Now >= p.SpStoneReadyAt ? 0 : p.SpStoneReadyAt - _sim.Now;
+    }
+
+    // ---- skills --------------------------------------------------------------------------------------
+
+    /// <summary>`bot.learnedSkills` — the ids the character knows, as a 1-based Lua array.</summary>
+    public Table learnedSkills()
+    {
+        var t = new Table(_sim.Script);
+        var i = 1;
+        foreach (var s in _sim.Player.LearnedSkills) t.Set(DynValue.NewNumber(i++), DynValue.NewNumber(s.Id));
+        return t;
+    }
+
+    /// <summary>`bot.skillInfo` — the client row for a skill, field for field with the live call.
+    ///
+    /// <para>⚠️ It answers for ANY skill in the catalog, not only learned ones, exactly as the live one
+    /// does: it reads client data, and the client has the whole file. The driver relies on that to decide
+    /// what is worth training. Nil for an id the game does not have.</para></summary>
+    public DynValue skillInfo(int id)
+    {
+        var s = _sim.Skills?.Find(id);
+        if (s is null) return DynValue.Nil;
+
+        var t = new Table(_sim.Script);
+        t["id"] = s.Id;
+        t["name"] = s.Name;
+        t["cooldownMs"] = s.CooldownMs;
+        t["sp"] = s.Sp;
+        t["range"] = s.Range;
+        t["castTimeMs"] = s.CastTimeMs;
+        t["usableDegree"] = s.UsableDegree;
+        t["useClass"] = s.UseClass;
+        t["heal"] = s.IsHeal;
+        t["landsOn"] = s.LandsOn;
+        t["selfTargeted"] = s.LandsOn == 1;
+        t["maxWc"] = (double)s.Physical.MaxFlat;
+        t["maxMa"] = (double)s.Magical.MaxFlat;
+        t["damage"] = (double)Math.Max(s.Physical.MaxFlat, s.Magical.MaxFlat);
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>`bot.cast` — cast a learned skill at a target handle.
+    ///
+    /// <para>Returns whether the server ACCEPTED the cast, not whether it landed: the damage arrives when
+    /// the cast bar finishes, and moving in the meantime cancels it. The refusal reason is on
+    /// <see cref="CombatSimulation.LastCastRefusal"/> for tests and the report.</para></summary>
+    public bool cast(int skill, int target)
+        => _sim.Cast(skill, (ushort)target) == CombatSimulation.CastRefusal.Accepted;
+
+    /// <summary>`bot.casting` — is a cast bar up right now.</summary>
+    public bool casting() => _sim.Player.CastingSkill is not null;
+
+    /// <summary>`bot.skillReadyInMs` — milliseconds until a skill comes off cooldown.
+    ///
+    /// <para>⚠️ <b>0 for an unknown id, matching the live call exactly</b> — which reports no phantom
+    /// cooldown for a skill it has no row for. That is deliberate there and copied deliberately here.</para></summary>
+    public double skillReadyInMs(int id)
+    {
+        if (_sim.Skills?.Find(id) is null) return 0;
+        if (!_sim.Player.SkillReadyAt.TryGetValue(id, out var ready)) return 0;
+        return _sim.Now >= ready ? 0 : ready - _sim.Now;
+    }
+
+    /// <summary>`bot.skillCooldowns` — every skill still cooling, as `{id=, name=, readyInMs=}` rows.</summary>
+    public Table skillCooldowns()
+    {
+        var t = new Table(_sim.Script);
+        var i = 1;
+        foreach (var s in _sim.Player.LearnedSkills)
+        {
+            var left = skillReadyInMs(s.Id);
+            if (left <= 0) continue;
+            var row = new Table(_sim.Script);
+            row["id"] = s.Id;
+            row["name"] = s.Name;
+            row["readyInMs"] = left;
+            t.Set(DynValue.NewNumber(i++), DynValue.NewTable(row));
+        }
+        return t;
     }
 
     public int hpStones() => _sim.Player.HpStones;

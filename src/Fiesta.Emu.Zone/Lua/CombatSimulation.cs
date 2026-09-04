@@ -309,9 +309,138 @@ public sealed class CombatSimulation
         PlayerAttack(m);
     }
 
-    public void PlayerAttack(SimMob target)
+    // ---- casting -------------------------------------------------------------------------------------
+
+    /// <summary>Why a cast was refused. Every one of these is a refusal the real server also makes, and
+    /// the point of naming them is that a bot which cannot tell "out of range" from "no SP" cannot fix
+    /// either.</summary>
+    public enum CastRefusal
     {
-        var damage = SwingDamage(Player, target, Player.AttackDamage);
+        Accepted,
+        NotLearned,
+        OnCooldown,
+        NotEnoughSp,
+        NoTarget,
+        OutOfRange,
+        AlreadyCasting,
+        Dead,
+    }
+
+    /// <summary>The skill catalog, when one has been loaded. Null means the scenario supplied no client
+    /// data, and `skillInfo` then answers nil for every id rather than inventing rows.</summary>
+    public Data.SkillCatalog? Skills { get; set; }
+
+    /// <summary>The last cast refusal, for the harness report and for tests.</summary>
+    public CastRefusal LastCastRefusal { get; private set; }
+
+    /// <summary>How many casts have landed this run.</summary>
+    public int Casts { get; private set; }
+
+    /// <summary>Start a cast. SP is spent NOW and the damage lands when the cast bar finishes — which is
+    /// what makes a cast interruptible, and what makes cast time cost anything.</summary>
+    public CastRefusal Cast(int skillId, ushort target)
+    {
+        if (!Player.IsAlive) return LastCastRefusal = CastRefusal.Dead;
+        if (Player.CastingSkill is not null) return LastCastRefusal = CastRefusal.AlreadyCasting;
+
+        var skill = Player.LearnedSkills.FirstOrDefault(s => s.Id == skillId);
+        if (skill is null) return LastCastRefusal = CastRefusal.NotLearned;
+        if (Player.SkillReadyAt.TryGetValue(skillId, out var ready) && Now < ready)
+            return LastCastRefusal = CastRefusal.OnCooldown;
+        if (Player.Sp < skill.Sp) return LastCastRefusal = CastRefusal.NotEnoughSp;
+
+        // A self-cast needs no target and has no range; anything else does.
+        if (skill.LandsOn != 1)
+        {
+            var m = Find(target);
+            if (m is null || !m.Mob.IsAlive) return LastCastRefusal = CastRefusal.NoTarget;
+
+            // ⚠️ `Range` 0 on an OFFENSIVE skill means melee reach, not "infinite". Every Fighter skill in
+            // the file has Range 0 -- `TripleHit`, `PowerHit`, `RedSlash` -- because they are swung with
+            // the weapon that is already in reach. Treating 0 as unlimited would let the bot open a fight
+            // from across the map and never learn to close.
+            var reach = (long)(skill.Range > 0 ? skill.Range : Player.AttackRange);
+            if (MobTargetSelector.SquaredDistance(Player, m.Mob) > reach * reach)
+                return LastCastRefusal = CastRefusal.OutOfRange;
+        }
+
+        Player.Sp -= skill.Sp;
+        Player.SkillReadyAt[skillId] = Now + (uint)Math.Max(0, skill.CooldownMs);
+        Player.CastingSkill = skill;
+        Player.CastTarget = target;
+        Player.CastEndsAt = Now + (uint)Math.Max(0, skill.CastTimeMs);
+        return LastCastRefusal = CastRefusal.Accepted;
+    }
+
+    /// <summary>⭐ MOVING CANCELS A CAST. Not a simplification — the cast bar (`0x2047`/`0x2048`) is
+    /// cancelled by movement on the real server, and this project has already paid for not modelling it
+    /// once: the bot's own re-pathing cancelled every mount summon it tried.
+    ///
+    /// <para>The SP is NOT refunded and the cooldown is NOT rolled back, because the server does not roll
+    /// them back either. That asymmetry is the entire cost of a cancelled cast, and a bot that walks
+    /// while casting has to feel it or it will never stop doing it.</para></summary>
+    private void AdvanceCast()
+    {
+        if (Player.CastingSkill is not { } skill) return;
+
+        if (!Player.IsAlive) { Player.CastingSkill = null; return; }
+        if (Player.WalkTarget is not null && skill.CastTimeMs > 0)
+        {
+            Log.Add($"[{Now,6}] cast of {skill.InxName} CANCELLED by movement (sp {skill.Sp} spent, still cooling)");
+            Player.CastingSkill = null;
+            return;
+        }
+        if (Now < Player.CastEndsAt) return;
+
+        Player.CastingSkill = null;
+        Casts++;
+
+        if (skill.LandsOn == 1) { ApplySelfCast(skill); return; }
+
+        var m = Find(Player.CastTarget);
+        if (m is null || !m.Mob.IsAlive) return;      // it died mid-cast; the SP is still gone
+
+        var damage = SkillDamage(skill, m);
+        if (damage <= 0) return;
+        LandOnMob(m, damage);
+    }
+
+    /// <summary>A heal is the only self-cast whose effect is modelled. Anything else lands, costs its SP
+    /// and does nothing observable — which is honest: a buff the simulation does not model must not
+    /// silently grant its bonus, and must not silently refuse to be cast either.</summary>
+    private void ApplySelfCast(Data.SkillDefinition skill)
+    {
+        if (!skill.IsHeal) return;
+
+        // The heal amount rides the same MA columns a magical attack does.
+        var amount = (int)(skill.Magical.MaxFlat > 0 ? skill.Magical.MaxFlat : skill.Physical.MaxFlat);
+        if (amount <= 0) return;
+        Player.Hp = Math.Min(Player.MaxHp, Player.Hp + amount);
+        Log.Add($"[{Now,6}] {skill.InxName} healed for {amount} (hp {Player.Hp}/{Player.MaxHp})");
+    }
+
+    /// <summary>The skill damage roll — the same engine the capture-backed bucket tests exercise, reached
+    /// through the SKILL rules object rather than the plain-swing one.</summary>
+    private int SkillDamage(Data.SkillDefinition skill, SimMob target)
+    {
+        var mods = new AttackModifiers
+        {
+            RollPermille = (int)Rng.well512_GetRandom(1001),
+            LevelGapRatePermille = LevelGapRate(Player, target),
+            JobChangeDamageUpPermille = Player.JobChangeDamageUpPermille,
+            Skill = skill.IsMagical ? skill.Magical : skill.Physical,
+        };
+        return DamageCalculator.ResolveDamage(Player, target, mods,
+            rule: skill.IsMagical ? EngagementRule.MagicalSkill : EngagementRule.PhysicalSkill);
+    }
+
+    public void PlayerAttack(SimMob target)
+        => LandOnMob(target, SwingDamage(Player, target, Player.AttackDamage));
+
+    /// <summary>Apply damage the player dealt, whatever produced it. Shared by the swing and the cast so
+    /// that aggro, the move interrupt and the death bookkeeping cannot drift apart between them.</summary>
+    private void LandOnMob(SimMob target, int damage)
+    {
         target.Hp -= damage;
         target.Mob.so_DamagedBy(Player, damage, Player.AggroRatePermille);
 
@@ -354,6 +483,7 @@ public sealed class CombatSimulation
         // movement detector read STANDING STILL. See SimPlayer.WalkTarget.
         Player.AdvanceWalk(TickMs);
         AdvanceAutoAttack();
+        AdvanceCast();
 
         // Respawn anything whose timer has come up, back in its own spawn area.
         foreach (var dead in _mobs.Where(m => !m.Mob.IsAlive && m.RespawnAt is not null && Now >= m.RespawnAt))

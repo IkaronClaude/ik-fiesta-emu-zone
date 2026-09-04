@@ -350,6 +350,12 @@ public sealed class LevelingBotHarness
         ["spStoneDepleted"] = _ => DynValue.NewBoolean(_api.spStoneDepleted()),
         ["spStoneCooldownMs"] = _ => DynValue.NewNumber(_api.spStoneCooldownMs()),
         ["spStoneReadyIn"] = _ => DynValue.NewNumber(_api.spStoneReadyIn()),
+        ["learnedSkills"] = _ => DynValue.NewTable(_api.learnedSkills()),
+        ["skillInfo"] = a => _api.skillInfo((int)a[0].Number),
+        ["cast"] = a => DynValue.NewBoolean(_api.cast((int)a[0].Number, (int)a[1].Number)),
+        ["casting"] = _ => DynValue.NewBoolean(_api.casting()),
+        ["skillReadyInMs"] = a => DynValue.NewNumber(_api.skillReadyInMs((int)a[0].Number)),
+        ["skillCooldowns"] = _ => DynValue.NewTable(_api.skillCooldowns()),
         ["recentDamage"] = a => DynValue.NewNumber(_api.recentDamage(a.Count > 0 ? (int)a[0].Number : 5000)),
         ["activeQuests"] = _ =>
         {

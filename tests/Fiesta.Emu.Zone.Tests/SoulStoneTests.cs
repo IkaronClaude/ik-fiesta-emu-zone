@@ -1,4 +1,5 @@
 using Fiesta.Emu.Zone.Lua;
+using Fiesta.Emu.Zone.Parameter;
 using Shouldly;
 using Xunit;
 
@@ -115,5 +116,57 @@ public class SoulStoneTests
 
         sim.Api.sustainableHealDps().ShouldBe(60, 0.001);
         sim.Api.incomingDps(5000).ShouldBe(-1, "nothing has hit us yet, and that is not zero damage");
+    }
+
+    private static string? Shine()
+    {
+        var root = Environment.GetEnvironmentVariable("SHINE_DATA") ?? @"Z:/ServerSource/9Data/Shine";
+        return File.Exists(Path.Combine(root, "World", "ParamEnchanterServer.txt")) ? root : null;
+    }
+
+    /// <summary>⭐ THE RESERVE IS GAME DATA, NOT A FIXTURE CONSTANT. `SoulHP` / `MAXSoulHP` and their SP
+    /// twins are columns of the class parameter table, per class per level, so `Become` fills them the
+    /// same way it fills MaxHp.
+    ///
+    /// <para>Which column is the restore and which the capacity is read off the data rather than assumed:
+    /// at level 1 an Enchanter has <c>SoulHP 29</c> against a <c>MaxHP</c> of 42, at level 60
+    /// <c>SoulHP 872</c> against 1245. The first tracks the HP pool across 60 levels and `MAXSoulHP`
+    /// (12 → 170) plainly does not.</para></summary>
+    [SkippableTheory]
+    [InlineData(1, 29, 12, 37, 15)]
+    [InlineData(60, 872, 170, 1460, 249)]
+    public void StoneReservesComeFromTheClassTable(int level, int hpRestore, int hpMax, int spRestore, int spMax)
+    {
+        var shine = Shine();
+        Skip.If(shine is null, "server data not present; set SHINE_DATA");
+
+        var enchanter = ClassParamTable.Load(Path.Combine(shine!, "World", "ParamEnchanterServer.txt"));
+        var sim = new CombatSimulation();
+        sim.Player.Become(enchanter, level);
+
+        sim.Api.hpStoneRestore().ShouldBe(hpRestore);
+        sim.Api.maxHpStones().ShouldBe(hpMax);
+        sim.Api.spStoneRestore().ShouldBe(spRestore);
+        sim.Api.maxSpStones().ShouldBe(spMax);
+
+        sim.Api.hpStones().ShouldBe(hpMax, "a character built by Become starts restocked");
+        sim.Api.hpStoneDepleted().ShouldBeFalse();
+        sim.Api.sustainableHealDps().ShouldBeGreaterThan(0, "a stocked character has measurable healing");
+    }
+
+    /// <summary>⚠️ AND THE RESTORE IS A REAL FRACTION OF THE POOL — a soul stone is close to a full heal,
+    /// which is exactly why a bot that does not model it cannot be judged on survival.</summary>
+    [SkippableFact]
+    public void OneChargeIsMostOfTheHpPool()
+    {
+        var shine = Shine();
+        Skip.If(shine is null, "server data not present; set SHINE_DATA");
+
+        var enchanter = ClassParamTable.Load(Path.Combine(shine!, "World", "ParamEnchanterServer.txt"));
+        var sim = new CombatSimulation();
+        sim.Player.Become(enchanter, 60);
+
+        // 872 of a 1245 pool.
+        ((double)sim.Player.HpStoneRestore / sim.Player.MaxHp).ShouldBeInRange(0.6, 0.8);
     }
 }

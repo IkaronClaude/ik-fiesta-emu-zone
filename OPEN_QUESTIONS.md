@@ -201,35 +201,75 @@ file's (index, value) pairs name an index the table discards.
 ---
 
 
-## 5. Rebuilding the capture's character is nine points of armour short
+## 5. The capture's character carries base stats its class row does not produce
 
-**Status:** open, small, and bounded by a test.
+**Status:** the ARMOUR half is CLOSED (2026-09-04). What is left is smaller and different from what
+this section used to claim.
 
-`SimAgreesWithTheCaptureTests` rebuilds `MageDamageLvl60`'s Enchanter from the nine item ids
-`damage_buckets.py` recovers out of `NC_ITEM_EQUIPCHANGE_CMD`, and checks the engine against what the
-capture actually observed. It nearly fits:
+### What this section said, and why it was wrong
 
-| | rebuilt | capture |
-|---|---|---|
-| DEF | **327** | **336** |
-| Orc swing | 297..371 | 290..358 observed over 23 swings |
+It said the rebuild's DEF 327 fell nine short of the capture's 336 because `NC_ITEM_EQUIPCHANGE_CMD`
+carries no `+N`, so an upgraded Nature piece contributed armour `ItemInfo` could not see — and pointed at
+`NC_CHAR_CLIENT_ITEM_CMD` (0x1047) as the packet that would settle it.
 
-Nine points, 2.7%, and it puts the band's FLOOR seven above the softest hit the capture saw.
+**That is refuted.** Enhancement moves AC and MR and nothing else, and the capture's character is off the
+level-60 class row on *every* primary stat:
 
-**The leading explanation is ENHANCEMENT, which this harness cannot see.** `NC_ITEM_EQUIPCHANGE_CMD`
-carries a slot and an item id and no `+N`, so an upgraded Nature piece contributes AC that `ItemInfo`
-alone does not know about. The character's Con free stat is 0, so the free-stat half is not it, and the
-four cosmetics carry no AC.
+| | Str | Con | Dex | Int | Men | AC | MaxHp |
+|---|---|---|---|---|---|---|---|
+| class row 60 | 43 | 138 | 157 | 273 | 186 | — | 1245 |
+| capture, at the hits | 47 | 147 | 166 | 288 | 197 | 336 | 1290 |
 
-**What would settle it:** find where the upgrade level reaches the client. `NC_CHAR_CLIENT_ITEM_CMD`
-(0x1047) carries a `SHINE_ITEM_STRUCT` per item, which is where a `+N` would live — it is already in the
-capture, 20 of them, and nothing parses it yet. That is the same packet OPEN_QUESTIONS §4 wants for
-per-item random options, so one decode answers both.
+Armour was never the odd one out. Reading only the AC column made a whole-vector difference look like an
+equipment problem, and sent the next step after the wrong packet.
 
-⚠️ Until then the shortfall is asserted as a bound rather than absorbed: the test requires the armour
-within a few points of 336 and the floor within 12 of the softest observed hit, so it fails if the gap
-grows. Widening those bounds to make something else pass would throw away the only check the simulation
-has against reality.
+### What the capture proves instead
+
+`MageDamageLvl60.pcapng`'s first `NC_CHAR_CHANGEPARAMCHANGE_CMD` after zone login, **before any equipment
+packet arrives**, reports `Str 43, Con 138, Dex 157, Int 273, Men 186, MaxHp 1245, MaxSp 1826, AC 138` —
+the level-60 Enchanter class row to the unit, and the rebuild reproduces all eight exactly. Later, wearing
+nine items worth 189 armour, it reports `Con 147, AC 336`. So:
+
+```
+AC = Con + sum(item AC)          138 = 138 + 0        336 = 147 + 189
+```
+
+Two independent points in one session, and the unequipped one is decisive: with nothing worn, reported AC
+EQUALS Constitution. **The engine's armour chain is correct, and the nine points of DEF are nine points of
+Con.** `AnUnequippedCharacterHasArmourEqualToItsConstitution` pins the login state and
+`AnOrcHitsTheCapturesCharacterAsHardAsTheCaptureSaysItDid` now asserts the identity itself rather than a
+tolerance around 336.
+
+### What is still open
+
+Why the base stats are elevated at all. The wire rules out the obvious answers:
+
+- **Not a level difference.** All five `NC_CHAR_CLIENT_BASE_CMD` blocks in the capture report level **60**.
+  (Level 65's row happens to match Str/Con/Dex exactly, which is a coincidence worth knowing about — it is
+  the trap this question is most likely to fall into next.)
+- **Not free-stat allocation.** All 93 hits at DEF 336 share one free-stat block, `Int 50 / Men 25` and
+  nothing in Str, Con or Dex — yet Str, Con and Dex all moved.
+- **Not equipment.** `ItemInfo.shn` has no Str/Con/Dex/Int/Men columns at all.
+- **Not set effects.** None of the nine items appears in `SetItemCatalog.SetOfItem`.
+- **Not passives.** All 18 learned passives are Staff/Wand mastery, Wisdom (`MaxSP`) and `PowerofLove`;
+  none carries a stat column.
+- **Not a visible buff.** `damage_buckets.py` records no self-abstate on any of the 93 hits.
+
+**The leading explanation is that it is an ADMIN character** — the capture carries
+`NC_ACT_NOTICE_CMD` "Admin level is 100", and `NC_CHAR_STAT_REMAINPOINT_CMD` reports 75 unspent points at
+login. Hand-set stats would explain it and are not derivable from any table. **This is a plausible cause,
+not a proven one, and it is recorded as such.**
+
+### A second thing this turned up
+
+`CharacterParameters.StorePure` adds free-stat points to the base stat 1:1 (`b[Stat.Int] = row.Int +
+free.Int`), ported statement for statement from `c_Storepure`. The capture reports base Int **288** with
+50 points allocated against a row of 273 — neither 273 nor 323. Either the 0x1035 builder transforms the
+value on its way out (which is exactly what the MA pair does — see the closed section below), or the
+allocation reaches the base stat by some other route. **Nothing has been changed on the strength of this**;
+the ported statement stands until something reads the builder. It matters because `Con.ACAbsoulte` is
+`ceil(n/2)` while a 1:1 base-stat add would give `n`, so the two models disagree about what a point of Con
+is worth in armour — and no capture to hand allocates Con.
 
 ---
 

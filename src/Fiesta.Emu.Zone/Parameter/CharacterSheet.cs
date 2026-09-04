@@ -27,7 +27,8 @@ public static class CharacterSheet
         ClassParamTable table,
         int level,
         FreeStats? freeStats = null,
-        IEnumerable<EquipmentPiece>? equipment = null)
+        IEnumerable<EquipmentPiece>? equipment = null,
+        Data.SkillCatalog? skills = null)
     {
         var container = CharacterParameters.Build(table, level, freeStats, equipment);
         var total = container.MakeTotal();
@@ -40,6 +41,35 @@ public static class CharacterSheet
         player.Sp = player.MaxSp;
         player.UsesStatFormula = true;
         player.JobChangeDamageUpPermille = table.At(level)?.JobChangeDmgUp;
+
+        // ⭐ SOUL STONES COME OUT OF THE CLASS TABLE, per class per level -- `SoulHP` is what one charge
+        // restores and `MAXSoulHP` how many may be carried (`SoulSP`/`MAXSoulSP` likewise). Nothing here
+        // is invented.
+        //
+        // The pairing is read off the data, not assumed: at level 1 an Enchanter has SoulHP 29 against a
+        // MaxHP of 42 and MAXSoulHP 12; at level 60, SoulHP 872 against MaxHP 1245 and MAXSoulHP 170. The
+        // first number tracks the HP pool and the second does not, which is what says which is the restore
+        // and which the capacity. `MageDamageLvl60.pcapng` then shows the reserve being bought up one
+        // charge at a time to 60, comfortably inside the 170 cap.
+        if (table.At(level) is { } stones)
+        {
+            player.HpStoneRestore = stones.SoulHp;
+            player.MaxHpStones = stones.MaxSoulHp;
+            player.HpStones = stones.MaxSoulHp;      // a character that has just restocked
+            player.HpStoneDepleted = false;
+
+            player.SpStoneRestore = stones.SoulSp;
+            player.MaxSpStones = stones.MaxSoulSp;
+            player.SpStones = stones.MaxSoulSp;
+            player.SpStoneDepleted = false;
+        }
+
+        // ⚠️ The class NAME here is the one on the parameter table -- `ParamEnchanterServer.txt` is
+        // `Enchanter`, a job-changed class, and that is what makes the skill list a level-60 rotation
+        // rather than a level-20 one. Naming a BASE class is legal and gets base-class skills; see
+        // `SkillCatalog.LearnedBy`.
+        if (skills is not null) player.LearnedSkills = skills.LearnedBy(table.ClassName, level);
+
         return container;
     }
 

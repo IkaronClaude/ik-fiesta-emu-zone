@@ -54,15 +54,35 @@ public class SimAgreesWithTheCaptureTests(ITestOutputHelper output)
     /// range should sit INSIDE it. What would fail badly is the band missing the observations entirely,
     /// which is what an under-armoured fixture does.</para>
     ///
-    /// <para>⚠️ <b>IT DOES NOT QUITE FIT, AND THE GAP IS RECORDED RATHER THAN TUNED AWAY.</b> The rebuild
-    /// gives DEF <b>327</b> where the capture reports <b>336</b> — nine points short, 2.7% — so the band
-    /// comes out at 297..371 against an observed 290..358 and its FLOOR is seven too high. Nine points of
-    /// armour is what this harness cannot see: `NC_ITEM_EQUIPCHANGE_CMD` carries item ids and no
-    /// ENHANCEMENT level, and a +N on the Nature pieces adds AC that `ItemInfo` alone does not know about.
-    /// The character's Con free stat is 0, so that is not it.</para>
+    /// <para>⚠️ <b>THE NINE-POINT GAP IS SOLVED, AND THE HYPOTHESIS THAT STOOD HERE WAS WRONG.</b> This
+    /// used to say the rebuild's DEF 327 fell nine short of the capture's 336 because
+    /// `NC_ITEM_EQUIPCHANGE_CMD` carries no ENHANCEMENT level, so a +N on the Nature pieces added armour
+    /// `ItemInfo` could not see. <b>That is refuted:</b> enhancement touches AC and MR and nothing else,
+    /// and the capture's Strength, Dexterity, Intelligence and MentalPower are off the class row too.
+    /// Armour was never the odd one out; the whole stat vector was.</para>
     ///
-    /// <para>So this asserts what is actually true — the bands overlap heavily and the armour is within
-    /// 3% — and the shortfall is filed in OPEN_QUESTIONS rather than absorbed into a wider bound.</para></summary>
+    /// <para>⭐ <b>What the capture actually proves — the armour identity, at two independent points in
+    /// one session:</b></para>
+    /// <code>
+    /// at login, no equipment yet:  Con 138, item AC sum   0  ->  reported AC 138
+    /// after equipping nine items:  Con 147, item AC sum 189  ->  reported AC 336
+    ///
+    ///     AC = Con + sum(item AC)
+    /// </code>
+    ///
+    /// <para>Both readings come from `NC_CHAR_CHANGEPARAMCHANGE_CMD` in `MageDamageLvl60.pcapng`, and the
+    /// first one is decisive: with no equipment on, reported AC EQUALS Constitution exactly. So the
+    /// engine's armour chain is right, and the nine points of DEF are nine points of CON.</para>
+    ///
+    /// <para>What remains open is why this character's base stats sit above its level-60 class row at all
+    /// — +4 Str, +9 Con, +9 Dex — when the wire reports its level as 60 in every one of the five
+    /// `NC_CHAR_CLIENT_BASE_CMD` blocks and its free-stat allocation as Int 50 / Men 25, nothing in Str,
+    /// Con or Dex. It is an ADMIN character (the capture carries `NC_ACT_NOTICE_CMD` "Admin level is
+    /// 100"), which would explain hand-set stats, but that is a plausible cause and not a proven one. See
+    /// OPEN_QUESTIONS §5.</para>
+    ///
+    /// <para>So this test now asserts the MECHANISM, which is exactly reproducible, rather than a
+    /// tolerance around a number the class table cannot produce.</para></summary>
     [SkippableFact]
     public void AnOrcHitsTheCapturesCharacterAsHardAsTheCaptureSaysItDid()
     {
@@ -93,19 +113,72 @@ public class SimAgreesWithTheCaptureTests(ITestOutputHelper output)
         // The capture's 23 Orc swings ran 290..358.
         const int observedLo = 290, observedHi = 358;
 
-        DamageCalculator.ArmourClass(player).ShouldBeInRange(326, 346,
-            "the rebuilt armour should be within a few points of the 336 the capture reports; a bigger gap "
-            + "means something other than the missing enhancement levels is wrong");
+        // ⭐ AC = Con + sum(item AC) -- the identity the capture proves twice. Asserting it directly says
+        // far more than a tolerance around 336 would: it is exact, and it holds for ANY character, so it
+        // fails loudly if the armour chain ever grows a term.
+        var con = player.EffectiveStats()[Stat.Con];
+        var itemArmour = Equipment(shine!).Sum(p => p.AC);
+        DamageCalculator.ArmourClass(player).ShouldBe(con + itemArmour, 0.5,
+            "the capture shows AC = Con + sum(item AC) -- at login, with nothing equipped, its reported AC "
+            + "equalled its Constitution exactly (138), and after equipping nine items worth 189 armour it "
+            + "read 336 against Con 147");
+
+        // And the residual against the capture is ENTIRELY the Constitution difference: the capture's
+        // character carries Con 147 where the level-60 class row gives 138. Nine points of Con, nine
+        // points of DEF. Restating it as an equation keeps the two halves from drifting apart.
+        const int captureCon = 147, captureDef = 336;
+        (captureDef - (int)DamageCalculator.ArmourClass(player)).ShouldBe(captureCon - con,
+            "the whole DEF residual should be the Con residual; if these ever differ, something OTHER than "
+            + "the base stats has changed and the armour chain needs re-deriving");
 
         hi.ShouldBeGreaterThanOrEqualTo(observedHi,
             "the engine's ceiling must cover the hardest hit observed");
         lo.ShouldBeLessThanOrEqualTo(observedHi,
             "the band must overlap what the capture saw at all");
 
-        // The floor is currently 7 over the softest observed hit, from the 9 points of armour this
-        // harness cannot see. Bounded so it cannot quietly get worse.
+        // The floor sits above the softest observed hit by what the 9 points of Con are worth. Bounded so
+        // it cannot quietly get worse.
         (lo - observedLo).ShouldBeLessThanOrEqualTo(12,
-            "the floor is above the softest observed hit by more than the missing enhancement can explain");
+            "the floor is above the softest observed hit by more than the Constitution difference explains");
+    }
+
+    /// <summary>⭐ THE IDENTITY ON ITS OWN, AT THE POINT THE CAPTURE PROVES IT MOST CLEANLY: a character
+    /// with NOTHING equipped has AC exactly equal to its Constitution.
+    ///
+    /// <para>`MageDamageLvl60.pcapng`'s first `NC_CHAR_CHANGEPARAMCHANGE_CMD` after zone login reports
+    /// <c>Con 138, AC 138</c> — and the same block carries Str 43, Dex 157, Int 273, Men 186, MaxHp 1245,
+    /// MaxSp 1826, every one of them the level-60 Enchanter class row to the unit. The equipment packets
+    /// arrive afterwards.</para>
+    ///
+    /// <para>That is the anchor that turned the nine-point DEF gap from "missing armour enhancement" into
+    /// "nine points of Constitution": armour cannot be the explanation for a difference that is already
+    /// visible before any armour is worn.</para></summary>
+    [SkippableFact]
+    public void AnUnequippedCharacterHasArmourEqualToItsConstitution()
+    {
+        var shine = Shine();
+        Skip.If(shine is null, "server data not present; set SHINE_DATA");
+
+        var enchanter = ClassParamTable.Load(Path.Combine(shine!, "World", "ParamEnchanterServer.txt"));
+        var player = new CombatSimulation().Player;
+        player.Become(enchanter, level: 60);
+
+        var stats = player.EffectiveStats();
+        output.WriteLine($"level-60 Enchanter, nothing equipped: Str={stats[Stat.Str]} Con={stats[Stat.Con]} "
+                         + $"Dex={stats[Stat.Dex]} Int={stats[Stat.Int]} Men={stats[Stat.Men]} "
+                         + $"AC={DamageCalculator.ArmourClass(player):F0} maxHp={player.MaxHp} maxSp={player.MaxSp}");
+
+        // The capture's own login block, field for field.
+        stats[Stat.Str].ShouldBe(43);
+        stats[Stat.Con].ShouldBe(138);
+        stats[Stat.Dex].ShouldBe(157);
+        stats[Stat.Int].ShouldBe(273);
+        stats[Stat.Men].ShouldBe(186);
+        player.MaxHp.ShouldBe(1245);
+        player.MaxSp.ShouldBe(1826);
+
+        DamageCalculator.ArmourClass(player).ShouldBe(138, 0.5,
+            "with no equipment the capture's reported AC equalled its Constitution exactly");
     }
 
     /// <summary>⚠️ THE FIXTURE, NOT THE ENGINE. The same Orc against the integration test's invented
