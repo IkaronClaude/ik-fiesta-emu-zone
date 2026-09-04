@@ -620,6 +620,11 @@ public sealed class CombatSimulation
     /// <summary>Diagnostics for `walkTo` under geometry — how often a route was found, refused, or the
     /// caller was already there. A driver that cannot move is usually a driver whose every route was
     /// refused, and that is invisible without counting.</summary>
+    /// <summary>Every `walkTo` the driver asked for: when, from where, to where, and how far the nearest
+    /// live mob was at that moment. A driver that walks away from its targets is invisible in a kill count
+    /// and obvious here.</summary>
+    public List<(uint At, int FromX, int FromY, int ToX, int ToY, int NearestMob, bool Routed)> WalkLog { get; } = [];
+
     public int WalkToCalls { get; set; }
     public int WalkToRouted { get; set; }
     public int WalkToNoPath { get; set; }
@@ -682,6 +687,20 @@ public sealed class CombatSimulation
                                          ? 1
                                          : Walkable.ReachableFraction(p.X, p.Y, wt.X, wt.Y),
             Skills: skills));
+    }
+
+    /// <summary>Distance to the nearest living mob, or -1 when the map is empty.</summary>
+    public int NearestMobDistance(int x, int y)
+    {
+        var best = -1.0;
+        foreach (var m in _mobs)
+        {
+            if (!m.Mob.IsAlive) continue;
+            double dx = m.Mob.X - x, dy = m.Mob.Y - y;
+            var d = Math.Sqrt(dx * dx + dy * dy);
+            if (best < 0 || d < best) best = d;
+        }
+        return (int)best;
     }
 
     /// <summary>Live mobs within <see cref="CombatLogEntry.CrowdRadius"/> of a point. Used to compare where

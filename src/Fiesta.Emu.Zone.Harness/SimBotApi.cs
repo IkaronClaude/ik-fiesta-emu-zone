@@ -471,6 +471,8 @@ public sealed class SimBotApi
         var p = _sim.Player;
         p.WalkPath = null;
         _sim.WalkToCalls++;
+        var logAt = _sim.WalkLog.Count;
+        _sim.WalkLog.Add((_sim.Now, p.X, p.Y, tx, ty, _sim.NearestMobDistance(p.X, p.Y), false));
 
         if (_sim.Walkable is { } grid)
         {
@@ -500,6 +502,7 @@ public sealed class SimBotApi
             }
 
             _sim.WalkToRouted++;
+            _sim.WalkLog[logAt] = _sim.WalkLog[logAt] with { Routed = true };
             p.WalkPath = new Queue<(int X, int Y)>(route);
             p.WalkTarget = p.WalkPath.Dequeue();
             p.FinalWalkTarget = (tx, ty);
