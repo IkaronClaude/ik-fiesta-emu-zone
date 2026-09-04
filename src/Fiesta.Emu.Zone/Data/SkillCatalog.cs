@@ -27,6 +27,13 @@ namespace Fiesta.Emu.Zone.Data;
 /// The `MinWC`/`MaxWC` damage columns, for the physical-skill rules object.</param>
 /// <param name="Magical">The `MinMA`/`MaxMA` damage columns, for the magical one.</param>
 /// <param name="Server">The accuracy row — `SkilPyHitRate`/`SkilMaHitRate` and the hit type.</param>
+/// <param name="HealAmount">⭐ HOW MUCH A HEAL HEALS, from `SpecialValueA` where `SpecialIndexA` is
+/// <see cref="Skill.SkillSpecial.HealAmount"/>.
+///
+/// <para>⚠️ It is NOT in the damage columns, and looking for it there is why a Cleric's heal did nothing:
+/// `Heal10` carries `MinMA`/`MaxMA` of ZERO and its 1,100 sits in `SpecialValueA`. The value scales with
+/// rank the way you would expect — `Heal01` 110, `Heal10` 1,100, `GreatHeal04` 1,800 — which is what
+/// confirms the reading.</para></param>
 public sealed record SkillDefinition(
     int Id,
     string InxName,
@@ -42,7 +49,8 @@ public sealed record SkillDefinition(
     int EffectType,
     Skill.ActiveSkillInfo Physical,
     Skill.ActiveSkillInfo Magical,
-    ActiveSkillInfoServer Server)
+    ActiveSkillInfoServer Server,
+    int HealAmount = 0)
 {
     /// <summary>⭐ WHICH RULES OBJECT THIS SKILL GOES THROUGH — read off the data, not off the class.
     ///
@@ -255,7 +263,12 @@ public sealed class SkillCatalog
                 UsableDegree: I(r, "UsableDegree"),
                 LandsOn: I(r, "Last"),
                 EffectType: I(r, "EffectType"),
-                physical, magical, srv));
+                physical, magical, srv,
+                // The heal amount rides the SPECIAL slots, not the damage columns. Only slot A is read:
+                // no heal in the file carries HealAmount anywhere else.
+                HealAmount: I(r, "SpecialIndexA") == (int)Skill.SkillSpecial.HealAmount
+                            ? I(r, "SpecialValueA")
+                            : 0));
         }
 
         var classIds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);

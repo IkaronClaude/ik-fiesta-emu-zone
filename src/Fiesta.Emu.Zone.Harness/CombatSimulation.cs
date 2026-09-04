@@ -368,8 +368,15 @@ public sealed class CombatSimulation
             return LastCastRefusal = CastRefusal.OnCooldown;
         if (Player.Sp < skill.Sp) return LastCastRefusal = CastRefusal.NotEnoughSp;
 
-        // A self-cast needs no target and has no range; anything else does.
-        if (skill.LandsOn != 1)
+        // ⭐ TARGETING OURSELVES IS A SELF-CAST, whatever `LandsOn` says.
+        //
+        // ⚠️ This is why a Cleric died at full SP with `Heal10` ready on every incoming hit. A heal is
+        // `LandsOn 3` (ALLY), not 1 (self), and the driver casts it at its OWN handle — correctly, and
+        // with a comment saying so. The simulation then looked the target up among MOBS, found nothing,
+        // and refused the cast. Every self-heal and every ally-buff was silently impossible.
+        var selfCast = skill.LandsOn == 1 || target == Player.Handle;
+
+        if (!selfCast)
         {
             var m = Find(target);
             if (m is null || !m.Mob.IsAlive) return LastCastRefusal = CastRefusal.NoTarget;
@@ -414,7 +421,7 @@ public sealed class CombatSimulation
         Player.CastingSkill = null;
         Casts++;
 
-        if (skill.LandsOn == 1) { ApplySelfCast(skill); return; }
+        if (skill.LandsOn == 1 || Player.CastTarget == Player.Handle) { ApplySelfCast(skill); return; }
 
         var m = Find(Player.CastTarget);
         if (m is null || !m.Mob.IsAlive) return;      // it died mid-cast; the SP is still gone
@@ -435,8 +442,9 @@ public sealed class CombatSimulation
     {
         if (!skill.IsHeal) return;
 
-        // The heal amount rides the same MA columns a magical attack does.
-        var amount = (int)(skill.Magical.MaxFlat > 0 ? skill.Magical.MaxFlat : skill.Physical.MaxFlat);
+        // ⚠️ FROM `SpecialValueA`, NOT the damage columns. `Heal10` has MinMA/MaxMA of zero and heals for
+        // 1,100; reading the MA pair returned 0 and the heal landed for nothing.
+        var amount = skill.HealAmount;
         if (amount <= 0) return;
         Player.Hp = Math.Min(Player.MaxHp, Player.Hp + amount);
         Log.Add($"[{Now,6}] {skill.InxName} healed for {amount} (hp {Player.Hp}/{Player.MaxHp})");
