@@ -466,7 +466,7 @@ public sealed class SimBotApi
     /// heads straight at the target and the wall slide handles the rest. That is deliberate: refusing to
     /// move would be a bigger fiction than moving imperfectly, and `TilePathFinder` returning null means
     /// "not found within budget", never "impossible".</para></summary>
-    public void walkTo(int tx, int ty)
+    public bool walkTo(int tx, int ty)
     {
         var p = _sim.Player;
         p.WalkPath = null;
@@ -474,23 +474,42 @@ public sealed class SimBotApi
 
         if (_sim.Walkable is { } grid)
         {
-            var route0 = TilePathFinder.FindPath(grid, p.X, p.Y, tx, ty);
-            if (route0 is null) _sim.WalkToNoPath++;
-            else if (route0.Count == 0) _sim.WalkToAlreadyThere++;
-        }
+            var route = TilePathFinder.FindPath(grid, p.X, p.Y, tx, ty);
 
-        if (_sim.Walkable is { } grid2
-            && TilePathFinder.FindPath(grid2, p.X, p.Y, tx, ty) is { Count: > 0 } route)
-        {
+            // ⭐ UNREACHABLE MEANS IT DOES NOT WALK, and it says so.
+            //
+            // ⚠️ Two conformance bugs in one line, and they compounded. The live `walkTo` RETURNS BOOL and
+            // refuses a destination the region graph cannot reach — it logs "UNREACHABLE — no route
+            // through the region graph" and returns false without moving. This returned VOID (so Lua saw
+            // nil, and `walkOk = bot.walkTo(...)` at level_quest.lua:2679 read as failure even on success)
+            // and, worse, fell back to walking in a STRAIGHT LINE at anything it could not route to.
+            //
+            // That is precisely the "driver targets unreachable mobs and walks at them" behaviour: the
+            // simulation was manufacturing it. 21% of Burning Hill's mobs spawn inside geometry and 16 of
+            // the 40 nearest have no route, so the fallback had plenty to chase.
+            if (route is null)
+            {
+                _sim.WalkToNoPath++;
+                return false;
+            }
+
+            if (route.Count == 0)
+            {
+                _sim.WalkToAlreadyThere++;
+                return true;                                  // already there
+            }
+
             _sim.WalkToRouted++;
             p.WalkPath = new Queue<(int X, int Y)>(route);
             p.WalkTarget = p.WalkPath.Dequeue();
             p.FinalWalkTarget = (tx, ty);
-            return;
+            return true;
         }
 
+        // No geometry loaded: the server governs walkability, so do not veto the move.
         p.WalkTarget = (tx, ty);
         p.FinalWalkTarget = (tx, ty);
+        return true;
     }
 
     /// <summary>⭐ `bot.canReach` — is there a route to this mob at all.

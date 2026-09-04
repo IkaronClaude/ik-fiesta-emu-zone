@@ -441,11 +441,10 @@ public sealed class LevelingBotHarness
             var q = Quests.FirstOrDefault(x => x.Id == (int)a[0].Number);
             return DynValue.NewNumber(q is null ? 0 : ProgressOf(q));
         },
-        ["walkTo"] = a =>
-        {
-            _api.walkTo((int)a[0].Number, (int)a[1].Number);
-            return DynValue.True;
-        },
+        // ⚠️ RETURN WHAT IT ACTUALLY DID. This hard-coded `DynValue.True`, so a refusal could never reach
+        // the driver even after the API learned to make one — and the live `walkTo` returns false for a
+        // destination the region graph cannot reach. `level_quest.lua:2679` already reads the result.
+        ["walkTo"] = a => DynValue.NewBoolean(_api.walkTo((int)a[0].Number, (int)a[1].Number)),
         // ⚠️ `attack` is the LIVE signature -- (skill, target), a cast. `swing` is the sim's own
         // one-shot melee primitive. See SimBotApi.attack for what conflating them cost.
         ["attack"] = a => DynValue.NewBoolean(_api.attack(
