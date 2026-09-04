@@ -14,10 +14,21 @@ namespace Fiesta.Emu.Zone.Lua;
 /// a refused path returns null and the caller decides, rather than quietly walking into a cliff.</para></summary>
 public static class TilePathFinder
 {
-    /// <summary>Cap on nodes expanded. A kite is tens of tiles; a cross-map trek is thousands and is not
-    /// what this is for. Hitting the cap returns null — <b>"I could not find a path within budget", which
-    /// is not the same as "there is no path"</b>, and callers must not read it as the latter.</summary>
-    public const int DefaultMaxExpansions = 20_000;
+    /// <summary>⭐ Cap on nodes expanded. Hitting it returns null — <b>"I could not find a path within
+    /// budget", which is not the same as "there is no path"</b>, and callers must not read it as the
+    /// latter.
+    ///
+    /// <para>⚠️ <b>THIS WAS 20,000 AND THAT REASONING WAS WRONG.</b> It was chosen as "a kite is tens of
+    /// tiles", which is true of the DISTANCE and says nothing about the SEARCH: when the direct line is
+    /// blocked, A*'s heuristic drags it into the obstacle and it fans out over a large open region before
+    /// finding the way round. Measured on Burning Hill, a <b>36-tile</b> journey from the spot the driver
+    /// stranded itself needed more than 20,000 expansions; at 200,000 it returns a 12-waypoint route.</para>
+    ///
+    /// <para>The cost of getting it wrong was total and silent: `walkTo` was called 101 times with walls
+    /// on and <b>failed to route 100 of them</b>, so every walk fell back to a straight line into geometry
+    /// and the character was blocked on 844 of 1,500 ticks. It read as a bot that cannot navigate. A
+    /// budget that is too small does not degrade gracefully — it turns the pathfinder off.</para></summary>
+    public const int DefaultMaxExpansions = 200_000;
 
     private static readonly (int Dx, int Dy)[] Neighbours =
     [
@@ -39,6 +50,18 @@ public static class TilePathFinder
         // walkable tile rather than refusing, which is what a player does without thinking about it.
         if (!grid.IsWalkableTile(goal.X, goal.Y) && NearestWalkable(grid, goal) is { } slid) goal = slid;
         if (!grid.IsWalkableTile(goal.X, goal.Y)) return null;
+
+        // ⭐ AND THE SAME FOR THE START, which is the asymmetry that made this useless.
+        //
+        // Refusing to route from an unwalkable tile sounds principled and is not: a character brushing a
+        // wall lands in a tile this grid calls blocked (the slide checks the step's destination, not
+        // whether the tile it settles in is open at the grid's rounding), and from then on EVERY path
+        // request fails. Measured on Burning Hill with walls on: `walkTo` called 101 times, routed 1,
+        // no-path 100 — so the driver fell back to straight lines, walked into geometry, and was blocked
+        // on 844 of 1,500 ticks. It looked exactly like a bot that cannot navigate.
+        //
+        // A character that is somehow inside geometry still has to be able to leave.
+        if (!grid.IsWalkableTile(start.X, start.Y) && NearestWalkable(grid, start) is { } out_) start = out_;
         if (!grid.IsWalkableTile(start.X, start.Y)) return null;
         if (start == goal) return [];
 

@@ -106,6 +106,32 @@ public class WalkabilityTests(ITestOutputHelper output)
         path[^1].ShouldBe((6223 + 250, 7280), "the route must finish where the caller asked");
     }
 
+    /// <summary>⭐ A ROUTE AROUND AN OBSTACLE MUST FIT IN THE BUDGET.
+    ///
+    /// <para>⚠️ The budget was 20,000 expansions, chosen because "a kite is tens of tiles" — true of the
+    /// DISTANCE and irrelevant to the SEARCH. When the direct line is blocked, A*'s heuristic drags it
+    /// into the obstacle and it fans out over a large region first. A <b>36-tile</b> journey from the spot
+    /// the driver stranded itself needed more than 20,000; the result was that `walkTo` failed to route
+    /// <b>100 of 101</b> calls, every walk fell back to a straight line into geometry, and the character
+    /// was blocked on 844 of 1,500 ticks. A budget that is too small does not degrade gracefully — it
+    /// turns the pathfinder off and looks like a bot that cannot navigate.</para></summary>
+    [SkippableFact]
+    public void ARouteAroundGeometryFitsInsideTheDefaultBudget()
+    {
+        var dir = BlockInfo();
+        Skip.If(dir is null, "server data not present; set SHINE_DATA");
+
+        var grid = WalkabilityGrid.Load(dir!, "RouVal02")!;
+
+        // The measured case: pinned at (5652,8539), nearest mob 223 units away past a wall.
+        var path = TilePathFinder.FindPath(grid, 5652, 8539, 5429, 8548);
+        path.ShouldNotBeNull("a 36-tile route around an obstacle must fit in the default budget");
+        output.WriteLine($"route around the wall: {path.Count} waypoints");
+
+        TilePathFinder.FindPath(grid, 5652, 8539, 5429, 8548, maxExpansions: 100)
+            .ShouldBeNull("and a deliberately tiny budget must still return null, not throw");
+    }
+
     /// <summary>⚠️ NULL MEANS "NOT FOUND WITHIN BUDGET", NEVER "IMPOSSIBLE" — and callers must fall back to
     /// walking rather than freezing, because refusing to move is a bigger fiction than moving badly.</summary>
     [SkippableFact]

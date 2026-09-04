@@ -617,6 +617,14 @@ public sealed class CombatSimulation
         }
     }
 
+    /// <summary>Diagnostics for `walkTo` under geometry — how often a route was found, refused, or the
+    /// caller was already there. A driver that cannot move is usually a driver whose every route was
+    /// refused, and that is invisible without counting.</summary>
+    public int WalkToCalls { get; set; }
+    public int WalkToRouted { get; set; }
+    public int WalkToNoPath { get; set; }
+    public int WalkToAlreadyThere { get; set; }
+
     /// <summary>The map's `.shbd` walls, when loaded. Null means open ground everywhere, which is what the
     /// simulation did before this existed — and a kite validated against open ground is not validated.</summary>
     public WalkabilityGrid? Walkable { get; set; }

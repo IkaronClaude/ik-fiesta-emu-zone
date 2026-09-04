@@ -470,10 +470,19 @@ public sealed class SimBotApi
     {
         var p = _sim.Player;
         p.WalkPath = null;
+        _sim.WalkToCalls++;
 
-        if (_sim.Walkable is { } grid
-            && TilePathFinder.FindPath(grid, p.X, p.Y, tx, ty) is { Count: > 0 } route)
+        if (_sim.Walkable is { } grid)
         {
+            var route0 = TilePathFinder.FindPath(grid, p.X, p.Y, tx, ty);
+            if (route0 is null) _sim.WalkToNoPath++;
+            else if (route0.Count == 0) _sim.WalkToAlreadyThere++;
+        }
+
+        if (_sim.Walkable is { } grid2
+            && TilePathFinder.FindPath(grid2, p.X, p.Y, tx, ty) is { Count: > 0 } route)
+        {
+            _sim.WalkToRouted++;
             p.WalkPath = new Queue<(int X, int Y)>(route);
             p.WalkTarget = p.WalkPath.Dequeue();
             p.FinalWalkTarget = (tx, ty);
