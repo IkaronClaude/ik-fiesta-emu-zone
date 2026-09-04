@@ -201,6 +201,38 @@ file's (index, value) pairs name an index the table discards.
 ---
 
 
+## 5. Rebuilding the capture's character is nine points of armour short
+
+**Status:** open, small, and bounded by a test.
+
+`SimAgreesWithTheCaptureTests` rebuilds `MageDamageLvl60`'s Enchanter from the nine item ids
+`damage_buckets.py` recovers out of `NC_ITEM_EQUIPCHANGE_CMD`, and checks the engine against what the
+capture actually observed. It nearly fits:
+
+| | rebuilt | capture |
+|---|---|---|
+| DEF | **327** | **336** |
+| Orc swing | 297..371 | 290..358 observed over 23 swings |
+
+Nine points, 2.7%, and it puts the band's FLOOR seven above the softest hit the capture saw.
+
+**The leading explanation is ENHANCEMENT, which this harness cannot see.** `NC_ITEM_EQUIPCHANGE_CMD`
+carries a slot and an item id and no `+N`, so an upgraded Nature piece contributes AC that `ItemInfo`
+alone does not know about. The character's Con free stat is 0, so the free-stat half is not it, and the
+four cosmetics carry no AC.
+
+**What would settle it:** find where the upgrade level reaches the client. `NC_CHAR_CLIENT_ITEM_CMD`
+(0x1047) carries a `SHINE_ITEM_STRUCT` per item, which is where a `+N` would live — it is already in the
+capture, 20 of them, and nothing parses it yet. That is the same packet OPEN_QUESTIONS §4 wants for
+per-item random options, so one decode answers both.
+
+⚠️ Until then the shortfall is asserted as a bound rather than absorbed: the test requires the armour
+within a few points of 336 and the floor within 12 of the softest observed hit, so it fails if the gap
+grows. Widening those bounds to make something else pass would throw away the only check the simulation
+has against reality.
+
+---
+
 # Resolved
 
 ## `MageDamageLvl60`'s magical residual — CLOSED 2026-09-03. The wire's MA pair is not the accessor's output.
