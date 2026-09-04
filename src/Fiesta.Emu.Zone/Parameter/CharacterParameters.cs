@@ -167,7 +167,6 @@ public static class CharacterParameters
         plus[Stat.MR] += item.MR;
         plus[Stat.TH] += item.TH;
         plus[Stat.TB] += item.TB;
-        plus[Stat.Critical] += item.CriRate;
         plus[Stat.CriticalTB] += item.CrlTB;
         plus[Stat.ShieldAC] += item.ShieldAC;
         plus[Stat.HitRate] += item.HitRatePlus;
@@ -193,6 +192,21 @@ public static class CharacterParameters
         // rate half, `roe_FreeStatCriRate` adds the MEN term, and the `Critical` slot this port used to
         // write is dead. A displacement scan does not find the WRITER -- a loop with a computed slot index
         // does not show up in one -- but what lands there is now measured rather than inferred.
+        //
+        // ⚠️ THIS WAS DOCUMENTED AND NOT DONE. The paragraph above has been here since 2026-09-01 and the
+        // code went on writing `Item.Plus[Critical]` -- the slot it says is dead -- and never wrote the
+        // live one, so every character's critical rate was 0 whatever they wore. A second capture caught
+        // it: `MageDamageLvl60`'s Enchanter crits on 15 of 67 landed skill hits (224 permille), and its
+        // gear plus `FreeStatMen.CriRate` predicts 230.
+        //
+        // ⚠️ AND IT IS A RAW SUM, not a rate. `c_clear` seeds this cluster from `parameter_eraser_rate`,
+        // whose slot 32 holds 1000 -- yet the live container read 40 and this capture needs 180. That is
+        // why `ParameterContainer` zeroes `Item.Rate[CriDamRate]` and `[MagCriDamRate]` on construction
+        // (see `ParameterCluster`'s per-layer zero list): the slot is a permille ACCUMULATOR living in a
+        // rate cluster, and `ItemOptions` already routes `ROT_CRI` random options onto the same slot.
+        // A plain `+=` is therefore right, and matches how a random option reaches it.
+        container.Rate(StatModifier.Item)[Stat.CriDamRate] += item.CriRate;
+
         var rate = container.Rate(StatModifier.ItemPowerRate);
         Compound(rate, Stat.WCmin, item.WCRate);
         Compound(rate, Stat.WCmax, item.WCRate);
