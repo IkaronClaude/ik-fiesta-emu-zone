@@ -84,6 +84,14 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
     /// progress toward on every tick, not an instantaneous step taken only when the script calls.</para></summary>
     public (int X, int Y)? WalkTarget { get; set; }
 
+    /// <summary>Remaining waypoints of a routed walk. Null for a straight-line walk.</summary>
+    public Queue<(int X, int Y)>? WalkPath { get; set; }
+
+    /// <summary>Where the walk is ultimately headed, as opposed to the next waypoint. This is what the
+    /// crowd and reachability columns of the combat log should judge — a kite is bad because of where it
+    /// ENDS, not because of the next tile on the way.</summary>
+    public (int X, int Y)? FinalWalkTarget { get; set; }
+
     /// <summary>The mob `bot.autoAttack` last locked on to, or null when not attacking.
     ///
     /// <para>⚠️ <b>Auto-attack is a MODE.</b> Live, `bot.autoAttack(h)` sends BASHSTART once and the
@@ -253,6 +261,16 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
             ? (t.X, t.Y)
             : (X + (int)Math.Round(dx / d * step), Y + (int)Math.Round(dy / d * step));
 
+        // Arrived at this waypoint: take the next one and keep going, so a routed walk is continuous
+        // rather than stopping at every corner.
+        if (d <= step && WalkPath is { Count: > 0 } queue)
+        {
+            X = t.X;
+            Y = t.Y;
+            WalkTarget = queue.Dequeue();
+            return;
+        }
+
         if (walkable is not null && !walkable.IsWalkable(nx, ny))
         {
             // ⚠️ SLIDE ALONG THE WALL rather than stopping dead.
@@ -269,9 +287,17 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
             // into geometry.
             BlockedByGeometry = true;
 
+            // ⚠️ THE SLIDE MUST NOT GO WHERE THE PATHFINDER WOULD NOT. `TilePathFinder` refuses to cut a
+            // corner — a diagonal needs both orthogonal neighbours open — and an unconstrained slide
+            // squeezes through exactly those gaps. The character then enters pockets it cannot be routed
+            // out of, which is what stranded a level-25 Warrior at (5652,8539) on Burning Hill with no
+            // path to 15 of its 20 nearest mobs, one of them 223 units away on open ground.
+            //
+            // Movement model and pathfinder have to agree about what is passable, or the simulation
+            // manufactures traps and then blames the driver for walking into them.
             if (walkable.IsWalkable(nx, Y)) { X = nx; }
             else if (walkable.IsWalkable(X, ny)) { Y = ny; }
-            else { WalkTarget = null; return; }        // a corner: genuinely nowhere to go
+            else { WalkTarget = null; WalkPath = null; FinalWalkTarget = null; return; }
         }
         else
         {
@@ -279,7 +305,12 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
             Y = ny;
         }
 
-        if (d <= step) WalkTarget = null;
+        if (d <= step)
+        {
+            WalkTarget = null;
+            WalkPath = null;
+            FinalWalkTarget = null;
+        }
     }
 
     /// <summary>The character's stat layers. Always present — an empty container is a real character with
@@ -424,13 +455,44 @@ public sealed class SimBotApi
     /// <summary>`bot.walkTo` — start walking to a point. NOT a step: the simulation keeps closing the
     /// distance every tick until it arrives or something else sets a new destination, which is what the
     /// live call does. See <see cref="SimPlayer.WalkTarget"/> for why the difference mattered.</summary>
-    public void walkTo(int tx, int ty) => _sim.Player.WalkTarget = (tx, ty);
+    /// <summary>`bot.walkTo` — go there, routing around geometry when the map has any.
+    ///
+    /// <para>⚠️ <b>The live call PATHFINDS.</b> The real bot's `walkTo` runs its own
+    /// `CoarsePathFinder`/`NavMeshPath`; modelling it as a straight line was fine while the simulation had
+    /// no walls and became a lie the moment it did — the driver got blamed for walking into terrain that
+    /// the live client would have routed around.</para>
+    ///
+    /// <para>⚠️ <b>A failed path still walks.</b> When no route is found inside the budget the character
+    /// heads straight at the target and the wall slide handles the rest. That is deliberate: refusing to
+    /// move would be a bigger fiction than moving imperfectly, and `TilePathFinder` returning null means
+    /// "not found within budget", never "impossible".</para></summary>
+    public void walkTo(int tx, int ty)
+    {
+        var p = _sim.Player;
+        p.WalkPath = null;
+
+        if (_sim.Walkable is { } grid
+            && TilePathFinder.FindPath(grid, p.X, p.Y, tx, ty) is { Count: > 0 } route)
+        {
+            p.WalkPath = new Queue<(int X, int Y)>(route);
+            p.WalkTarget = p.WalkPath.Dequeue();
+            p.FinalWalkTarget = (tx, ty);
+            return;
+        }
+
+        p.WalkTarget = (tx, ty);
+        p.FinalWalkTarget = (tx, ty);
+    }
 
     /// <summary>`bot.walking` — is the character still on its way somewhere.</summary>
     public bool walking() => _sim.Player.WalkTarget is not null;
 
     /// <summary>`bot.commitStop` / `bot.stopTravel` — stop where you are.</summary>
-    public void commitStop() => _sim.Player.WalkTarget = null;
+    public void commitStop()
+    {
+        _sim.Player.WalkTarget = null;
+        _sim.Player.WalkPath = null;
+    }
 
     /// <summary>`bot.attack` — swing at a mob. Returns false when out of range or the mob is gone, which
     /// is what the real API does rather than throwing.</summary>

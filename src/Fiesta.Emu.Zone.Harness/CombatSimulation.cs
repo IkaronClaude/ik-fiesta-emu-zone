@@ -659,8 +659,10 @@ public sealed class CombatSimulation
             SpStones: p.SpStones,
             SpStoneReadyInMs: StoneReady(p.SpStones, p.SpStoneReadyAt),
             MobsNearby: Crowd(p.X, p.Y),
-            MobsNearWalkTarget: p.WalkTarget is { } w ? Crowd(w.X, w.Y) : -1,
-            WalkTargetReachableFraction: p.WalkTarget is not { } wt || Walkable is null
+            // ⚠️ The FINAL destination, not the next waypoint. A routed walk's next corner is always a
+            // few tiles away and always reachable, so judging that would report every kite as perfect.
+            MobsNearWalkTarget: (p.FinalWalkTarget ?? p.WalkTarget) is { } w ? Crowd(w.X, w.Y) : -1,
+            WalkTargetReachableFraction: (p.FinalWalkTarget ?? p.WalkTarget) is not { } wt || Walkable is null
                                          ? 1
                                          : Walkable.ReachableFraction(p.X, p.Y, wt.X, wt.Y),
             Skills: skills));
