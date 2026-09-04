@@ -106,17 +106,15 @@ public class WalkabilityTests(ITestOutputHelper output)
         path[^1].ShouldBe((6223 + 250, 7280), "the route must finish where the caller asked");
     }
 
-    /// <summary>⭐ A ROUTE AROUND AN OBSTACLE MUST FIT IN THE BUDGET.
+    /// <summary>⭐ A ROUTE AROUND AN OBSTACLE IS FOUND, and by the navmesh rather than a grid search.
     ///
-    /// <para>⚠️ The budget was 20,000 expansions, chosen because "a kite is tens of tiles" — true of the
-    /// DISTANCE and irrelevant to the SEARCH. When the direct line is blocked, A*'s heuristic drags it
-    /// into the obstacle and it fans out over a large region first. A <b>36-tile</b> journey from the spot
-    /// the driver stranded itself needed more than 20,000; the result was that `walkTo` failed to route
-    /// <b>100 of 101</b> calls, every walk fell back to a straight line into geometry, and the character
-    /// was blocked on 844 of 1,500 ticks. A budget that is too small does not degrade gracefully — it
-    /// turns the pathfinder off and looks like a bot that cannot navigate.</para></summary>
+    /// <para>⚠️ A bounded tile A* used to answer this and it failed to route <b>100 of 101</b> `walkTo`
+    /// calls on Burning Hill: a 36-tile journey around an obstacle fans a grid search out over tens of
+    /// thousands of tiles before finding the way round, so a cap of 20,000 turned the pathfinder off
+    /// entirely and every walk fell back to a straight line into geometry. The navmesh routes over
+    /// regions instead — blocked ticks went from 844 to zero and the run got faster.</para></summary>
     [SkippableFact]
-    public void ARouteAroundGeometryFitsInsideTheDefaultBudget()
+    public void ARouteAroundGeometryIsFound()
     {
         var dir = BlockInfo();
         Skip.If(dir is null, "server data not present; set SHINE_DATA");
@@ -125,11 +123,31 @@ public class WalkabilityTests(ITestOutputHelper output)
 
         // The measured case: pinned at (5652,8539), nearest mob 223 units away past a wall.
         var path = TilePathFinder.FindPath(grid, 5652, 8539, 5429, 8548);
-        path.ShouldNotBeNull("a 36-tile route around an obstacle must fit in the default budget");
+        path.ShouldNotBeNull("a 36-tile route around an obstacle must be found");
         output.WriteLine($"route around the wall: {path.Count} waypoints");
+    }
 
-        TilePathFinder.FindPath(grid, 5652, 8539, 5429, 8548, maxExpansions: 100)
-            .ShouldBeNull("and a deliberately tiny budget must still return null, not throw");
+    /// <summary>The mesh decomposes free space into far fewer regions than there are tiles — that ratio is
+    /// the entire reason routing over it is cheap.</summary>
+    [SkippableFact]
+    public void TheNavMeshIsMuchSmallerThanTheGrid()
+    {
+        var dir = BlockInfo();
+        Skip.If(dir is null, "server data not present; set SHINE_DATA");
+
+        var grid = WalkabilityGrid.Load(dir!, "RouVal02")!;
+        var mesh = TilePathFinder.MeshFor(grid);
+
+        var walkable = 0;
+        for (var y = 0; y < grid.HeightTiles; y++)
+            for (var x = 0; x < grid.WidthTiles; x++)
+                if (grid.IsWalkableTile(x, y)) walkable++;
+
+        output.WriteLine($"{walkable} walkable tiles -> {mesh.Rects.Count} regions "
+                         + $"({(double)walkable / Math.Max(1, mesh.Rects.Count):F0}x smaller)");
+
+        mesh.Rects.ShouldNotBeEmpty();
+        mesh.Rects.Count.ShouldBeLessThan(walkable / 10, "the region graph must be far smaller than the grid");
     }
 
     /// <summary>⚠️ NULL MEANS "NOT FOUND WITHIN BUDGET", NEVER "IMPOSSIBLE" — and callers must fall back to

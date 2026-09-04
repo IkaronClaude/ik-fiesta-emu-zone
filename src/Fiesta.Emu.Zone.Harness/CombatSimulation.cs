@@ -627,6 +627,14 @@ public sealed class CombatSimulation
 
     /// <summary>The map's `.shbd` walls, when loaded. Null means open ground everywhere, which is what the
     /// simulation did before this existed — and a kite validated against open ground is not validated.</summary>
+    /// <para>⚠️ <b>THE PLAYER ONLY. Mobs do not pathfind — once aggro'd they phase straight through
+    /// walls</b> (operator, from play). That is why <see cref="Walkable"/> is passed to the player's
+    /// `AdvanceWalk` and to nothing else, and it is deliberate rather than an oversight: constraining
+    /// mobs would make geometry a shield the real game does not give you, and every kite measured behind
+    /// a wall would be a fiction.</para>
+    ///
+    /// <para>It also means an UNREACHABLE mob is not a harmless one — it cannot be walked to, but it can
+    /// still come to you.</para>
     public WalkabilityGrid? Walkable { get; set; }
 
     /// <summary>⭐ THE ROW THE OPERATOR ASKED FOR: on each enemy hit, every stone and skill cooldown.

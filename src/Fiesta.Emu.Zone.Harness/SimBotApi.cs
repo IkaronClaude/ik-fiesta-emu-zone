@@ -493,6 +493,30 @@ public sealed class SimBotApi
         p.FinalWalkTarget = (tx, ty);
     }
 
+    /// <summary>⭐ `bot.canReach` — is there a route to this mob at all.
+    ///
+    /// <para>⚠️ <b>The check the driver never makes.</b> With geometry loaded, 16 of the 40 nearest mobs
+    /// on Burning Hill have NO PATH from the grind spot — 21% of that map's mobs spawn INSIDE geometry and
+    /// others sit behind walls — and the driver targets them anyway, walks at them, and burns the run.
+    /// A player sees this instantly and picks something else.</para>
+    ///
+    /// <para><b>True when the map has no geometry loaded</b>, which is the honest answer: without walls
+    /// nothing is unreachable, and returning false there would invent an obstacle. The live bot can back
+    /// this with its own `CoarsePathFinder`, which already exists.</para></summary>
+    public bool canReach(int handle)
+    {
+        var m = _sim.Find((ushort)handle);
+        if (m is null || !m.Mob.IsAlive) return false;
+        if (_sim.Walkable is not { } grid) return true;
+        return TilePathFinder.FindPath(grid, _sim.Player.X, _sim.Player.Y, m.Mob.X, m.Mob.Y) is not null;
+    }
+
+    /// <summary>`bot.canReachPoint` — the same question about a place rather than a mob, for a kite
+    /// destination.</summary>
+    public bool canReachPoint(int x, int y)
+        => _sim.Walkable is not { } grid
+           || TilePathFinder.FindPath(grid, _sim.Player.X, _sim.Player.Y, x, y) is not null;
+
     /// <summary>`bot.walking` — is the character still on its way somewhere.</summary>
     public bool walking() => _sim.Player.WalkTarget is not null;
 

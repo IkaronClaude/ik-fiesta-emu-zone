@@ -451,6 +451,8 @@ public sealed class LevelingBotHarness
         ["attack"] = a => DynValue.NewBoolean(_api.attack(
             (int)a[0].Number, a.Count > 1 ? (int)a[1].Number : 0)),
         ["swing"] = a => DynValue.NewBoolean(_api.swing((int)a[0].Number)),
+        ["canReach"] = a => DynValue.NewBoolean(_api.canReach((int)a[0].Number)),
+        ["canReachPoint"] = a => DynValue.NewBoolean(_api.canReachPoint((int)a[0].Number, (int)a[1].Number)),
         // ⚠️ A MODE, NOT ONE SWING. `bot.autoAttack(h)` live sends BASHSTART and the server then streams
         // swings until the target dies; mapping it to a single `attack()` meant the driver hit a mob once
         // and stood there. See SimPlayer.AutoAttackTarget.

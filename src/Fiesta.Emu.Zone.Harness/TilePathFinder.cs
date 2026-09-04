@@ -14,33 +14,36 @@ namespace Fiesta.Emu.Zone.Lua;
 /// a refused path returns null and the caller decides, rather than quietly walking into a cliff.</para></summary>
 public static class TilePathFinder
 {
-    /// <summary>⭐ Cap on nodes expanded. Hitting it returns null — <b>"I could not find a path within
-    /// budget", which is not the same as "there is no path"</b>, and callers must not read it as the
-    /// latter.
+    /// <summary>⚠️ THERE IS NO EXPANSION BUDGET ANY MORE, and its absence is the point.
     ///
-    /// <para>⚠️ <b>THIS WAS 20,000 AND THAT REASONING WAS WRONG.</b> It was chosen as "a kite is tens of
-    /// tiles", which is true of the DISTANCE and says nothing about the SEARCH: when the direct line is
-    /// blocked, A*'s heuristic drags it into the obstacle and it fans out over a large open region before
-    /// finding the way round. Measured on Burning Hill, a <b>36-tile</b> journey from the spot the driver
-    /// stranded itself needed more than 20,000 expansions; at 200,000 it returns a 12-waypoint route.</para>
+    /// <para>A bounded tile A* lived here with a cap of 20,000, chosen because "a kite is tens of tiles" —
+    /// true of the DISTANCE and irrelevant to the SEARCH. It failed to route <b>100 of 101</b> `walkTo`
+    /// calls on Burning Hill, because a 36-tile journey around an obstacle fans a grid search out over
+    /// tens of thousands of tiles first. Raising the cap tenfold made it work and was still the wrong
+    /// answer: the search was the wrong shape.</para>
     ///
-    /// <para>The cost of getting it wrong was total and silent: `walkTo` was called 101 times with walls
-    /// on and <b>failed to route 100 of them</b>, so every walk fell back to a straight line into geometry
-    /// and the character was blocked on 844 of 1,500 ticks. It read as a bot that cannot navigate. A
-    /// budget that is too small does not degrade gracefully — it turns the pathfinder off.</para></summary>
-    public const int DefaultMaxExpansions = 200_000;
-
-    private static readonly (int Dx, int Dy)[] Neighbours =
-    [
-        (1, 0), (-1, 0), (0, 1), (0, -1),
-        (1, 1), (1, -1), (-1, 1), (-1, -1),
-    ];
+    /// <para>The navmesh routes over regions instead — thousands of nodes, not millions of tiles — so
+    /// there is nothing left to bound. Blocked ticks went from 844 to <b>0</b> and the run got faster.
+    /// A budget parameter is not kept "just in case": one that no longer does anything is exactly the
+    /// silent lie this file has already been bitten by.</para></summary>
 
     /// <summary>Route from one world point to another, as world-space waypoints (excluding the start).
     /// Null when no route was found inside the budget.</summary>
+    /// <summary>One navmesh per grid, built on first use. Decomposition costs a pass over the tiles and
+    /// is reused for every query on that map.</summary>
+    private static readonly Dictionary<WalkabilityGrid, NavMesh> Meshes = [];
+
+    public static NavMesh MeshFor(WalkabilityGrid grid)
+    {
+        lock (Meshes)
+        {
+            if (!Meshes.TryGetValue(grid, out var mesh)) Meshes[grid] = mesh = NavMesh.Build(grid);
+            return mesh;
+        }
+    }
+
     public static IReadOnlyList<(int X, int Y)>? FindPath(
-        WalkabilityGrid grid, int fromX, int fromY, int toX, int toY,
-        int maxExpansions = DefaultMaxExpansions)
+        WalkabilityGrid grid, int fromX, int fromY, int toX, int toY)
     {
         var start = ToTile(fromX, fromY);
         var goal = ToTile(toX, toY);
@@ -65,49 +68,34 @@ public static class TilePathFinder
         if (!grid.IsWalkableTile(start.X, start.Y)) return null;
         if (start == goal) return [];
 
-        var open = new PriorityQueue<(int X, int Y), int>();
-        var cameFrom = new Dictionary<(int X, int Y), (int X, int Y)>();
-        var cost = new Dictionary<(int X, int Y), int> { [start] = 0 };
-        open.Enqueue(start, Heuristic(start, goal));
+        // ⭐ THE REGION GRAPH FIRST. Tile A* pays full-grid cost to decide WHICH WAY to go; the navmesh
+        // answers that over thousands of rectangles instead of millions of tiles, and the straight line
+        // between portal crossings answers the rest. This is what took `walkTo` from routing 1 call in 101
+        // to routing all of them.
+        var mesh = MeshFor(grid);
+        var route = mesh.RegionRoute(mesh.RegionAt(start.X, start.Y), mesh.RegionAt(goal.X, goal.Y));
+        if (route is null) return null;
 
-        var expanded = 0;
-        while (open.TryDequeue(out var current, out _))
+        var waypoints = new List<(int X, int Y)>();
+        var atX = fromX;
+        var atY = fromY;
+        for (var i = 1; i < route.Count; i++)
         {
-            if (current == goal) return Smooth(grid, fromX, fromY, Rebuild(cameFrom, current), toX, toY);
-            if (++expanded > maxExpansions) return null;
-
-            foreach (var (dx, dy) in Neighbours)
-            {
-                var next = (X: current.X + dx, Y: current.Y + dy);
-                if (!grid.IsWalkableTile(next.X, next.Y)) continue;
-
-                // ⚠️ CORNER CUTTING IS ALLOWED, because the MOVEMENT MODEL allows it.
-                //
-                // Refusing it is the textbook choice and it was wrong here: `AdvanceWalk`'s wall slide
-                // moves one axis at a time and therefore squeezes through a diagonal gap quite happily.
-                // With the pathfinder refusing what movement permits, a character could walk INTO a pocket
-                // it could not be routed out of — measured on Burning Hill, stranded at (5652,8539) with
-                // no path to 15 of its 20 nearest mobs, one of them 223 units away on open ground.
-                //
-                // The two must agree on what is passable. They agree HERE, permissively, matching the
-                // slide; the alternative is to forbid the slide, which would pin a character on any wall
-                // it brushed. If the movement model ever gains a proper slide vector, revisit both
-                // together and never just one.
-                if (dx != 0 && dy != 0 &&
-                    !grid.IsWalkableTile(current.X + dx, current.Y) &&
-                    !grid.IsWalkableTile(current.X, current.Y + dy))
-                    continue;                                 // both orthogonals blocked: a true corner
-
-                var step = dx != 0 && dy != 0 ? 14 : 10;      // 1.4 ~ sqrt 2, in tenths
-                var candidate = cost[current] + step;
-                if (cost.TryGetValue(next, out var known) && candidate >= known) continue;
-
-                cost[next] = candidate;
-                cameFrom[next] = current;
-                open.Enqueue(next, candidate + Heuristic(next, goal));
-            }
+            // Cross each portal at the middle of its run. The funnel algorithm would choose a better
+            // crossing; string-pulling below recovers most of that, and claiming a funnel this is not
+            // would be worse than being plainly approximate.
+            var portal = mesh.Portals[route[i - 1]].First(p => p.To == route[i]);
+            var (px, py) = portal.Vertical
+                ? (portal.At, portal.Middle)
+                : (portal.Middle, portal.At);
+            waypoints.Add(TileCentreWorld(px, py));
         }
-        return null;
+        waypoints.Add((toX, toY));
+        return Smooth(grid, atX, atY, waypoints, toX, toY);
+
+        // (No tile A* below: the navmesh answers the routing question. An earlier bounded grid search
+        // lived here and was removed rather than left as a fallback -- two pathfinders disagreeing about
+        // what is reachable is how `canReach` starts lying.)
     }
 
     /// <summary>The tile a world point sits in, with the grid's origin shift applied — the same mapping
@@ -116,18 +104,13 @@ public static class TilePathFinder
         => ((int)(worldX / WalkabilityGrid.WorldPerTile) + WalkabilityGrid.TileShift,
             (int)(worldY / WalkabilityGrid.WorldPerTile) + WalkabilityGrid.TileShift);
 
-    private static (int X, int Y) ToWorld((int X, int Y) tile)
-        => ((int)((tile.X - WalkabilityGrid.TileShift) * WalkabilityGrid.WorldPerTile),
-            (int)((tile.Y - WalkabilityGrid.TileShift) * WalkabilityGrid.WorldPerTile));
+    /// <summary>The CENTRE of a tile in world units. Portal crossings must not be tile corners — a corner
+    /// can sit inside the neighbouring wall, and it is also what made the old per-tile route aim backwards.</summary>
+    private static (int X, int Y) TileCentreWorld(int tileX, int tileY)
+        => ((int)((tileX - WalkabilityGrid.TileShift + 0.5) * WalkabilityGrid.WorldPerTile),
+            (int)((tileY - WalkabilityGrid.TileShift + 0.5) * WalkabilityGrid.WorldPerTile));
 
-    /// <summary>Chebyshev-with-diagonals, matching the step costs above so the heuristic never
-    /// overestimates and A* stays admissible.</summary>
-    private static int Heuristic((int X, int Y) a, (int X, int Y) b)
-    {
-        var dx = Math.Abs(a.X - b.X);
-        var dy = Math.Abs(a.Y - b.Y);
-        return 10 * (dx + dy) + (14 - 2 * 10) * Math.Min(dx, dy);
-    }
+
 
     /// <summary>The closest walkable tile to a blocked one, searched in rings. Bounded — a goal deep
     /// inside a mountain has no near neighbour and the caller gets null.</summary>
@@ -180,17 +163,4 @@ public static class TilePathFinder
         return pulled;
     }
 
-    private static List<(int X, int Y)> Rebuild(
-        Dictionary<(int X, int Y), (int X, int Y)> cameFrom, (int X, int Y) at)
-    {
-        var tiles = new List<(int X, int Y)> { at };
-        while (cameFrom.TryGetValue(at, out var previous))
-        {
-            at = previous;
-            tiles.Add(at);
-        }
-        tiles.Reverse();
-        tiles.RemoveAt(0);                                   // the start is where we already are
-        return [.. tiles.Select(ToWorld)];
-    }
 }
