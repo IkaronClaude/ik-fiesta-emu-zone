@@ -80,6 +80,44 @@ public class DriverUnderFireTests(ITestOutputHelper output)
         foreach (var line in cut.Take(15)) output.WriteLine("  " + line);
     }
 
+    /// <summary>Walk up and swing at the nearest mob. No quests, no phases, no kiting, no rotation.
+    ///
+    /// <para>The control for every claim about level_quest.lua: if this cannot get around the map either,
+    /// the fault is in the harness's movement and not in the driver's choices.</para></summary>
+    private const string KillNearest = """
+        function on_tick()
+          local mobs = bot.nearbyMobs()
+          local best, bestDist = nil, 1e9
+          for i = 1, #mobs do
+            local m = mobs[i]
+            if m.isHuntable and m.hp > 0 and m.dist < bestDist then best, bestDist = m, m.dist end
+          end
+          if best == nil then return end
+          if not bot.swing(best.handle) then
+            if not bot.walking() then bot.walkTo(best.x, best.y) end
+          end
+        end
+        """;
+
+    [SkippableFact]
+    public void ControlWalkUpAndSwingInTheSameDungeon()
+    {
+        var (shine, ressystem) = (Shine(), Ressystem());
+        Skip.If(shine is null, "server data not present; set SHINE_DATA");
+        Skip.If(ressystem is null, "client data not present; set CLIENT_DATA");
+
+        foreach (var dungeon in new[] { true, false })
+        {
+            var log = new CombatLog();
+            var r = ScenarioRunner.Run(shine!, ressystem!, KillNearest, "Warrior", 25, dungeon,
+                                       combatLog: log);
+            output.WriteLine($"{r!.AreaName} ({r.Map}): kills={r.Kills} died={r.Died} "
+                             + $"survived={r.SurvivedSeconds}s errors={r.Errors} {r.FirstError}");
+            output.WriteLine(log.Summarise());
+            output.WriteLine("");
+        }
+    }
+
     /// <summary>Collapse numbers out of a driver line so repeats of one decision group together.</summary>
     private static string Collapse(string line)
         => System.Text.RegularExpressions.Regex.Replace(line, @"-?\d+(\.\d+)?", "#");
