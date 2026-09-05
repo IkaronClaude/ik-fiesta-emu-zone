@@ -614,7 +614,20 @@ public sealed class SimBotApi
     public bool canReachPoint(int x, int y)
         => _sim.Walkable is not { } grid || Connected(grid, x, y);
 
-    /// <summary>`bot.walking` — is the character still on its way somewhere.</summary>
+    /// <summary>`bot.routeLength` - walkable route length in world units to a point, -1 when the navmesh
+    /// cannot route it, 0 when already there.
+    ///
+    /// <para>With no geometry loaded the answer is the straight line: without walls nothing detours, and
+    /// returning -1 there would tell the script the point is unreachable.</para></summary>
+    public double routeLength(int tx, int ty)
+    {
+        var p = _sim.Player;
+        if (_sim.Walkable is not { } grid)
+            return Math.Sqrt((double)(tx - p.X) * (tx - p.X) + (double)(ty - p.Y) * (ty - p.Y));
+        return TilePathFinder.RouteLength(grid, p.X, p.Y, tx, ty);
+    }
+
+    /// <summary>`bot.walking` - is the character still on its way somewhere.</summary>
     public bool walking() => _sim.Player.WalkTarget is not null;
 
     /// <summary>`bot.commitStop` / `bot.stopTravel` — stop where you are.</summary>
