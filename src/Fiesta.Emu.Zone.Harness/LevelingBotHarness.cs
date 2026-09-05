@@ -306,6 +306,8 @@ public sealed class LevelingBotHarness
         ["selfHandle"] = _ => DynValue.NewNumber(_sim.Player.Handle),
         ["inCombat"] = _ => DynValue.NewBoolean(_api.inCombat()),
         ["aggressorHandles"] = _ => DynValue.NewTable(_api.aggressorHandles()),
+        // Empty-table-stubbed this read as "every chaser has dropped", so shedStep never ran.
+        ["aggressorSpawns"] = _ => DynValue.NewTable(_api.aggressorSpawns()),
         // A COUNT, not a list -- `bot.aggressors() > 0`. It ends in "s" and the plural heuristic called it a
         // table, which is the same trap `bagFreeSlots` fell into.
         ["aggressors"] = _ => DynValue.NewNumber(_sim.Mobs.Count(m => m.Arg.Target is SimPlayer)),
@@ -354,6 +356,7 @@ public sealed class LevelingBotHarness
         ["skillInfo"] = a => _api.skillInfo((int)a[0].Number),
         ["cast"] = a => DynValue.NewBoolean(_api.cast((int)a[0].Number, (int)a[1].Number)),
         ["casting"] = _ => DynValue.NewBoolean(_api.casting()),
+        ["castConfirmed"] = _ => DynValue.NewBoolean(_api.castConfirmed()),
         ["skillReadyInMs"] = a => DynValue.NewNumber(_api.skillReadyInMs((int)a[0].Number)),
         ["skillCooldowns"] = _ => DynValue.NewTable(_api.skillCooldowns()),
         ["skillDamageAvg"] = a => DynValue.NewNumber(_api.skillDamageAvg((int)a[0].Number)),
@@ -361,6 +364,8 @@ public sealed class LevelingBotHarness
         ["money"] = _ => DynValue.NewNumber(_api.money()),
         ["bagFreeSlots"] = _ => DynValue.NewNumber(_api.bagFreeSlots()),
         ["bagFull"] = _ => DynValue.NewBoolean(_api.bagFull()),
+        // A `can*` name auto-stubs to false; this is a pacing gate whose idle answer is true.
+        ["canPick"] = _ => DynValue.NewBoolean(_api.canPick()),
         ["inventory"] = _ => DynValue.NewTable(_api.inventory()),
         ["equipment"] = _ => DynValue.NewTable(_api.equipment()),
         ["traveling"] = _ => DynValue.NewBoolean(_api.traveling()),

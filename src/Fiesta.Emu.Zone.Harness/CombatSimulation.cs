@@ -359,6 +359,10 @@ public sealed class CombatSimulation
     /// what makes a cast interruptible, and what makes cast time cost anything.</summary>
     public CastRefusal Cast(int skillId, ushort target)
     {
+        // NoteCastSent clears the confirmation on send; only the ACK sets it again. Clearing here rather
+        // than on each refusal arm keeps that ordering.
+        Player.CastServerConfirmed = false;
+
         if (!Player.IsAlive) return LastCastRefusal = CastRefusal.Dead;
         if (Player.CastingSkill is not null) return LastCastRefusal = CastRefusal.AlreadyCasting;
 
@@ -395,6 +399,7 @@ public sealed class CombatSimulation
         Player.CastingSkill = skill;
         Player.CastTarget = target;
         Player.CastEndsAt = Now + (uint)Math.Max(0, skill.CastTimeMs);
+        Player.CastServerConfirmed = true;
         return LastCastRefusal = CastRefusal.Accepted;
     }
 
@@ -409,16 +414,19 @@ public sealed class CombatSimulation
     {
         if (Player.CastingSkill is not { } skill) return;
 
-        if (!Player.IsAlive) { Player.CastingSkill = null; return; }
+        if (!Player.IsAlive) { Player.CastingSkill = null; Player.CastServerConfirmed = false; return; }
         if (Player.WalkTarget is not null && skill.CastTimeMs > 0)
         {
             Log.Add($"[{Now,6}] cast of {skill.InxName} CANCELLED by movement (sp {skill.Sp} spent, still cooling)");
             Player.CastingSkill = null;
+            Player.CastServerConfirmed = false;
             return;
         }
         if (Now < Player.CastEndsAt) return;
 
+        // EndCast: the confirmation belongs to the cast in flight and dies with it.
         Player.CastingSkill = null;
+        Player.CastServerConfirmed = false;
         Casts++;
 
         if (skill.LandsOn == 1 || Player.CastTarget == Player.Handle) { ApplySelfCast(skill); return; }

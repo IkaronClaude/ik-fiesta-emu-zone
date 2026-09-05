@@ -129,6 +129,14 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
     /// <summary>When the in-flight cast lands.</summary>
     public uint CastEndsAt { get; set; }
 
+    /// <summary>`ZoneView.CastServerConfirmed`. Live it is set by the CAST_SUC ACK and cleared by
+    /// NoteCastSent/EndCast; here acceptance is synchronous, so CastRefusal.Accepted sets it and the
+    /// cast resolving or being cancelled clears it.
+    ///
+    /// <para>Stubbed false, level_quest.lua:2077 could never book castAt[id] for an accepted cast, so
+    /// every skill ran the CAST_SPAM retry ladder to exhaustion.</para></summary>
+    public bool CastServerConfirmed { get; set; }
+
     /// <summary>Per skill id, the clock at which it comes off cooldown.</summary>
     public Dictionary<int, uint> SkillReadyAt { get; } = [];
 
@@ -386,6 +394,37 @@ public sealed class SimBotApi
         return t;
     }
 
+    /// <summary>`bot.aggressorSpawns` - the mobs on us, with where each came from. Input to
+    /// level_quest.lua's shedStep.
+    ///
+    /// <para>The auto-stub's empty table is not neutral: n == 0 and chasing == 0 is the shape shedStep
+    /// reads as "every chaser has already dropped", so it reported a completed escape on every call.</para>
+    ///
+    /// <para>anchorX/anchorY and fromSpawn are measured from so_mob_LastHittedLocation, which is what
+    /// MobActionChase compares against so_mob_ChaseRangeSquar. chaseLimit is the mob's FollowCha.</para></summary>
+    public Table aggressorSpawns()
+    {
+        var t = new Table(_sim.Script);
+        var i = 1;
+        foreach (var m in _sim.Mobs.Where(m => m.Arg.Target is SimPlayer && m.Mob.IsAlive))
+        {
+            var row = new Table(_sim.Script);
+            row["handle"] = (double)m.Mob.Handle;
+            row["mobId"] = (double)(m.Definition?.Info.Id ?? 0);
+            row["x"] = (double)m.Mob.X;
+            row["y"] = (double)m.Mob.Y;
+            row["anchorX"] = (double)m.SpawnX;
+            row["anchorY"] = (double)m.SpawnY;
+            double dx = m.Mob.X - m.SpawnX, dy = m.Mob.Y - m.SpawnY;
+            row["fromSpawn"] = Math.Sqrt(dx * dx + dy * dy);
+            row["chaseLimit"] = 0d;
+            row["willDropIn"] = 0d;
+            row["isClone"] = false;
+            t.Set(DynValue.NewNumber(i++), DynValue.NewTable(row));
+        }
+        return t;
+    }
+
     // ---- the world -----------------------------------------------------------------------------------
 
     /// <summary>`bot.nearbyMobs` — every living mob, in the SAME SHAPE the live `BotApi` produces.
@@ -443,6 +482,11 @@ public sealed class SimBotApi
             ["targetingMe"] = m.Arg.Target is SimPlayer,
         };
     }
+
+    /// <summary>`bot.canPick`. A PACING gate live - ZoneView.CanPick is !PickPending || sent over 2s
+    /// ago - so its idle answer is true. The `can*` auto-stub answered false and shut the loot branch.
+    /// The simulation sends no picks, so nothing is ever pending.</summary>
+    public bool canPick() => true;
 
     public double dist(int handle)
     {
@@ -799,8 +843,12 @@ public sealed class SimBotApi
     public bool cast(int skill, int target)
         => _sim.Cast(skill, (ushort)target) == CombatSimulation.CastRefusal.Accepted;
 
-    /// <summary>`bot.casting` — is a cast bar up right now.</summary>
+    /// <summary>`bot.casting` - is a cast bar up right now.</summary>
     public bool casting() => _sim.Player.CastingSkill is not null;
+
+    /// <summary>`bot.castConfirmed` - did the server take the cast we just sent. See
+    /// SimPlayer.CastServerConfirmed.</summary>
+    public bool castConfirmed() => _sim.Player.CastServerConfirmed;
 
     /// <summary>`bot.skillReadyInMs` — milliseconds until a skill comes off cooldown.
     ///
