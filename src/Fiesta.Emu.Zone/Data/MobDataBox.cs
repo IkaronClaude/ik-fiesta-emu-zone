@@ -80,8 +80,24 @@ public sealed record MobInfoServer(
     int MonExp, int DetectCha, int FollowCha,
     int MaxSp, int Rank,
     EnemyDetect DetectType,
-    int TurnSpeed, int WalkChase, int RegenInterval)
+    int TurnSpeed, int WalkChase, int RegenInterval,
+    int ResetInterval = 0, int CutInterval = 0, int CutNonAt = 0,
+    int Return2Regen = 0, int RoamingRestTime = 0)
 {
+    /// <summary>What `so_mob_ChaseRangeSquar@ShineMob` (0x005564E0) returns: FollowCha squared, four
+    /// instructions, no other term. 1500 on the ordinary field mob, 1800 on D_MarloneMegaton.</summary>
+    public long ChaseRangeSquar => (long)FollowCha * FollowCha;
+
+    /// <summary>CutInterval squared, as MobTarget_EnemyAnalysis's ctor (0x004AC5B0+0xC9) stores it.
+    /// It is a DISTANCE despite the name: lid_Call+0xEB frees any hate entry farther away than this.
+    /// 500 on every ordinary mob.</summary>
+    public long CutIntervalSquar => (long)CutInterval * CutInterval;
+
+    /// <summary>CutNonAT in TENTHS, as the same ctor computes it: an unsigned divide by 1000 then times
+    /// 10, so it truncates to whole seconds first (20500 ms -> 200 tenths). lid_Call+0x61 frees an entry
+    /// this long after it last generated aggro. 20000 ms on the ordinary mobs.</summary>
+    public int CutNonAtTenths => (int)((uint)CutNonAt / 1000u) * 10;
+
     /// <summary>Whether this mob acquires targets on its own, or only fights back.</summary>
     public bool IsAggressive => DetectType is not (EnemyDetect.Bout or EnemyDetect.NoBrain);
 
@@ -208,7 +224,9 @@ public sealed class MobDataBox
                 I(r, "MonEXP"), I(r, "DetectCha"), I(r, "FollowCha"),
                 I(r, "MaxSP"), I(r, "Rank"),
                 (EnemyDetect)I(r, "EnemyDetectType"),
-                I(r, "TurnSpeed"), I(r, "WalkChase"), I(r, "RegenInterval"));
+                I(r, "TurnSpeed"), I(r, "WalkChase"), I(r, "RegenInterval"),
+                I(r, "ResetInterval"), I(r, "CutInterval"), I(r, "CutNonAT"),
+                I(r, "Return2Regen"), I(r, "RoamingRestTime"));
         }
 
         var weapons = new Dictionary<string, List<MobWeapon>>(StringComparer.OrdinalIgnoreCase);

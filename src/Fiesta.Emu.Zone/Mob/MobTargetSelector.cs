@@ -37,6 +37,11 @@ public sealed class MobTargetStruct
 {
     public required IShineObject Object { get; init; }
     public int AggroPoint { get; set; }
+
+    /// <summary>`mts_LastHit` (+0x10) - the clockwatch, in tenths, at the last aggro append.
+    /// `mts_AppendAggroPoint@MobTargetBout` stamps it on both paths (+0x19B and +0x22B), and it is the
+    /// only input to mts_Routine's CutNonAT test.</summary>
+    public int LastHitTenths { get; set; }
 }
 
 /// <summary>Target acquisition — the server's `MobTargetSelector` / `MobTargetBout` / `MobTargetAggresive`
@@ -201,7 +206,7 @@ public sealed class MobTargetSelector
     /// <para>⚠️ How many points a hit generates is <b>not yet established</b> — the call that turns damage
     /// into aggro has not been found in either `so_DamagedBy` or `mab_Damaged`. Callers currently supply
     /// the amount, and that is a placeholder, not a ported rule.</para></summary>
-    public void mts_AppendAggroPoint(IShineObject who, int points)
+    public void mts_AppendAggroPoint(IShineObject who, int points, int nowTenths = 0)
     {
         var entry = _aggro.FirstOrDefault(e => ReferenceEquals(e.Object, who));
         if (entry is null)
@@ -210,14 +215,71 @@ public sealed class MobTargetSelector
             _aggro.Add(entry);
         }
         entry.AggroPoint += points;
+
+        // The binary stamps mts_LastHit on both paths, so it is written after the merge. Without it an
+        // entry is freed by the CutNonAT test on the first mts_Routine tick.
+        entry.LastHitTenths = nowTenths;
     }
 
     /// <summary>`mts_DecreaseAggroPoint`.</summary>
-    public void mts_DecreaseAggroPoint(IShineObject who, int points)
-        => mts_AppendAggroPoint(who, -points);
+    public void mts_DecreaseAggroPoint(IShineObject who, int points, int nowTenths = 0)
+        => mts_AppendAggroPoint(who, -points, nowTenths);
 
     /// <summary>`mts_AggroClear`.</summary>
     public void mts_AggroClear() => _aggro.Clear();
+
+    /// <summary>`MobInfoServer.CutInterval` squared. 0 switches the distance test off, which is what a
+    /// mob with no data row gets; a squared distance of 0 would otherwise free every entry at once.</summary>
+    public long CutIntervalSquar { get; set; }
+
+    /// <summary>`MobInfoServer.CutNonAT` in tenths. 0 switches the timeout off, same reasoning.</summary>
+    public int CutNonAtTenths { get; set; }
+
+    /// <summary>`MobTargetBout::mts_Routine` (0x004AC940) - the aggro list purge, and the only way a mob
+    /// stops hating you.
+    ///
+    /// <para>It builds a MobTarget_EnemyAnalysis over the list and walks it with lid_Call (0x004AC800),
+    /// which frees an entry on any of three tests: clockwatch &gt; LastHit + CutNonAT tenths (+0x61); the
+    /// object is gone (+0xC6); or dist^2 &gt; CutInterval^2 (+0xEB).</para>
+    ///
+    /// <para>MobActionChase's so_mob_ChaseRangeSquar test only ends the CHASE. The mob then returns to
+    /// Targetting and takes the same entry back off this list, because mts_GetTopAggroTarget has no
+    /// distance test. Nothing but this purge removes it.</para>
+    ///
+    /// <para>Not modelled: the io_ReadReport SpyNet call on the surviving entries.</para></summary>
+    /// <returns>How many entries were freed.</returns>
+    public int mts_Routine(IShineObject scanner, int nowTenths)
+    {
+        var freed = 0;
+        for (var i = _aggro.Count - 1; i >= 0; i--)
+        {
+            var entry = _aggro[i];
+
+            // +0x61: `cmp [0x14D41A70], LastHit + timeout` / `jbe` -- strictly greater frees.
+            if (CutNonAtTenths > 0 && nowTenths > entry.LastHitTenths + CutNonAtTenths)
+            {
+                _aggro.RemoveAt(i);
+                freed++;
+                continue;
+            }
+
+            // +0xC6: som_GetObject(handle) returning null frees. A dead object is the nearest equivalent.
+            if (!entry.Object.IsAlive)
+            {
+                _aggro.RemoveAt(i);
+                freed++;
+                continue;
+            }
+
+            // +0xEB: `cmp dist^2, CutInterval^2` / `ja` -- again strictly greater.
+            if (CutIntervalSquar > 0 && SquaredDistance(scanner, entry.Object) > CutIntervalSquar)
+            {
+                _aggro.RemoveAt(i);
+                freed++;
+            }
+        }
+        return freed;
+    }
 
     /// <summary>`mts_GetTopAggroTarget` — the highest-hate living entry.
     ///

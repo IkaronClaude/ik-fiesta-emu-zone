@@ -17,8 +17,8 @@ public class ApiConformanceTests
         sim.Player.MaxHp = sim.Player.Hp = 1000;
         var mob = sim.AddMob(10, mobX, mobY, m => m.Hp = m.MaxHp = 5000);
         mob.Name = "Orc";
-        mob.SpawnX = 300;
-        mob.SpawnY = 400;
+        // anchorX/anchorY report so_mob_LastHittedLocation, which is what MobActionChase measures from.
+        mob.Mob.LastHittedLocation = (300, 400);
         mob.Arg.Target = sim.Player;
         return sim;
     }

@@ -58,6 +58,12 @@ public sealed class SimMob : ICombatant
         Arg.Combat.WalkSpeed = definition.Info.WalkSpeed;
         Arg.Combat.WalkChaseDistance = definition.Server.WalkChase;
         Arg.Combat.TurnSpeed = definition.Server.TurnSpeed;
+        Arg.Combat.ChaseRangeSquar = definition.Server.ChaseRangeSquar;
+        Arg.Combat.Return2Regen = definition.Server.Return2Regen;
+        Arg.Combat.RoamingRestTenths = definition.Server.RoamingRestTime / 100;
+        Mob.ResetInterval = definition.Server.ResetInterval;
+        Mob.Selector.CutIntervalSquar = definition.Server.CutIntervalSquar;
+        Mob.Selector.CutNonAtTenths = definition.Server.CutNonAtTenths;
 
         if (definition.NormalAttack is not { } w) return;
 
@@ -208,6 +214,7 @@ public sealed class CombatSimulation
         configure?.Invoke(sim);
         sim.SpawnX = x;
         sim.SpawnY = y;
+        mob.so_mob_RegenComplete(x, y);
         _mobs.Add(sim);
         return sim;
     }
@@ -481,7 +488,7 @@ public sealed class CombatSimulation
     private void LandOnMob(SimMob target, int damage)
     {
         target.Hp -= damage;
-        target.Mob.so_DamagedBy(Player, damage, Player.AggroRatePermille);
+        target.Mob.so_DamagedBy(Player, damage, Player.AggroRatePermille, nowTenths: (int)(Now / 100));
 
         // Being hit interrupts a cancelable move, exactly as MobActionInMove_Cancelable::mab_Damaged does.
         target.Arg.Current.mab_Damaged(target.Arg);
@@ -536,8 +543,7 @@ public sealed class CombatSimulation
         {
             dead.Hp = dead.MaxHp;
             dead.Mob.IsAlive = true;
-            dead.Mob.X = dead.SpawnX;
-            dead.Mob.Y = dead.SpawnY;
+            dead.Mob.so_mob_RegenComplete(dead.SpawnX, dead.SpawnY);
             dead.Mob.Selector.mts_AggroClear();
             dead.Arg.Current = MobActionBase.Actor_Targetting;
             dead.RespawnAt = null;
@@ -550,8 +556,28 @@ public sealed class CombatSimulation
             m.Arg.NowTenths = (int)(Now / 100);        // the server's clockwatch resolution
             m.Arg.Nearby = Player.IsAlive ? new IShineObject[] { Player } : Array.Empty<IShineObject>();
 
+            // mts_Routine before the think, as MobTargetBout runs it: it is what frees a hate entry by
+            // CutInterval distance or CutNonAT silence. Without it MobAction2Region is decorative --
+            // Targetting takes the same entry straight back off the list.
+            if (m.Mob.Selector.mts_Routine(m.Mob, m.Arg.NowTenths) > 0
+                && m.Mob.Selector.mts_GetTopAggroTarget() is null
+                && m.Arg.Target is not null)
+            {
+                Log.Add($"[{Now,6}] {Describe(m)} aggro list cut (CutInterval/CutNonAT)");
+                m.Arg.sm_SetTarget(null);
+            }
+
+            // The walk MobAction2Region started. Movement is the caller's job in the server too.
+            if (m.Arg.so_mobile_IsInMoving())
+                m.Arg.AdvanceRunTo(Math.Max(1, (int)((m.Arg.Combat.RunSpeed > 0
+                    ? m.Arg.Combat.RunSpeed : 50) * m.Arg.ElapsedMs / 1000)));
+
             // The AI driver, as the server runs it: think returns the next state, we adopt it.
+            var wasChasing = m.Arg.Current;
             m.Arg.Current = m.Arg.Current.mab_Think(m.Arg);
+            if (wasChasing is not MobAction2Region && m.Arg.Current is MobAction2Region)
+                Log.Add($"[{Now,6}] {Describe(m)} past FollowCha "
+                        + $"({(int)Math.Sqrt(m.Arg.Combat.ChaseRangeSquar)}u) from its LastHittedLocation");
 
             // Damage queued earlier that has now come due.
             foreach (var landed in m.Swings.nadt_Routine(Now))

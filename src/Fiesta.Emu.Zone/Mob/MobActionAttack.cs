@@ -111,6 +111,17 @@ public sealed class MobCombatState
     /// <summary>`sm_SkillExchange_TargetState` — a predicate on the target. Left to the caller because the
     /// server's version reads state this simulator does not model yet.</summary>
     public Func<IShineObject, bool> TargetStateWantsSkill { get; set; } = _ => false;
+
+    /// <summary>What `so_mob_ChaseRangeSquar` returns for this mob: `MobInfoServer.FollowCha` squared.
+    /// 0 means no limit, which is what a mob with no data row gets - it chases for ever.</summary>
+    public long ChaseRangeSquar { get; set; }
+
+    /// <summary>`MobInfoServer.Return2Regen` - whether MobAction2Region sends the mob home.</summary>
+    public int Return2Regen { get; set; }
+
+    /// <summary>`MobInfoServer.RoamingRestTime` in tenths (the server computes it as `* 10 / 1000`).
+    /// 0 for every ordinary field mob.</summary>
+    public int RoamingRestTenths { get; set; }
 }
 
 /// <summary>`MobTacticElement::MobActionAttack` — the attack decision.
@@ -257,6 +268,19 @@ public sealed class MobActionChase : MobActionBase
             return Actor_Targetting;
 
         var combat = arg.Combat;
+
+        // mab_Think+0xC0, before the target is looked at for range:
+        //     dx = self.pos.x - so_mob_LastHittedLocation()->x
+        //     dy = self.pos.y - so_mob_LastHittedLocation()->y
+        //     if (dx*dx + dy*dy > so_mob_ChaseRangeSquar())  ->  &Actor::toregion
+        // `jbe` keeps chasing, so equality still chases -- the same boundary as the detect circle.
+        if (combat.ChaseRangeSquar > 0 && arg.Actor is ShineMob self)
+        {
+            long ax = self.X - self.LastHittedLocation.X, ay = self.Y - self.LastHittedLocation.Y;
+            if (ax * ax + ay * ay > combat.ChaseRangeSquar)
+                return Actor_ToRegion;
+        }
+
         var squared = MobTargetSelector.SquaredDistance(arg.Actor, target);
         if (squared <= (long)combat.AttackRange * combat.AttackRange)
             return MobActionAttack.Actor_Attack;

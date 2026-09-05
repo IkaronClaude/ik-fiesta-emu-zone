@@ -401,7 +401,12 @@ public sealed class SimBotApi
     /// reads as "every chaser has already dropped", so it reported a completed escape on every call.</para>
     ///
     /// <para>anchorX/anchorY and fromSpawn are measured from so_mob_LastHittedLocation, which is what
-    /// MobActionChase compares against so_mob_ChaseRangeSquar. chaseLimit is the mob's FollowCha.</para></summary>
+    /// MobActionChase compares against so_mob_ChaseRangeSquar. chaseLimit is the mob's FollowCha.</para>
+    ///
+    /// <para>willDropIn reaching zero ends the CHASE, not the aggro: MobAction2Region sends the mob home
+    /// with its hate list intact. simShedDistance is the mob's CutInterval, which is the distance that
+    /// actually frees the entry - sim-only, and named so a script cannot mistake it for the live
+    /// surface.</para></summary>
     public Table aggressorSpawns()
     {
         var t = new Table(_sim.Script);
@@ -413,12 +418,16 @@ public sealed class SimBotApi
             row["mobId"] = (double)(m.Definition?.Info.Id ?? 0);
             row["x"] = (double)m.Mob.X;
             row["y"] = (double)m.Mob.Y;
-            row["anchorX"] = (double)m.SpawnX;
-            row["anchorY"] = (double)m.SpawnY;
-            double dx = m.Mob.X - m.SpawnX, dy = m.Mob.Y - m.SpawnY;
-            row["fromSpawn"] = Math.Sqrt(dx * dx + dy * dy);
-            row["chaseLimit"] = 0d;
-            row["willDropIn"] = 0d;
+            var anchor = m.Mob.LastHittedLocation;
+            row["anchorX"] = (double)anchor.X;
+            row["anchorY"] = (double)anchor.Y;
+            double dx = m.Mob.X - anchor.X, dy = m.Mob.Y - anchor.Y;
+            var fromAnchor = Math.Sqrt(dx * dx + dy * dy);
+            var chaseLimit = Math.Sqrt(m.Arg.Combat.ChaseRangeSquar);
+            row["fromSpawn"] = fromAnchor;
+            row["chaseLimit"] = chaseLimit;
+            row["willDropIn"] = chaseLimit > 0 ? chaseLimit - fromAnchor : 0d;
+            row["simShedDistance"] = Math.Sqrt(m.Mob.Selector.CutIntervalSquar);
             row["isClone"] = false;
             t.Set(DynValue.NewNumber(i++), DynValue.NewTable(row));
         }

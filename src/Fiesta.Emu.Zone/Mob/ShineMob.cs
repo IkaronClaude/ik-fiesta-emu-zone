@@ -39,6 +39,30 @@ public sealed class ShineMob : IShineObject
 
     public const ushort NoAttacker = 0xFFFF;
 
+    /// <summary>`so_mob_LastHittedLocation` (+0x24A4) - what MobActionChase measures the mob's distance
+    /// from before comparing against so_mob_ChaseRangeSquar. so_DamagedBy moves it to the mob's own
+    /// position on every hit, so it is not the spawn point.</summary>
+    public (int X, int Y) LastHittedLocation { get; set; }
+
+    /// <summary>`so_mob_RegenLocation` (+0x249C) - where the mob spawned, and where MobAction2Region
+    /// sends it when Return2Regen is set.</summary>
+    public (int X, int Y) RegenLocation { get; set; }
+
+    /// <summary>`MobInfoServer.ResetInterval`. so_DamagedBy+0x1F2 is `cmp byte [serv+0x3D], 0` / `jne
+    /// skip`, so the LastHittedLocation update happens only when this is ZERO - 2737 of 2878 mobs. The
+    /// 141 with a 1 keep the location they were given.</summary>
+    public int ResetInterval { get; set; }
+
+    /// <summary>`so_mob_RegenComplete` - place the mob and seed both SHINE_XY_TYPEs there. Leaving
+    /// LastHittedLocation at the origin puts every mob past its FollowCha on its first chase tick.</summary>
+    public void so_mob_RegenComplete(int x, int y)
+    {
+        X = x;
+        Y = y;
+        RegenLocation = (x, y);
+        LastHittedLocation = (x, y);
+    }
+
     /// <summary>Damage contribution per attacker — `HitMeList::EnemyList`.
     ///
     /// <para>⚠️ This is NOT the aggro list. It exists to decide exp and loot rights
@@ -54,9 +78,13 @@ public sealed class ShineMob : IShineObject
     /// <para>Not modelled here, and deliberately so: the mob bark (`mcm_DamageChat`), the boss-field
     /// automatic-action hook, and the <b>Lua script hook</b>. That last one matters — mob behaviour is
     /// scriptable, so a scripted mob can diverge from this simulation entirely.</para></summary>
-    public void so_DamagedBy(IShineObject attacker, int damage, int aggroRatePermille)
+    public void so_DamagedBy(IShineObject attacker, int damage, int aggroRatePermille, int nowTenths = 0)
     {
-        Selector.mts_AppendAggroPoint(attacker, AggroFromDamage(damage, aggroRatePermille));
+        Selector.mts_AppendAggroPoint(attacker, AggroFromDamage(damage, aggroRatePermille), nowTenths);
+
+        // +0x1F2: LastHittedLocation follows the mob on every hit, but only when ResetInterval is zero.
+        if (ResetInterval == 0)
+            LastHittedLocation = (X, Y);
 
         // el_StoreDamage -- reward attribution, deliberately separate from aggro.
         EnemyList.TryGetValue(attacker.Handle, out var soFar);

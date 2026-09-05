@@ -70,6 +70,52 @@ public sealed class MobActionArgument
 
     /// <summary>`ShineMob::sm_SetTarget`.</summary>
     public void sm_SetTarget(IShineObject? target) => Target = target;
+
+    /// <summary>`so_Mob_SetSendTagetInfo` (+0xA08) - a broadcast flag. MobAction2Region clears it;
+    /// nothing in the tactic machine reads it back.</summary>
+    public bool SendTargetInfo { get; set; } = true;
+
+    /// <summary>Where `mab_RunTo` sent the mob, or null. MobActionChase moves the mob through
+    /// <see cref="MoveToward"/>; this is for the caller that walks to a fixed point instead.</summary>
+    public (int X, int Y)? RunToTarget { get; private set; }
+
+    /// <summary>`MobActionBase::mab_RunTo(ShineMobileObject*, SHINE_XY_TYPE*)` (0x004B9590).</summary>
+    public void mab_RunTo((int X, int Y) where)
+    {
+        RunToTarget = where;
+        Moving = true;
+    }
+
+    /// <summary>`ShineMobileObject::so_mobile_IsInMoving` (+0x610) - the only thing DuringReturn2Regen
+    /// asks. Advancing the walk is the caller's job, as it is the server's.</summary>
+    public bool so_mobile_IsInMoving() => RunToTarget is not null;
+
+    /// <summary>Step toward <see cref="RunToTarget"/>, clearing it on arrival. Not ported - the mover is
+    /// not read yet - so it is the same straight-line placeholder <see cref="MoveToward"/> is.</summary>
+    public void AdvanceRunTo(int speed)
+    {
+        if (RunToTarget is not { } to || Actor is not ShineMob self) { Moving = false; return; }
+
+        long dx = to.X - self.X, dy = to.Y - self.Y;
+        var dist = Math.Sqrt(dx * dx + dy * dy);
+        if (dist <= speed)
+        {
+            self.X = to.X;
+            self.Y = to.Y;
+            RunToTarget = null;
+            Moving = false;
+            return;
+        }
+        self.X += (int)Math.Round(dx / dist * speed);
+        self.Y += (int)Math.Round(dy / dist * speed);
+    }
+
+    /// <summary>`ShineMob::so_mob_SetNextRoamingWaitTime` (+0xB34) - when the mob may next act, in
+    /// tenths. Both MobAction2Region and DuringReturn2Regen set it before handing to Targetting.</summary>
+    public void so_mob_SetNextRoamingWaitTime(int whenTenths) => NextRoamingWaitTenths = whenTenths;
+
+    /// <summary>What <see cref="so_mob_SetNextRoamingWaitTime"/> last wrote.</summary>
+    public int NextRoamingWaitTenths { get; private set; }
 }
 
 /// <summary>One state of the mob AI. The server's `MobTacticElement::MobActionBase`.
@@ -100,6 +146,12 @@ public abstract class MobActionBase
 
     /// <summary>`Actor::roaming` @ 0x0084CFC4.</summary>
     public static readonly MobActionBase Actor_Roaming = new MobActionRoaming();
+
+    /// <summary>`Actor::toregion` @ 0x0084CFC0.</summary>
+    public static readonly MobActionBase Actor_ToRegion = new MobAction2Region();
+
+    /// <summary>`Actor::return2regen` @ 0x0084CFCC.</summary>
+    public static readonly MobActionBase Actor_Return2Regen = new DuringReturn2Regen();
 
     /// <summary>`MobActionAttack`. Not one of the six `Actor::` statics in the original — the attack
     /// state is reached from Targetting rather than held as a named singleton — but a single shared
