@@ -65,7 +65,9 @@ public static class ScenarioRunner
     public static ScenarioResult? Run(
         string shineDirectory, string ressystemDirectory, string driverSource,
         string className, int level, bool dungeon,
-        int ticks = DefaultTicks, uint seed = 42, bool withWalls = true)
+        int ticks = DefaultTicks, uint seed = 42, bool withWalls = true,
+        CombatLog? combatLog = null, List<string>? simLog = null, List<string>? driverLog = null,
+        Action<CombatSimulation>? inspect = null, bool logRouteDetours = false)
     {
         var band = ScenarioCatalog.For(level);
         if (band is null) return null;
@@ -85,6 +87,10 @@ public static class ScenarioRunner
         {
             Skills = skills,
             LevelGaps = LevelGapTable.Load(shineDirectory),
+            // Off unless a caller asks: a readiness list per learned skill per incoming hit is not free,
+            // and a full matrix does not want it. One cell at a time, when a run needs explaining.
+            CombatLog = combatLog,
+            LogRouteDetours = logRouteDetours,
         };
 
         sim.Placements = MobCoordinateCatalog.Load(ressystemDirectory);
@@ -140,6 +146,10 @@ public static class ScenarioRunner
             }
         }
 
+        simLog?.AddRange(sim.Log);
+        driverLog?.AddRange(harness.Output);
+        inspect?.Invoke(sim);
+
         return new ScenarioResult(
             className, level, area.Map, area.DisplayName, area.IsDungeon,
             Kills: sim.Kills,
@@ -152,6 +162,7 @@ public static class ScenarioRunner
             Errors: harness.Errors.Count,
             SimulatedSeconds: (int)(ticks * sim.TickMs / 1000),
             FirstError: harness.Errors.FirstOrDefault());
+
     }
 
     /// <summary>Every class the game has, from `ClassName.shn`.</summary>

@@ -555,6 +555,13 @@ public sealed class SimBotApi
             }
 
             _sim.WalkToRouted++;
+            if (_sim.LogRouteDetours)
+            {
+                double straight = Math.Sqrt((double)(tx - p.X) * (tx - p.X) + (double)(ty - p.Y) * (ty - p.Y));
+                var routed = RouteLengthOf(route, p.X, p.Y);
+                _sim.Log.Add($"[{_sim.Now,6}] walkTo ({tx},{ty}) straight {straight:F0}u route {routed:F0}u"
+                             + $" detour x{(straight > 1 ? routed / straight : 1):F1}");
+            }
             _sim.WalkLog[logAt] = _sim.WalkLog[logAt] with { Routed = true };
             p.WalkPath = new Queue<(int X, int Y)>(route);
             p.WalkTarget = p.WalkPath.Dequeue();
@@ -584,6 +591,18 @@ public sealed class SimBotApi
         if (m is null || !m.Mob.IsAlive) return false;
         if (_sim.Walkable is not { } grid) return true;
         return Connected(grid, m.Mob.X, m.Mob.Y);
+    }
+
+    private static double RouteLengthOf(IReadOnlyList<(int X, int Y)> route, int fromX, int fromY)
+    {
+        double total = 0;
+        var (px, py) = (fromX, fromY);
+        foreach (var (x, y) in route)
+        {
+            total += Math.Sqrt((double)(x - px) * (x - px) + (double)(y - py) * (y - py));
+            (px, py) = (x, y);
+        }
+        return total;
     }
 
     /// <summary>Whether a route exists to a point, via the bot's own navmesh reachability.</summary>

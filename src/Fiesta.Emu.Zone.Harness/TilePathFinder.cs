@@ -45,6 +45,23 @@ public static class TilePathFinder
         return route;
     }
 
+    /// <summary>Walkable route length in world units, or -1 when the mesh cannot route it. 0 when the
+    /// caller is already there.</summary>
+    public static double RouteLength(WalkabilityGrid grid, int fromX, int fromY, int toX, int toY)
+    {
+        var route = FindPath(grid, fromX, fromY, toX, toY);
+        if (route is null) return -1;
+
+        double total = 0;
+        var (px, py) = (fromX, fromY);
+        foreach (var (x, y) in route)
+        {
+            total += Math.Sqrt((double)(x - px) * (x - px) + (double)(y - py) * (y - py));
+            (px, py) = (x, y);
+        }
+        return total;
+    }
+
     /// <summary>Whether a route exists at all, without building one — the question a target picker has to
     /// ask about every candidate on every tick, so it must not be a search.</summary>
     public static bool Reachable(WalkabilityGrid grid, int fromX, int fromY, int toX, int toY)

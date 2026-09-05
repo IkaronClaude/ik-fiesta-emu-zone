@@ -667,6 +667,9 @@ public sealed class CombatSimulation
     /// and obvious here.</summary>
     public List<(uint At, int FromX, int FromY, int ToX, int ToY, int NearestMob, bool Routed)> WalkLog { get; } = [];
 
+    /// <summary>Log every routed walkTo with its straight-line and route lengths. Diagnostic only.</summary>
+    public bool LogRouteDetours { get; set; }
+
     public int WalkToCalls { get; set; }
     public int WalkToRouted { get; set; }
     public int WalkToNoPath { get; set; }
