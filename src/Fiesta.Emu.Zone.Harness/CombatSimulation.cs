@@ -343,6 +343,13 @@ public sealed class CombatSimulation
     /// <summary>How many casts have landed this run.</summary>
     public int Casts { get; private set; }
 
+    /// <summary>Total damage the character has DEALT, and total it has TAKEN. Counted at the two choke
+    /// points every hit passes through, so a swing and a cast count the same way and neither can drift.
+    /// Output and intake rank a script where kills cannot: a fight that is slowly lost still deals
+    /// damage, and a kill count says nothing about what it cost.</summary>
+    public long DamageDealt { get; private set; }
+    public long DamageTaken { get; private set; }
+
     /// <summary>Damage observed per skill — the total and the number of landed hits.
     ///
     /// <para>⭐ THE DRIVER RANKS ITS ROTATION ON THIS, and it is a genuine feedback loop rather than a
@@ -488,6 +495,7 @@ public sealed class CombatSimulation
     private void LandOnMob(SimMob target, int damage)
     {
         target.Hp -= damage;
+        DamageDealt += damage;
         target.Mob.so_DamagedBy(Player, damage, Player.AggroRatePermille, nowTenths: (int)(Now / 100));
 
         // Being hit interrupts a cancelable move, exactly as MobActionInMove_Cancelable::mab_Damaged does.
@@ -564,6 +572,7 @@ public sealed class CombatSimulation
                 && m.Arg.Target is not null)
             {
                 Log.Add($"[{Now,6}] {Describe(m)} aggro list cut (CutInterval/CutNonAT)");
+                if (Metrics is { } mx) mx.AggroCuts++;
                 m.Arg.sm_SetTarget(null);
             }
 
@@ -585,6 +594,7 @@ public sealed class CombatSimulation
                 if (landed.Target is SimPlayer p && p.IsAlive)
                 {
                     p.Hp -= landed.Damage;
+                    DamageTaken += landed.Damage;
                     // Every hit the player takes, with when it landed. `bot.incomingDps` is a MEASURED
                     // quantity in the live bot -- it learns it from the damage packets -- so the
                     // simulation has to learn it the same way rather than being told.
@@ -775,13 +785,25 @@ public sealed class CombatSimulation
     /// <para>Separate from <see cref="Tick"/> so a caller can drive the world without a script, and from
     /// <see cref="Run"/> so a caller can step manually and inspect between steps. Everything the
     /// simulation does is reachable this way; <see cref="Run"/> is only a loop over this.</para></summary>
-    public void Step()
+    /// <summary>Set to score a run on the axes a combat script is judged by. Null costs nothing.</summary>
+    public CombatMetrics? Metrics { get; set; }
+
+    /// <summary>Advance one tick and give an `on_tick` script its turn.</summary>
+    /// <param name="sampleMetrics">false when the CALLER drives a different entry point and will sample
+    /// itself. The leveller's entry point is `tick`, invoked by LevelingBotHarness AFTER this returns, so
+    /// sampling here would charge it for a tick it had not yet seen -- and dead time is precisely
+    /// "the script saw this state and did nothing", so the order is the measurement.</param>
+    public void Step(bool sampleMetrics = true)
     {
         Tick();
         var onTick = Script.Globals.Get("on_tick");
         if (onTick.Type == DataType.Function && Player.IsAlive)
             Script.Call(onTick);
+        if (sampleMetrics) Metrics?.Sample(this);
     }
+
+    /// <summary>Sample the metrics now. For a caller that drives its own script entry point.</summary>
+    public void SampleMetrics() => Metrics?.Sample(this);
 
     /// <summary>Has the run reached a natural end — the player is dead, or nothing is left that will
     /// ever act again?

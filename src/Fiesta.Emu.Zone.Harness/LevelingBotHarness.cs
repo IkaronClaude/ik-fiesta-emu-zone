@@ -553,9 +553,12 @@ public sealed class LevelingBotHarness
     {
         for (var i = 0; i < ticks; i++)
         {
-            _sim.Step();
-            if (!Invoke("tick", optional: false) && !Invoke("on_tick", optional: false))
-                return false;
+            // The sim must NOT sample metrics here -- our script's entry point runs on the next line, and
+            // "a skill was usable and nothing was cast" is only a fair charge after it has had its turn.
+            _sim.Step(sampleMetrics: false);
+            var ran = Invoke("tick", optional: false) || Invoke("on_tick", optional: false);
+            _sim.SampleMetrics();
+            if (!ran) return false;
         }
         return true;
     }
