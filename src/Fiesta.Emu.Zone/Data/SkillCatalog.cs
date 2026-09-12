@@ -49,6 +49,13 @@ public sealed record SkillDefinition(
     int EffectType,
     bool IsMovingSkill,
     bool Stun,
+    /// <param name="Area">Radius of effect in world units. 0 = single target.</param>
+    int Area,
+    /// <param name="TargetNumber">How many it may hit. 1 = single target.</param>
+    int TargetNumber,
+    /// <param name="CastFrom">`ActiveSkill.First` -- where the effect originates. 4 = a GROUND POSITION,
+    /// which is what makes Frost Nova and Arrow of the Sky the "aim at a spot" skills they are.</param>
+    int CastFrom,
     Skill.ActiveSkillInfo Physical,
     Skill.ActiveSkillInfo Magical,
     ActiveSkillInfoServer Server,
@@ -65,6 +72,19 @@ public sealed record SkillDefinition(
     /// <summary>`EffectType == 5` is the client's own "a heal was applied" marker, and it is what the bot
     /// categorises healing by — a name match would miss every heal whose name is not "Heal".</summary>
     public bool IsHeal => EffectType == 5;
+
+    /// <summary>Does this skill hit more than the one thing it is aimed at? Both columns have to say so:
+    /// an Area with TargetNumber 1 is a single hit with a radius drawn round it, and a TargetNumber above
+    /// 1 with no Area has nothing to gather.</summary>
+    public bool IsAreaOfEffect => Area > 0 && TargetNumber > 1;
+
+    /// <summary>Cast at a GROUND POSITION and needing no target at all -- `ActiveSkill.First` == 4, which
+    /// the protocol carries as `NC_BAT_SKILLBASH_FLD_CAST_REQ` (0x2441) rather than the object cast
+    /// 0x2440. Nature's Mist, Frost Nova and Multi-Shot from rank 4 are these; Devastate is NOT -- it is
+    /// aimed at one enemy and spreads from there (operator, 2026-09-12).</summary>
+    public const int CastFromGroundPosition = 4;
+
+    public bool IsFieldCast => CastFrom == CastFromGroundPosition;
 
     /// <summary>A skill that lands on an enemy and carries damage columns in either half.</summary>
     public bool IsOffensive => LandsOn == 0 && (Physical != Skill.ActiveSkillInfo.Neutral || Magical != Skill.ActiveSkillInfo.Neutral);
@@ -275,6 +295,9 @@ public sealed class SkillCatalog
                       || S(r, "StaNameB").Contains("Stun", StringComparison.OrdinalIgnoreCase)
                       || S(r, "StaNameC").Contains("Stun", StringComparison.OrdinalIgnoreCase)
                       || S(r, "StaNameD").Contains("Stun", StringComparison.OrdinalIgnoreCase),
+                Area: I(r, "Area"),
+                TargetNumber: I(r, "TargetNumber"),
+                CastFrom: I(r, "First"),
                 physical, magical, srv,
                 // The heal amount rides the SPECIAL slots, not the damage columns. Only slot A is read:
                 // no heal in the file carries HealAmount anywhere else.

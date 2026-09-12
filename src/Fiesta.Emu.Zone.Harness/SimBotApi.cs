@@ -126,6 +126,10 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
     /// <summary>The handle the in-flight cast is aimed at.</summary>
     public ushort CastTarget { get; set; }
 
+    /// <summary>Where an in-flight FIELD cast is aimed, when it is aimed at the ground rather than at a
+    /// handle. Null for an ordinary object cast.</summary>
+    public (int X, int Y)? CastPoint { get; set; }
+
     /// <summary>When the in-flight cast lands.</summary>
     public uint CastEndsAt { get; set; }
 
@@ -901,6 +905,10 @@ public sealed class SimBotApi
         // `stunSkill()` returned 0 for every class and no kite could ever end on "the stun is ready".
         t["moving"] = s.IsMovingSkill;
         t["stun"] = s.Stun;
+        // The area columns, so a rotation can prefer a wide skill when there is a crowd to catch.
+        t["area"] = s.Area;
+        t["targetNumber"] = s.TargetNumber;
+        t["castFrom"] = s.CastFrom;
         t["maxWc"] = (double)s.Physical.MaxFlat;
         t["maxMa"] = (double)s.Magical.MaxFlat;
         t["damage"] = (double)Math.Max(s.Physical.MaxFlat, s.Magical.MaxFlat);
@@ -914,6 +922,11 @@ public sealed class SimBotApi
     /// <see cref="CombatSimulation.LastCastRefusal"/> for tests and the report.</para></summary>
     public bool cast(int skill, int target)
         => _sim.Cast(skill, (ushort)target) == CombatSimulation.CastRefusal.Accepted;
+
+    /// <summary>`bot.castAt` -- cast a ground-aimed skill at a POINT, with no target. The live protocol
+    /// calls this `NC_BAT_SKILLBASH_FLD_CAST_REQ` (0x2441), a different packet from the object cast.</summary>
+    public bool castAt(int skill, int x, int y)
+        => _sim.CastAt(skill, x, y) == CombatSimulation.CastRefusal.Accepted;
 
     /// <summary>`bot.casting` - is a cast bar up right now.</summary>
     public bool casting() => _sim.Player.CastingSkill is not null;

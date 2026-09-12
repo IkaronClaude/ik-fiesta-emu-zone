@@ -377,7 +377,20 @@ public sealed class CombatSimulation
 
     /// <summary>Start a cast. SP is spent NOW and the damage lands when the cast bar finishes — which is
     /// what makes a cast interruptible, and what makes cast time cost anything.</summary>
-    public CastRefusal Cast(int skillId, ushort target)
+    /// <summary>`NC_BAT_SKILLBASH_FLD_CAST_REQ` (0x2441) -- cast a ground-aimed skill at a POINT, with
+    /// no target at all. Nature's Mist, Frost Nova and Multi-Shot from rank 4 work this way; the operator
+    /// was explicit that Devastate does not, so a field cast is refused for anything the file does not
+    /// mark `First` == 4 rather than quietly treated as an object cast.</summary>
+    public CastRefusal CastAt(int skillId, int x, int y)
+    {
+        var skill = Player.LearnedSkills.FirstOrDefault(s => s.Id == skillId);
+        if (skill is not null && !skill.IsFieldCast) return LastCastRefusal = CastRefusal.NoTarget;
+        return Cast(skillId, 0, (x, y));
+    }
+
+    public CastRefusal Cast(int skillId, ushort target) => Cast(skillId, target, null);
+
+    private CastRefusal Cast(int skillId, ushort target, (int X, int Y)? point)
     {
         // NoteCastSent clears the confirmation on send; only the ACK sets it again. Clearing here rather
         // than on each refusal arm keeps that ordering.
@@ -400,7 +413,15 @@ public sealed class CombatSimulation
         // and refused the cast. Every self-heal and every ally-buff was silently impossible.
         var selfCast = skill.LandsOn == 1 || target == Player.Handle;
 
-        if (!selfCast)
+        if (point is { } aim)
+        {
+            // A ground cast still has a RANGE -- how far away you may aim it -- but no target to be out
+            // of range OF. Measured from us to the point.
+            long adx = Player.X - aim.X, ady = Player.Y - aim.Y;
+            var reach = (long)(skill.Range > 0 ? skill.Range : Player.AttackRange);
+            if (adx * adx + ady * ady > reach * reach) return LastCastRefusal = CastRefusal.OutOfRange;
+        }
+        else if (!selfCast)
         {
             var m = Find(target);
             if (m is null || !m.Mob.IsAlive) return LastCastRefusal = CastRefusal.NoTarget;
@@ -438,6 +459,7 @@ public sealed class CombatSimulation
         Player.SkillReadyAt[skillId] = Now + (uint)Math.Max(0, skill.CooldownMs);
         Player.CastingSkill = skill;
         Player.CastTarget = target;
+        Player.CastPoint = point;
         Player.CastEndsAt = Now + (uint)Math.Max(0, skill.CastTimeMs);
         Player.CastServerConfirmed = true;
         return LastCastRefusal = CastRefusal.Accepted;
@@ -460,6 +482,7 @@ public sealed class CombatSimulation
             Log.Add($"[{Now,6}] cast of {skill.InxName} CANCELLED by movement (sp {skill.Sp} spent, still cooling)");
             Player.CastingSkill = null;
             Player.CastServerConfirmed = false;
+            Player.CastPoint = null;
             return;
         }
         if (Now < Player.CastEndsAt) return;
@@ -469,10 +492,35 @@ public sealed class CombatSimulation
         Player.CastServerConfirmed = false;
         Casts++;
 
+        if (Player.CastPoint is { } aimed)
+        {
+            LandArea(skill, aimed.X, aimed.Y);
+            Player.CastPoint = null;
+            return;
+        }
+
         if (skill.LandsOn == 1 || Player.CastTarget == Player.Handle) { ApplySelfCast(skill); return; }
 
         var m = Find(Player.CastTarget);
         if (m is null || !m.Mob.IsAlive) return;      // it died mid-cast; the SP is still gone
+
+        // ⭐ AN AREA SKILL HITS EVERYTHING IN THE CIRCLE, NOT JUST WHAT IT WAS AIMED AT.
+        //
+        // This landed on exactly one mob, always, so Devastate's `Area 200 / TargetNumber 10` dealt one
+        // mob's worth of damage and the whole area playstyle -- which is how a Fighter fights from 43 and
+        // a Mage from 60 -- was worth nothing here. Every conclusion this harness drew about a caster in
+        // a pack was drawn against a single-target world.
+        //
+        // The impact point is the TARGET's position. For a self-centred swing that is the same place
+        // within a rounding error (Devastate's Range is 30, so the target is on top of us), and for the
+        // ground-aimed ones (`CastFrom` 4 -- Frost Nova, Arrow of the Sky) it is where a player would
+        // click, which is on a mob. A ground position the driver chooses independently of any target is
+        // NOT modelled, and that is the remaining gap rather than a claim.
+        if (skill.IsAreaOfEffect)
+        {
+            LandArea(skill, m.Mob.X, m.Mob.Y);
+            return;
+        }
 
         var damage = SkillDamage(skill, m);
         if (damage <= 0) return;
@@ -481,6 +529,41 @@ public sealed class CombatSimulation
         _skillDamage[skill.Id] = (seen.Total + damage, seen.Count + 1);
 
         LandOnMob(m, damage);
+    }
+
+    /// <summary>Land an area skill: the nearest living mobs inside `Area` of the impact point, up to
+    /// `TargetNumber` of them. Nearest first, because that is the order a radius fills up in and it makes
+    /// the cap deterministic.</summary>
+    /// <returns>How many it actually hit.</returns>
+    private int LandArea(Data.SkillDefinition skill, int atX, int atY)
+    {
+        var r2 = (long)skill.Area * skill.Area;
+        var caught = Mobs
+            .Where(mob => mob.Mob.IsAlive)
+            .Select(mob =>
+            {
+                long dx = mob.Mob.X - atX, dy = mob.Mob.Y - atY;
+                return (mob, d2: dx * dx + dy * dy);
+            })
+            .Where(t => t.d2 <= r2)
+            .OrderBy(t => t.d2)
+            .Take(skill.TargetNumber)
+            .ToList();
+
+        var hit = 0;
+        foreach (var (mob, _) in caught)
+        {
+            var damage = SkillDamage(skill, mob);
+            if (damage <= 0) continue;
+            var seen = _skillDamage.GetValueOrDefault(skill.Id);
+            _skillDamage[skill.Id] = (seen.Total + damage, seen.Count + 1);
+            LandOnMob(mob, damage);
+            hit++;
+        }
+
+        if (hit > 0)
+            Log.Add($"[{Now,6}] {skill.InxName} AREA {skill.Area}u hit {hit} of up to {skill.TargetNumber}");
+        return hit;
     }
 
     /// <summary>A heal is the only self-cast whose effect is modelled. Anything else lands, costs its SP

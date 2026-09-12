@@ -304,6 +304,8 @@ public sealed class LevelingBotHarness
         // The weapon, and the row behind it. Registered together because the driver only reads the item
         // to reach its WeaponType, and with either one missing it concludes it is holding nothing.
         ["equipment"] = _ => DynValue.NewTable(_api.equipment()),
+        ["castAt"] = a => DynValue.NewBoolean(
+            _api.castAt((int)a[0].Number, (int)a[1].Number, (int)a[2].Number)),
         ["itemInfo"] = a => _api.itemInfo((int)a[0].Number),
         ["level"] = _ => DynValue.NewNumber(_sim.Player.Level),
         ["dead"] = _ => DynValue.NewBoolean(!_sim.Player.IsAlive),
