@@ -414,6 +414,26 @@ public sealed class CombatSimulation
                 return LastCastRefusal = CastRefusal.OutOfRange;
         }
 
+        // ⭐ A SKILL THAT IS NOT `IsMovingSkill` STOPS YOU FIRST -- it is not refused.
+        //
+        // This is what the live client does and what the bot already mirrors: `BotManager` computes
+        // `needsStop = !si.IsMovingSkill` and sends an ActStop before the cast. Modelling it as a refusal
+        // would be wrong in the other direction; modelling it as nothing at all was wrong too, because
+        // then a kite could fire its heavy stationary skills for free and never pay the distance it just
+        // bought. Now the cost is the real one: the walk ends, and whatever was chasing us closes in.
+        //
+        // It also makes the driver's choice MEAN something -- "wait with poison shot/bone shot until
+        // running, when it managed to get some distance unload the stationary skills" (operator) is a
+        // trade between damage and separation, and a simulation where standing still is free cannot
+        // score it.
+        if (!skill.IsMovingSkill && Player.WalkTarget is not null)
+        {
+            Log.Add($"[{Now,6}] {skill.InxName} is not castable while moving -- STOPPING to cast it");
+            Player.WalkTarget = null;
+            Player.WalkPath = null;
+            Player.FinalWalkTarget = null;
+        }
+
         Player.Sp -= skill.Sp;
         Player.SkillReadyAt[skillId] = Now + (uint)Math.Max(0, skill.CooldownMs);
         Player.CastingSkill = skill;

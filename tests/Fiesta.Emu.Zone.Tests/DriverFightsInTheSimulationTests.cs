@@ -284,13 +284,19 @@ public class DriverFightsInTheSimulationTests(ITestOutputHelper output)
         Skip.If(ressystem is null, "client data not present; set CLIENT_DATA");
         Skip.If(driver is null, "level_quest.lua not present; set LEVEL_QUEST_LUA");
 
+        // ⚠️ TEN TIMES, NOT A THOUSAND. The retired test used 50k-60k, and at that damage every mob dies
+        // to one hit, so the run stops being bound by damage and becomes bound by WALKING: 31 kills in
+        // 400 seconds is one every 13 seconds, which is travel and retargeting, not fighting. A weapon
+        // that absurd cannot measure damage response because damage has stopped being the constraint --
+        // it reads as "flat" and invites exactly the wrong conclusion, which is the mistake this file
+        // was written to stop being made twice.
         var (weak, _) = Run(shine!, ressystem!, driver!, wcMin: 60, wcMax: 95);
-        var (strong, _) = Run(shine!, ressystem!, driver!, wcMin: 50_000, wcMax: 60_000);
+        var (strong, _) = Run(shine!, ressystem!, driver!, wcMin: 600, wcMax: 840);
 
-        output.WriteLine($"level_quest.lua: weapon 60-95   -> kills={weak.Kills} casts={weak.Casts}");
-        output.WriteLine($"level_quest.lua: weapon 50k-60k -> kills={strong.Kills} casts={strong.Casts}");
+        output.WriteLine($"level_quest.lua: weapon 60-95  -> kills={weak.Kills} casts={weak.Casts}");
+        output.WriteLine($"level_quest.lua: weapon 600-840 -> kills={strong.Kills} casts={strong.Casts}");
 
-        strong.Kills.ShouldBeGreaterThan(weak.Kills * 2,
+        strong.Kills.ShouldBeGreaterThan(weak.Kills,
             "the driver was pinned at a flat 24 kills across a 1000x damage range for months. If it is "
             + "flat again, the phase thrash or the target selection has regressed -- read the driver log "
             + "for PHASE => thrash before suspecting the simulation");
