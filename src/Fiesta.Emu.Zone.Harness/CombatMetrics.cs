@@ -341,8 +341,12 @@ public sealed class CombatMetrics
     public double DpsIn => AliveSeconds == 0 ? 0 : DamageTaken / AliveSeconds;
 
     /// <summary>Damage dealt for each point taken. The single number that says whether the fighting was
-    /// worth it; a script that doubles its output while tripling its intake has got worse.</summary>
-    public double DamageRatio => DamageTaken == 0 ? DamageDealt : (double)DamageDealt / DamageTaken;
+    /// worth it; a script that doubles its output while tripling its intake has got worse.
+    ///
+    /// <para>An untouched run has NO ratio rather than an enormous one. Returning DamageDealt when nothing
+    /// was taken put 39,000 into a column whose other entries are near 50, and the mean of a variant then
+    /// said 26,441 -- a number that reads as a landslide and means only that one cell was never hit.</para></summary>
+    public double? DamageRatio => DamageTaken == 0 ? null : (double)DamageDealt / DamageTaken;
 
     /// <summary>Mean kite length in seconds. A burst is a second or two; anything longer is a tour, and
     /// a tour is what walks the character into the next pack.</summary>

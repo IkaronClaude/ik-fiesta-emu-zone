@@ -13,25 +13,29 @@ public class KiteDiagnosticsTests(ITestOutputHelper output)
     private static string Env(string k, string d) => Environment.GetEnvironmentVariable(k) ?? d;
 
     [SkippableTheory]
-    [InlineData("Ranger")]
-    [InlineData("Warrior")]
-    [InlineData("HighCleric")]
-    public void WhatTheDriverSaysWhileItKites(string className)
+    [InlineData("Ranger", false)]
+    [InlineData("Warrior", false)]
+    [InlineData("HighCleric", false)]
+    [InlineData("Warrior", true)]
+    public void WhatTheDriverSaysWhileItKites(string className, bool dungeon)
     {
         var shine = Env("SHINE_DATA", @"Z:/ServerSource/9Data/Shine");
         var res = Env("CLIENT_DATA", @"Z:/ClientProd2/ressystem");
-        var lua = Env("LEVEL_QUEST_LUA", @"C:/Projects/ik-fiesta-bots/scripts/level_quest.lua");
+        var lua = Env("LEVEL_QUEST_LUA_B", Env("LEVEL_QUEST_LUA", @"C:/Projects/ik-fiesta-bots/scripts/level_quest.lua"));
         Skip.If(!Directory.Exists(Path.Combine(shine, "MobRegen")) || !File.Exists(lua), "data not present");
 
         var driverLog = new List<string>();
         var metrics = new CombatMetrics();
-        var result = ScenarioRunner.Run(shine, res, File.ReadAllText(lua), className, 25, dungeon: false,
+        var result = ScenarioRunner.Run(shine, res, File.ReadAllText(lua), className, 25, dungeon,
                                         seed: 42, driverLog: driverLog, metrics: metrics);
         result.ShouldNotBeNull();
 
-        output.WriteLine($"{className}: kills={result!.Kills} dead%={metrics.DeadTimePercent:F1} "
+        output.WriteLine($"{className}{(dungeon ? " DUNGEON" : "")}: kills={result!.Kills} dead%={metrics.DeadTimePercent:F1} "
                          + $"kite%={metrics.KitePercent:F1} bursts={metrics.KiteBursts} "
-                         + $"mean={metrics.KiteBurstSeconds:F1}s max={metrics.KiteLongestSeconds:F1}s");
+                         + $"mean={metrics.KiteBurstSeconds:F1}s max={metrics.KiteLongestSeconds:F1}s "
+                         + $"lowHp={metrics.LowWaterHpPercent} died={result.Died} "
+                         + $"dealt={metrics.DamageDealt} taken={metrics.DamageTaken} "
+                         + $"hpStones={metrics.HpStonesUsed}");
         output.WriteLine($"wasted: walking={metrics.WastedWhileWalking} (closing={metrics.WastedWalkingCloser} "
                          + $"kiting={metrics.WastedKitingWithAShot}) notEngaged={metrics.WastedNotEngaged} "
                          + $"outOfReach={metrics.WastedOutOfWeaponReach} idle={metrics.WastedIdle} "

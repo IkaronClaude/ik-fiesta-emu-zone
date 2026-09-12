@@ -98,7 +98,7 @@ public static class AbHarness
                 runs.Sum(r => r.Result.Errors),
                 runs.Average(r => r.Metrics.DpsOut),
                 runs.Average(r => r.Metrics.DpsIn),
-                runs.Average(r => r.Metrics.DamageRatio),
+                runs.Select(r => r.Metrics.DamageRatio).OfType<double>().DefaultIfEmpty().Average(),
                 runs.Count(r => r.Metrics.EverNearDeath),
                 runs.Average(r => r.Metrics.NearDeathPercentOfRun));
         }
