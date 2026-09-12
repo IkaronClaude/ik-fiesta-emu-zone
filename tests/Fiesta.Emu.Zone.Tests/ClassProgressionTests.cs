@@ -15,7 +15,7 @@ public class ClassProgressionTests(ITestOutputHelper output)
     /// <summary>The four lines, base first then promotions in order. A blank separates them. Which classes
     /// belong to a line is structural in `ClassName.shn` (ids 1-5, 6-10, 11-15, 16-20); only the ORDER is
     /// stated here, and every LEVEL below is derived from the skill file.</summary>
-    private static readonly string[] Lines =
+    public static readonly string[] LineOrder =
     [
         "Fighter", "CleverFighter", "Warrior", "Gladiator", "",
         "Cleric", "HighCleric", "Paladin", "Guardian", "",
@@ -38,7 +38,7 @@ public class ClassProgressionTests(ITestOutputHelper output)
         Skip.If(shine is null || res is null, "game data not present");
 
         var skills = SkillCatalog.Load(shine!, res!);
-        var prog = ClassProgression.Derive(skills, Lines);
+        var prog = ClassProgression.Derive(skills, LineOrder);
 
         foreach (var line in prog.Lines)
             output.WriteLine(string.Join("  ->  ", line.Select(t => $"{t.Name}({t.ClassId}) from {t.FromLevel}")));
@@ -67,7 +67,7 @@ public class ClassProgressionTests(ITestOutputHelper output)
         var (shine, res) = Data();
         Skip.If(shine is null || res is null, "game data not present");
 
-        var prog = ClassProgression.Derive(SkillCatalog.Load(shine!, res!), Lines);
+        var prog = ClassProgression.Derive(SkillCatalog.Load(shine!, res!), LineOrder);
         var actual = prog.NameForLevel(baseClass, level);
         output.WriteLine($"{baseClass} at {level} -> {actual}");
         actual.ShouldBe(expected);

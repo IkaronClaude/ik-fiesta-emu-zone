@@ -78,7 +78,7 @@ public static class TravelRunner
         }
 
         var npcs = NpcPlacementCatalog.Load(shineDirectory);
-        var (start, dest, what) = Endpoints(map, npcs, mapName);
+        var (start, dest, what) = Endpoints(sim, map, npcs, mapName);
         if (dest is null) return null;
         driverLog?.Add($"travel: {mapName} ({start.X},{start.Y}) -> {what} ({dest.Value.X},{dest.Value.Y})");
         sim.Player.X = start.X;
@@ -88,6 +88,17 @@ public static class TravelRunner
         sim.TravelGoal = dest;
 
         var harness = LevelingBotHarness.Attach(sim, driverSource);
+
+        // ⚠️ ATTACH DOES NOT RUN THE CHUNK. Without Load the script's `tick` does not exist, Step returns
+        // false on the very first call, and the run reports a character that never moved -- which reads
+        // as "the travel script does nothing" rather than "the script was never loaded". Both scripts
+        // scored an identical 5,653u short before this.
+        if (!harness.Load(driverSource))
+        {
+            driverLog?.AddRange(harness.Output);
+            return new TravelResult(false, 0, 0, 0, false, 100, 0, 0,
+                                    harness.Errors.Count, harness.Errors.FirstOrDefault());
+        }
 
         var low = 100;
         var mountedTicks = 0;
@@ -132,11 +143,43 @@ public static class TravelRunner
     /// a point with no meaning. Nothing about the map says a character would ever go there, so the
     /// journey being scored was one nobody makes. Operator: use the real server files for the map.</para></summary>
     private static ((int X, int Y) Start, (int X, int Y)? Dest, string? What) Endpoints(
-        MobRegenData map, NpcPlacementCatalog npcs, string mapName)
+        CombatSimulation sim, MobRegenData map, NpcPlacementCatalog npcs, string mapName)
     {
         var start = map.BusiestArea();
-        var gate = npcs.FurthestGateFrom(mapName, start.X, start.Y);
-        if (gate is null) return (start, null, null);
-        return (start, (gate.X, gate.Y), $"{gate.Role} {gate.RoleArg0}");
+
+        // ⚠️ A GATE'S OWN TILE IS OFTEN NOT WALKABLE, and a destination nothing can route to is not a
+        // journey -- both scripts simply stood still for the whole 400s, 5,653u short, because `walkTo`
+        // correctly refuses an unroutable target. So each gate is SNAPPED to a walkable point beside it
+        // and then checked for an actual route; the furthest gate that can be reached wins.
+        foreach (var gate in npcs.GatesOn(mapName)
+                     .OrderByDescending(g => (long)(g.X - start.X) * (g.X - start.X)
+                                             + (long)(g.Y - start.Y) * (g.Y - start.Y)))
+        {
+            if (Reachable(sim, start, (gate.X, gate.Y)) is { } at)
+                return (start, at, $"{gate.Role} {gate.RoleArg0}");
+        }
+        return (start, null, null);
+    }
+
+    /// <summary>A walkable point at or beside <paramref name="want"/> that the start can actually route
+    /// to, or null. Searched outwards in rings so the point stays as close to the gate as possible.</summary>
+    private static (int X, int Y)? Reachable(CombatSimulation sim, (int X, int Y) from, (int X, int Y) want)
+    {
+        if (sim.Walkable is not { } grid) return want;
+
+        foreach (var radius in new[] { 0, 60, 120, 200, 320, 480 })
+        {
+            var steps = radius == 0 ? 1 : 12;
+            for (var i = 0; i < steps; i++)
+            {
+                var a = 2 * Math.PI * i / steps;
+                var x = want.X + (int)Math.Round(Math.Cos(a) * radius);
+                var y = want.Y + (int)Math.Round(Math.Sin(a) * radius);
+                if (x < 0 || y < 0 || !grid.IsWalkable(x, y)) continue;
+                if (TilePathFinder.FindPath(grid, from.X, from.Y, x, y) is null) continue;
+                return (x, y);
+            }
+        }
+        return null;
     }
 }
