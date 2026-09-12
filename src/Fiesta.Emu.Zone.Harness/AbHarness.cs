@@ -70,7 +70,8 @@ public static class AbHarness
     }
 
     /// <summary>The per-axis average for one variant over a set of runs.</summary>
-    public sealed record Score(string Variant, int Runs, double KillsPerMinute, double ExpPerMinute,
+    public sealed record Score(string Variant, int Runs, double Kills, double AlivePercent,
+                               double KillsPerMinute, double ExpPerMinute,
                                int Deaths, double DeadTimePercent, double BadKitePercent,
                                double KitePercent, double LowWaterHp, double SpCapped, double SpStarved,
                                double HpStones, int Errors,
@@ -83,8 +84,10 @@ public static class AbHarness
         public static Score Of(string variant, IReadOnlyList<AbRun> runs)
         {
             if (runs.Count == 0)
-                return new Score(variant, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+                return new Score(variant, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
             return new Score(variant, runs.Count,
+                runs.Average(r => r.Result.Kills),
+                runs.Average(r => r.Result.AlivePercent),
                 runs.Average(r => r.Result.KillsPerMinute),
                 runs.Average(r => r.Result.ExpPerMinute),
                 runs.Count(r => r.Result.Died),
@@ -118,11 +121,12 @@ public static class AbHarness
         var variants = all.Select(r => r.Variant.Name).Distinct().ToList();
 
         sb.AppendLine("OVERALL  (mean over every cell and seed; ^ = higher is better, v = lower is better)");
-        sb.AppendLine("  OUTPUT   variant          runs  kills/min^  exp/min^   dpsOut^   dpsIn v  dmgRatio^  dead%v");
+        sb.AppendLine("  OUTPUT   variant          runs  kills^  alive%^  kills/min^  exp/min^   dpsOut^   dpsIn v  dmgRatio^  dead%v");
         foreach (var v in variants)
         {
             var s = Score.Of(v, all.Where(r => r.Variant.Name == v).ToList());
-            sb.AppendLine($"           {s.Variant,-15} {s.Runs,4}  {s.KillsPerMinute,10:F2}  {s.ExpPerMinute,8:F0}  "
+            sb.AppendLine($"           {s.Variant,-15} {s.Runs,4}  {s.Kills,6:F1}  {s.AlivePercent,7:F1}  "
+                          + $"{s.KillsPerMinute,10:F2}  {s.ExpPerMinute,8:F0}  "
                           + $"{s.DpsOut,8:F1}  {s.DpsIn,7:F1}  {s.DamageRatio,9:F2}  {s.DeadTimePercent,6:F1}");
         }
         sb.AppendLine();
@@ -168,7 +172,8 @@ public static class AbHarness
                 var runs2 = all.Where(r => r.Cell == cell && r.Variant.Name == v).ToList();
                 if (runs2.Count == 0) continue;
                 var s = Score.Of(v, runs2);
-                sb.AppendLine($"     {s.Variant,-15} kills/min {s.KillsPerMinute,6:F2}  deaths {s.Deaths}  "
+                sb.AppendLine($"     {s.Variant,-15} kills {s.Kills,5:F1}  alive% {s.AlivePercent,5:F1}  "
+                              + $"kills/min {s.KillsPerMinute,6:F2}  deaths {s.Deaths}  "
                               + $"dead% {s.DeadTimePercent,5:F1}  badKite% {s.BadKitePercent,5:F1}  "
                               + $"lowHp {s.LowWaterHp,3:F0}  errors {s.Errors}");
                 sb.AppendLine($"     {"",-15}   dead time: walking {runs2.Average(r => r.Metrics.WastedWalkingPercent),4:F1} (closing {runs2.Average(r => r.Metrics.WastedWalkingCloserPercent),4:F1} kiting {runs2.Average(r => r.Metrics.WastedKitingWithAShotPercent),4:F1})  pastAnother {runs2.Average(r => r.Metrics.WastedChasingPastPercent),4:F1}  "

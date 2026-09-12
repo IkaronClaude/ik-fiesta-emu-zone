@@ -31,6 +31,15 @@ public sealed record ScenarioResult(
     /// <see cref="SurvivedSeconds"/>, and <see cref="Died"/> carries the other half of the story.</para></summary>
     public double KillsPerMinute => SurvivedSeconds == 0 ? 0 : Kills * 60.0 / SurvivedSeconds;
 
+    /// <summary>Fraction of the run the character was alive for, as a percent.
+    ///
+    /// <para>⚠️ Read this NEXT TO <see cref="KillsPerMinute"/>, always. A rate over time alive rewards
+    /// dying early: a dungeon run that scored 1 kill and died at 40s reports 1.50 kills/min while one that
+    /// scored 4 and survived the whole budget reports 0.60, and the second is plainly the better script.
+    /// Neither number is wrong; a comparison that reads only the first is.</para></summary>
+    public double AlivePercent
+        => SimulatedSeconds == 0 ? 0 : 100.0 * SurvivedSeconds / SimulatedSeconds;
+
     /// <summary>Experience per simulated minute. A levelling bot's actual objective, and NOT the same
     /// ranking as kills: a dungeon's mobs are worth more each, so a slower run there can still win.</summary>
     public double ExpPerMinute => SurvivedSeconds == 0 ? 0 : Experience * 60.0 / SurvivedSeconds;

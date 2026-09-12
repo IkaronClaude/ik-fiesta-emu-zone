@@ -44,6 +44,8 @@ public class KiteDiagnosticsTests(ITestOutputHelper output)
                          + $"mean dest->target={metrics.MeanWalkDestDistance:F0}u  "
                          + $"mean self->target={metrics.MeanSelfDistance:F0}u  "
                          + $"attackRange={metrics.AttackRangeSeen}u");
+        if (result.Errors > 0)
+            output.WriteLine($"ERRORS {result.Errors}: {result.FirstError}");
         output.WriteLine("");
 
         // Collapse the numbers out of each line so repeats group, then show what dominates.
