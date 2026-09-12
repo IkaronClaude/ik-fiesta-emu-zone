@@ -126,12 +126,16 @@ public static class AbHarness
                           + $"{s.DpsOut,8:F1}  {s.DpsIn,7:F1}  {s.DamageRatio,9:F2}  {s.DeadTimePercent,6:F1}");
         }
         sb.AppendLine();
-        sb.AppendLine("  SAFETY   variant          deaths v  nearDeathRuns v  nearDeath%v  lowHp^  badKite%v  kite%");
+        sb.AppendLine("  SAFETY   variant          deaths v  nearDeathRuns v  nearDeath%v  lowHp^  badKite%v  kite%  bursts  meanS  maxS");
         foreach (var v in variants)
         {
-            var s = Score.Of(v, all.Where(r => r.Variant.Name == v).ToList());
+            var rs2 = all.Where(r => r.Variant.Name == v).ToList();
+            var s = Score.Of(v, rs2);
             sb.AppendLine($"           {s.Variant,-15} {s.Deaths,8}  {s.NearDeathRuns,15}  "
-                          + $"{s.NearDeathPercent,11:F1}  {s.LowWaterHp,6:F0}  {s.BadKite(),9:F1}  {s.KitePercent,5:F1}");
+                          + $"{s.NearDeathPercent,11:F1}  {s.LowWaterHp,6:F0}  {s.BadKite(),9:F1}  {s.KitePercent,5:F1}  "
+                          + $"{rs2.Average(r => r.Metrics.KiteBursts),6:F0}  "
+                          + $"{rs2.Average(r => r.Metrics.KiteBurstSeconds),5:F1}  "
+                          + $"{rs2.Max(r => r.Metrics.KiteLongestSeconds),4:F1}");
         }
         sb.AppendLine();
         sb.AppendLine("  UPKEEP   variant          spCapped%v  spStarved%v  hpStones  errors v");
@@ -140,6 +144,18 @@ public static class AbHarness
             var s = Score.Of(v, all.Where(r => r.Variant.Name == v).ToList());
             sb.AppendLine($"           {s.Variant,-15} {s.SpCapped,10:F1}  {s.SpStarved,11:F1}  "
                           + $"{s.HpStones,8:F1}  {s.Errors,7}");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("  DEAD TIME variant          total%v    walking  notEngaged  outOfReach  idle");
+        foreach (var v in variants)
+        {
+            var rs = all.Where(r => r.Variant.Name == v).ToList();
+            sb.AppendLine($"           {v,-15} {rs.Average(r => r.Metrics.DeadTimePercent),8:F1}  "
+                          + $"{rs.Average(r => r.Metrics.WastedWalkingPercent),9:F1}  "
+                          + $"{rs.Average(r => r.Metrics.WastedNotEngagedPercent),10:F1}  "
+                          + $"{rs.Average(r => r.Metrics.WastedOutOfReachPercent),10:F1}  "
+                          + $"{rs.Average(r => r.Metrics.WastedIdlePercent),4:F1}");
         }
 
         sb.AppendLine();
@@ -155,6 +171,10 @@ public static class AbHarness
                 sb.AppendLine($"     {s.Variant,-15} kills/min {s.KillsPerMinute,6:F2}  deaths {s.Deaths}  "
                               + $"dead% {s.DeadTimePercent,5:F1}  badKite% {s.BadKitePercent,5:F1}  "
                               + $"lowHp {s.LowWaterHp,3:F0}  errors {s.Errors}");
+                sb.AppendLine($"     {"",-15}   dead time: walking {runs2.Average(r => r.Metrics.WastedWalkingPercent),4:F1} (closing {runs2.Average(r => r.Metrics.WastedWalkingCloserPercent),4:F1} kiting {runs2.Average(r => r.Metrics.WastedKitingWithAShotPercent),4:F1})  "
+                              + $"notEngaged {runs2.Average(r => r.Metrics.WastedNotEngagedPercent),4:F1}  "
+                              + $"outOfReach {runs2.Average(r => r.Metrics.WastedOutOfReachPercent),4:F1}  "
+                              + $"idle {runs2.Average(r => r.Metrics.WastedIdlePercent),4:F1}");
             }
         }
 
