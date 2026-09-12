@@ -43,7 +43,13 @@ public class BotSimIntegrationTests(ITestOutputHelper output)
         var cleric = ClassParamTable.Load(Path.Combine(shine, "World", "ParamClericServer.txt"));
 
         var sim = new CombatSimulation(seed: (uint)seed);
-        sim.SpawnFightable(map, box, spawnSeed: 7);
+        sim.SpawnFightable(map, box, spawnSeed: 7, maxRank: MapSpawner.NormalMobMaxRank);
+        // ⭐ NORMAL RANKS ONLY, the same rule ScenarioRunner follows: "a dungeon's five or six repeated
+        // bosses are a party's problem, and sending a solo character at them measures dying, not
+        // grinding". This fixture spawned them, and it did not matter for as long as a mob's detect range
+        // was the 60u placeholder -- nothing noticed us, so the bosses stood there. With their real
+        // DetectCha they come, and a hand-built sword-and-plate character is measuring how fast a boss
+        // kills it rather than how well the driver grinds.
         sim.Player.Become(cleric, level: 40, freeStats: new FreeStats(Str: 20, Con: 20), equipment:
             [new EquipmentPiece("mace", MinWC: 60, MaxWC: 95), new EquipmentPiece("robe", AC: 40)]);
         sim.Player.Hp = sim.Player.MaxHp = 2_000_000;
@@ -163,10 +169,21 @@ public class BotSimIntegrationTests(ITestOutputHelper output)
         var h = LevelingBotHarness.Attach(sim, src);
         h.Run(src, ticks: 4000);
 
-        output.WriteLine($"kills={sim.Kills} player=({sim.Player.X},{sim.Player.Y}) hp={sim.Player.Hp}");
+        output.WriteLine($"kills={sim.Kills} dealt={sim.DamageDealt} taken={sim.DamageTaken} "
+                         + $"player=({sim.Player.X},{sim.Player.Y}) hp={sim.Player.Hp}");
         output.WriteLine(h.Report());
 
-        sim.Kills.ShouldBeGreaterThanOrEqualTo(2, "the driver walked up to a mob and never swung");
+        // ⚠️ SCORED ON DAMAGE DEALT, not on a kill count. The defect this milestone guards is "swings
+        // never land AT ALL" -- the original symptom was kills pinned at 1, where that one kill was the
+        // bot happening to stand inside a 12-unit reach. A kill THRESHOLD only stood in for that while
+        // mobs ignored us: this fixture is a deliberately under-geared level-40 Cleric (a 60-95 mace) on
+        // a level-60 map, and now that packs actually engage it, it spends the run fighting things it can
+        // barely hurt and finishes with one kill. Damage dealt answers the real question and cannot be
+        // reached by standing still.
+        sim.Kills.ShouldBeGreaterThanOrEqualTo(1, "the driver walked up to a mob and never swung");
+        sim.DamageDealt.ShouldBeGreaterThan(5_000,
+            "a character that lands swings for 400 seconds deals far more than this, however weak its "
+            + "weapon; a small number here means the swings are not connecting");
     }
 
     /// <summary>⭐⭐ THE PROPERTY THAT PROVES THE COMBAT LOOP RUNS: give the character a bigger weapon and
@@ -203,7 +220,7 @@ public class BotSimIntegrationTests(ITestOutputHelper output)
             var cleric = ClassParamTable.Load(Path.Combine(shine!, "World", "ParamClericServer.txt"));
 
             var sim = new CombatSimulation(seed: 42);
-            sim.SpawnFightable(map, box, spawnSeed: 7);
+            sim.SpawnFightable(map, box, spawnSeed: 7, maxRank: MapSpawner.NormalMobMaxRank);
             sim.Player.Become(cleric, level: level, freeStats: new FreeStats(Str: 20, Con: 20), equipment:
                 [new EquipmentPiece("mace", MinWC: wcMin, MaxWC: wcMax), new EquipmentPiece("robe", AC: 40)]);
             sim.Player.Hp = sim.Player.MaxHp = 2_000_000;

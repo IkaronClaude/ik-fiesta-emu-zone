@@ -67,7 +67,13 @@ public class DriverFightsInTheSimulationTests(ITestOutputHelper output)
         };
 
         var map = MobRegenData.Load(Path.Combine(shine, "MobRegen", "Urg.txt"));
-        sim.SpawnFightable(map, MobDataBox.Load(shine), spawnSeed: 7);
+        sim.SpawnFightable(map, MobDataBox.Load(shine), spawnSeed: 7, maxRank: MapSpawner.NormalMobMaxRank);
+        // ⭐ NORMAL RANKS ONLY, the same rule ScenarioRunner follows: "a dungeon's five or six repeated
+        // bosses are a party's problem, and sending a solo character at them measures dying, not
+        // grinding". This fixture spawned them, and it did not matter for as long as a mob's detect range
+        // was the 60u placeholder -- nothing noticed us, so the bosses stood there. With their real
+        // DetectCha they come, and a hand-built sword-and-plate character is measuring how fast a boss
+        // kills it rather than how well the driver grinds.
 
         sim.Player.Become(
             ClassParamTable.Load(Path.Combine(shine, "World", "ParamWarriorServer.txt")),
