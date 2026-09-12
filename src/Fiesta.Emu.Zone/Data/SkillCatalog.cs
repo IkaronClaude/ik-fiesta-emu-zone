@@ -47,6 +47,8 @@ public sealed record SkillDefinition(
     int UsableDegree,
     int LandsOn,
     int EffectType,
+    bool IsMovingSkill,
+    bool Stun,
     Skill.ActiveSkillInfo Physical,
     Skill.ActiveSkillInfo Magical,
     ActiveSkillInfoServer Server,
@@ -263,6 +265,16 @@ public sealed class SkillCatalog
                 UsableDegree: I(r, "UsableDegree"),
                 LandsOn: I(r, "Last"),
                 EffectType: I(r, "EffectType"),
+                // `IsMovingSkill` -- castable WHILE RUNNING. This is the column behind an archer kiting
+                // through a group and still shooting; without it the simulation can only model a
+                // character that stops to use everything.
+                IsMovingSkill: I(r, "IsMovingSkill") != 0,
+                // A skill is a STUN when any of its four abstate slots names one. Same derivation the
+                // live client data uses; `AbState` has no stun flag of its own to read.
+                Stun: S(r, "StaNameA").Contains("Stun", StringComparison.OrdinalIgnoreCase)
+                      || S(r, "StaNameB").Contains("Stun", StringComparison.OrdinalIgnoreCase)
+                      || S(r, "StaNameC").Contains("Stun", StringComparison.OrdinalIgnoreCase)
+                      || S(r, "StaNameD").Contains("Stun", StringComparison.OrdinalIgnoreCase),
                 physical, magical, srv,
                 // The heal amount rides the SPECIAL slots, not the damage columns. Only slot A is read:
                 // no heal in the file carries HealAmount anywhere else.

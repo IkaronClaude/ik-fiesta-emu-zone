@@ -897,6 +897,10 @@ public sealed class SimBotApi
         t["heal"] = s.IsHeal;
         t["landsOn"] = s.LandsOn;
         t["selfTargeted"] = s.LandsOn == 1;
+        // Castable WHILE MOVING, and whether it stuns. Both were absent, and absent reads as FALSE, so
+        // `stunSkill()` returned 0 for every class and no kite could ever end on "the stun is ready".
+        t["moving"] = s.IsMovingSkill;
+        t["stun"] = s.Stun;
         t["maxWc"] = (double)s.Physical.MaxFlat;
         t["maxMa"] = (double)s.Magical.MaxFlat;
         t["damage"] = (double)Math.Max(s.Physical.MaxFlat, s.Magical.MaxFlat);
