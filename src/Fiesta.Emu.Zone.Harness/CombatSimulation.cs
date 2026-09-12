@@ -795,6 +795,13 @@ public sealed class CombatSimulation
     public int WalkToNoPath { get; set; }
     public int WalkToAlreadyThere { get; set; }
 
+    /// <summary>Where a TRAVEL scenario wants the character to end up. Null outside one.
+    ///
+    /// <para>Live this arrives as a cross-map route the travel driver is working through. There are no
+    /// maps here, so it is handed over as a point on this one -- the run-through-or-fight-through
+    /// decision is the same question either way, and it is the part that can be scored honestly.</para></summary>
+    public (int X, int Y)? TravelGoal { get; set; }
+
     /// <summary>Is anything currently targeting the player -- the simulation's "taking damage".</summary>
     public bool IsUnderFire => Mobs.Any(m => m.Mob.IsAlive && m.Arg.Target is SimPlayer);
 
@@ -806,9 +813,15 @@ public sealed class CombatSimulation
     /// <para>It is not instantaneous: `MoverMain.CastingTime` is a windup (1000ms for most, 3000 for the
     /// Wooden Horse) and `CoolTime` gates the next attempt. And <b>taking damage kills it</b> -- the
     /// operator measured a summon refused 0 of 21 times while being hit, and the attempt still cancelled
-    /// the walk in progress, which is what made it the cause of every death in one earlier session. So a
-    /// summon is REFUSED outright while something is hitting us, and a summon already in flight is
-    /// CANCELLED by the first hit that lands.</para></summary>
+    /// the walk in progress, which is what made it the cause of every death in one earlier session.</para>
+    ///
+    /// <para>So a summon is REFUSED outright while something is hitting us, and one already in flight is
+    /// INTERRUPTED by taking damage.</para>
+    ///
+    /// <para>⚠️ <b>DAMAGE DOES NOT DISMOUNT YOU</b> (operator, 2026-09-12: "damage doesnt dismount it just
+    /// interrupts the summon"). Once you are riding, being hit does not throw you off -- which is exactly
+    /// what makes riding THROUGH a pack a real option and is half the point of the travel brief. Only the
+    /// windup is fragile.</para></summary>
     public bool SummonMover()
     {
         var p = Player;
@@ -838,6 +851,16 @@ public sealed class CombatSimulation
     {
         if (Player.MoverSummonEndsAt == 0) return;
         if (!Player.IsAlive) { Player.MoverSummonEndsAt = 0; return; }
+
+        // Taking a hit during the WINDUP loses it -- and only the windup. Nothing here touches
+        // RidingMover, because damage does not dismount.
+        if (IsUnderFire)
+        {
+            Player.MoverSummonEndsAt = 0;
+            Log.Add($"[{Now,6}] mover summon INTERRUPTED by damage (still on foot)");
+            return;
+        }
+
         if (Now < Player.MoverSummonEndsAt) return;
         Player.RidingMover = Player.CarriedMover;
         Player.MoverSummonEndsAt = 0;

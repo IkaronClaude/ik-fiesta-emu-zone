@@ -123,12 +123,58 @@ public class MoverTests(ITestOutputHelper output)
         sim.SummonMover().ShouldBeFalse("a summon is refused while something is attacking");
         sim.Player.RidingMover.ShouldBeNull();
 
-        // Once it lets go, the summon works.
+        // Once nothing is on us, the summon works. The mob is moved out of its own detect range first:
+        // just clearing its target is not enough now that a summon is INTERRUPTED by damage as well as
+        // refused -- an aggressive mob standing 20u away re-acquires us mid-windup, which is exactly what
+        // it should do and exactly why a bot must gain distance before it tries to ride.
+        mob.Mob.X = 100_000;
+        mob.Mob.Y = 100_000;
         mob.Arg.Target = null;
         sim.SummonMover().ShouldBeTrue();
         for (var i = 0; i < mover!.CastingTimeMs / 100 + 2; i++) sim.Step();
         sim.Player.RidingMover.ShouldNotBeNull();
 
         output.WriteLine($"refused under fire, allowed once clear -> riding {sim.Player.RidingMover?.Idx}");
+    }
+
+    /// <summary>⭐ DAMAGE INTERRUPTS THE SUMMON AND NOTHING ELSE. Operator, 2026-09-12: "damage doesnt
+    /// dismount it just interrupts the summon."
+    ///
+    /// <para>Both halves matter and they pull opposite ways. The windup being fragile is why a bot must
+    /// not try to mount with something on it. Riding being DURABLE is why riding straight through a pack
+    /// is a real option at all -- and that is half of the travel brief. Getting the second half wrong
+    /// would quietly make every "run through them" decision look suicidal.</para></summary>
+    [SkippableFact]
+    public void DamageInterruptsTheSummonButNeverThrowsYouOff()
+    {
+        var shine = Shine();
+        Skip.If(shine is null, "server data not present");
+        var mover = MoverCatalog.Load(shine!).BestFor(60);
+        Skip.If(mover is null, "no mover at level 60");
+
+        // --- the windup is fragile ---
+        var sim = new CombatSimulation(seed: 42);
+        sim.Player.CarriedMover = mover;
+        sim.Player.MoverSlot = 0;
+        sim.Player.MaxHp = sim.Player.Hp = 100_000;
+        sim.Player.X = sim.Player.Y = 0;
+        var mob = sim.AddMob(10, 20, 0, m => m.Hp = m.MaxHp = 100_000);
+
+        sim.SummonMover().ShouldBeTrue("nothing on us yet");
+        mob.Arg.Target = sim.Player;                       // hit during the windup
+        sim.Step();
+        sim.Player.MoverSummonEndsAt.ShouldBe(0u, "a summon taking damage mid-windup is lost");
+        sim.Player.RidingMover.ShouldBeNull();
+
+        // --- but riding is not ---
+        sim.Player.RidingMover = mover;                    // already up and running
+        var hpBefore = sim.Player.Hp;
+        for (var i = 0; i < 40; i++) sim.Step();           // take a beating
+
+        sim.Player.RidingMover.ShouldNotBeNull(
+            "DAMAGE MUST NOT DISMOUNT. Riding through a pack is a real option and the travel script "
+            + "depends on it; throwing the rider off would make every run-through decision look fatal");
+        output.WriteLine($"took {hpBefore - sim.Player.Hp} damage while riding and stayed on "
+                         + $"{sim.Player.RidingMover?.Idx}");
     }
 }

@@ -660,6 +660,15 @@ public sealed class SimBotApi
     /// decision in the driver was dead code and no journey was ever ridden.</summary>
     public bool mounted() => _sim.Player.RidingMover is not null;
 
+    /// <summary>`bot.travelGoal` -- where a travel scenario wants us, as {x=,y=}, or nil when not
+    /// travelling. The harness's own accessor: live, the destination arrives through the cross-map route
+    /// the travel driver is working, which this simulation has no maps to model.</summary>
+    public DynValue travelGoal()
+    {
+        if (_sim.TravelGoal is not { } g) return DynValue.Nil;
+        return DynValue.NewTable(new Table(_sim.Script) { ["x"] = g.X, ["y"] = g.Y });
+    }
+
     /// <summary>`bot.noMount` -- the live travel driver's gate-hop suppressor. Nothing suppresses here.</summary>
     public bool noMount() => false;
 

@@ -36,13 +36,25 @@ public sealed class ShineTable
 
     /// <summary>Parse every table in a file.
     ///
-    /// <para>The directives that matter: `#table` starts one, `#columnname` names its columns, `#record`
-    /// is a row. `#columntype`, `#ignore` and `#exchange` are declarations this parser does not need —
-    /// the values are read as text and converted by the caller, which is the only part that knows what a
-    /// column means.</para>
+    /// <para>The directives that matter: `#table` starts one, `#columnname` names its columns, and a row
+    /// is either `#record` (into the table being declared) or <b>`#recordin &lt;TableName&gt;`</b> (into a
+    /// table named explicitly, which lets one file interleave rows for several tables).</para>
     ///
-    /// <para>A leading empty field appears on every `#record` line (the directive is followed by two
-    /// tabs), so blank leading cells are dropped rather than shifting every column by one.</para></summary>
+    /// <para>⚠️ <b>`#recordin` USED TO BE IGNORED ENTIRELY</b>, so `World/NPC.txt` -- 760 rows of NPC and
+    /// map-link-gate placements -- parsed to a table with ZERO rows and read as "this file has no data".
+    /// Every other file under `World/` uses `#record`, which is why it went unnoticed.</para>
+    ///
+    /// <para>⚠️ <b>THE DELIMITER IS DECLARED BY THE FILE.</b> `NPC.txt` opens with `#delimiter \x20`, so
+    /// SPACE separates fields there as well as tab, and three of its rows use spaces. It also declares
+    /// `#exchange # \x20`, meaning a `#` inside a value stands for a space -- which is how a name
+    /// containing a space survives a space-delimited file. Both are honoured rather than assumed away;
+    /// splitting a space-delimited row on tabs alone yields one enormous field and silently loses it.</para>
+    ///
+    /// <para>`#columntype` and `#ignore` are still not needed: values are read as text and converted by
+    /// the caller, which is the only part that knows what a column means.</para>
+    ///
+    /// <para>A leading empty field appears on every record line (the directive is followed by two tabs),
+    /// so blank leading cells are dropped rather than shifting every column by one.</para></summary>
     public static IReadOnlyList<ShineTable> ParseFile(string path)
     {
         Encoding enc;
@@ -56,15 +68,26 @@ public sealed class ShineTable
             enc = Encoding.UTF8;      // best effort; ASCII table structure survives either way
         }
 
-        var tables = new List<ShineTable>();
-        string? name = null;
-        List<string>? columns = null;
-        List<IReadOnlyList<string>>? rows = null;
+        // Declared by the file itself, in its opening directives.
+        var spaceDelimits = false;      // #delimiter \x20
+        var hashIsSpace = false;        // #exchange # \x20
 
-        void Flush()
+        // Tables are kept BY NAME as well as in order, because `#recordin` addresses one by name and a
+        // file may interleave rows for several of them.
+        var order = new List<string>();
+        var columnsOf = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        var rowsOf = new Dictionary<string, List<IReadOnlyList<string>>>(StringComparer.OrdinalIgnoreCase);
+        string? current = null;
+
+        void Declare(string tableName)
         {
-            if (name is not null && columns is not null && rows is not null)
-                tables.Add(new ShineTable { Name = name, Columns = columns, Rows = rows });
+            if (!rowsOf.ContainsKey(tableName))
+            {
+                order.Add(tableName);
+                columnsOf[tableName] = [];
+                rowsOf[tableName] = [];
+            }
+            current = tableName;
         }
 
         foreach (var raw in File.ReadLines(path, enc))
@@ -73,35 +96,69 @@ public sealed class ShineTable
             if (line.Length == 0 || line.TrimStart().StartsWith(';'))
                 continue;
 
-            var fields = Fields(line);
+            var fields = Fields(line, spaceDelimits, hashIsSpace);
             if (fields.Count == 0) continue;
 
             switch (fields[0].ToLowerInvariant())
             {
+                case "#delimiter":
+                    // `\x20` is a space. Anything else is left alone: tab always separates.
+                    if (fields.Count > 1 && fields[1].Equals("\\x20", StringComparison.OrdinalIgnoreCase))
+                        spaceDelimits = true;
+                    break;
+
+                case "#exchange":
+                    // `#exchange # \x20` -- a `#` inside a value stands for a space.
+                    if (fields.Count > 2 && fields[1] == "#"
+                        && fields[2].Equals("\\x20", StringComparison.OrdinalIgnoreCase))
+                        hashIsSpace = true;
+                    break;
+
                 case "#table":
-                    Flush();
-                    name = fields.Count > 1 ? fields[1] : "(unnamed)";
-                    columns = null;
-                    rows = new List<IReadOnlyList<string>>();
+                    Declare(fields.Count > 1 ? fields[1] : "(unnamed)");
                     break;
 
                 case "#columnname":
-                    columns = fields.Skip(1).ToList();
+                    if (current is not null) columnsOf[current] = fields.Skip(1).ToList();
                     break;
 
                 case "#record":
-                    rows?.Add(fields.Skip(1).ToList());
+                    if (current is not null) rowsOf[current].Add(fields.Skip(1).ToList());
+                    break;
+
+                case "#recordin":
+                    // `#recordin <TableName> <values...>` -- the table is named, not implied.
+                    if (fields.Count > 1 && rowsOf.TryGetValue(fields[1], out var into))
+                        into.Add(fields.Skip(2).ToList());
                     break;
             }
         }
-        Flush();
-        return tables;
+
+        return [.. order.Select(n => new ShineTable
+        {
+            Name = n,
+            Columns = columnsOf[n],
+            Rows = rowsOf[n],
+        })];
     }
 
-    private static List<string> Fields(string line)
+    private static List<string> Fields(string line, bool spaceDelimits, bool hashIsSpace)
     {
-        // Tab-separated, but consecutive tabs are used as alignment padding rather than empty columns,
-        // so empty fields are dropped. Getting this wrong shifts every value one column left.
-        return line.Split('\t').Select(f => f.Trim()).Where(f => f.Length > 0).ToList();
+        // Tab always separates; SPACE does too when the file declared `#delimiter \x20`. Consecutive
+        // separators are alignment padding rather than empty columns, so empty fields are dropped --
+        // getting that wrong shifts every value one column left.
+        var seps = spaceDelimits ? new[] { '\t', ' ' } : ['\t'];
+        var parts = line.Split(seps, StringSplitOptions.RemoveEmptyEntries)
+                        .Select(f => f.Trim())
+                        .Where(f => f.Length > 0)
+                        .ToList();
+
+        // ...and a `#` inside a VALUE stands for a space, which is how a name with a space survives a
+        // space-delimited file. The leading directive keeps its own `#`.
+        if (hashIsSpace)
+            for (var i = 1; i < parts.Count; i++)
+                parts[i] = parts[i].Replace('#', ' ').Trim();
+
+        return parts;
     }
 }

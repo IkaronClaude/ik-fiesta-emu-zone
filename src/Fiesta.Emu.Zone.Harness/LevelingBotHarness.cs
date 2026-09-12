@@ -331,6 +331,7 @@ public sealed class LevelingBotHarness
         // on SimBotApi changes nothing until it is named here.
         ["mounted"] = _ => DynValue.NewBoolean(_api.mounted()),
         ["noMount"] = _ => DynValue.NewBoolean(_api.noMount()),
+        ["travelGoal"] = _ => _api.travelGoal(),
         ["useItem"] = a => DynValue.NewBoolean(
             _api.useItem((int)a[0].Number, a.Count > 1 ? (int)a[1].Number : 9)),
         // ⚠️ A NAME, not a number. The auto-stub's number made every map comparison in the driver false,
