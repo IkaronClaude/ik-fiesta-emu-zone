@@ -201,74 +201,77 @@ public class DriverFightsInTheSimulationTests(ITestOutputHelper output)
         Skip.If(ressystem is null, "client data not present; set CLIENT_DATA");
 
         // Walk to the nearest mob, auto-attack it. No quests, no phases, nothing to saturate on.
+        //
+        // ⚠️ It used to take `m[1]` while its comment said "nearest", and the two only agreed by luck.
+        // Once mobs got their real DetectCha they come to US, so the arbitrary first entry is usually a
+        // mob across the field: the script walked at it forever with a pack chewing on it and landed
+        // ZERO hits with either weapon -- 20,692 damage taken, 0 dealt, identical in both runs. That
+        // reads as "damage does nothing", which is exactly the false signal this control exists to catch.
         const string minimal = """
             function tick()
               local m = bot.nearbyMobs()
               if #m == 0 then return end
-              local best = m[1]
-              if bot.dist(best.handle) > 90 then bot.walkTo(best.x, best.y)
+              local best, bestd = nil, 1e18
+              for _, mob in ipairs(m) do
+                local d = bot.dist(mob.handle)
+                if d and d < bestd then best, bestd = mob, d end
+              end
+              if best == nil then return end
+              if bestd > 90 then bot.walkTo(best.x, best.y)
               else bot.autoAttack(best.handle) end
             end
             """;
 
-        int Kills(int lo, int hi)
+        (long Damage, int Kills) Damage(int lo, int hi)
         {
             var sim = UrugaWarrior(shine!, ressystem!, lo, hi);
             LevelingBotHarness.Attach(sim, minimal).Run(minimal, ticks: Ticks);
-            return sim.Kills;
+            output.WriteLine($"   wc {lo}-{hi}: alive={sim.Player.IsAlive} hp={sim.Player.Hp}/{sim.Player.MaxHp} "
+                             + $"now={sim.Now}ms dealt={sim.DamageDealt} taken={sim.DamageTaken} "
+                             + $"mobs={sim.Mobs.Count(m => m.Mob.IsAlive)}");
+            return (sim.DamageDealt, sim.Kills);
         }
 
-        var weak = Kills(60, 95);
-        var strong = Kills(600, 840);
-        output.WriteLine($"minimal driver: weapon 60-95 -> {weak} kills, weapon 600-840 -> {strong} kills");
+        var weak = Damage(60, 95);
+        var strong = Damage(600, 840);
+        output.WriteLine($"minimal driver: weapon 60-95 -> {weak.Damage} damage / {weak.Kills} kills, "
+                         + $"weapon 600-840 -> {strong.Damage} damage / {strong.Kills} kills");
 
-        strong.ShouldBeGreaterThan(weak * 2,
-            "ten times the weapon damage should kill MUCH more in the same time. A flat response is "
+        // ⚠️ SCORED ON DAMAGE, NOT KILLS, and that is a consequence of mobs having their real DetectCha.
+        // This script walks up and swings: no healing, no kiting, no breaking off. In a world where
+        // nothing noticed us first it could grind all day and kills were the natural measure; now a pack
+        // sees it coming and it dies early with BOTH weapons, so kills read 0 against 0 -- a flat response
+        // that means "it died", not "damage does nothing". Damage dealt still answers the question the
+        // control exists to ask.
+        strong.Damage.ShouldBeGreaterThan(weak.Damage * 2,
+            "ten times the weapon damage should deal MUCH more in the same time. A flat response is "
             + "evidence of a BROKEN INPUT, not of a different bottleneck -- that misdiagnosis once cost "
             + "this project a session, when AttackRange sat at 12 units and read as 'quest state is the "
             + "bottleneck'");
     }
 
-    /// <summary>⚠️ <b>A DRIVER-SIDE CEILING, MEASURED RATHER THAN GUESSED.</b> `level_quest.lua` kills
-    /// <b>24 mobs in 400 seconds no matter how hard it hits</b> — the same 24 across a <b>1000x</b> range
-    /// of weapon damage — while a walk-up-and-swing script on the identical map scales 6 → 62.
+    /// <summary>⭐ <b>THE DRIVER IS DAMAGE-RESPONSIVE NOW, AND THAT RETIRED A TRACKED DEFECT.</b>
+    ///
+    /// <para>This replaces <c>TheRealDriverIsPinnedAtItsOwnCeiling_KNOWN_LIMIT</c>, which pinned the
+    /// opposite: `level_quest.lua` killing <b>24 mobs no matter how hard it hit</b>, the same 24 across a
+    /// 1000x range of weapon damage, while a walk-up-and-swing script on the same map scaled 6 -> 62. That
+    /// test carried its own retirement instruction -- "if the driver has become damage-responsive, the
+    /// phase thrash has been fixed, delete this test" -- and it has:</para>
     ///
     /// <code>
-    /// weapon        minimal driver     level_quest.lua
-    ///     60-95            6 kills          23 kills   (145 casts)
-    ///    600-840          17               24          (100)
-    ///   5000-6000         58               24           (24)
-    ///  50000-60000        62               24           (20)
+    /// weapon          was        now
+    ///     60-95    23 kills    2 kills
+    ///  50000-60000 24 kills   47 kills
     /// </code>
     ///
-    /// <para>Three things this rules out. It is <b>not damage</b>: a thousandfold increase moves nothing.
-    /// It is <b>not the environment's ceiling</b>: the same map yields 62 to a simpler script. It is
-    /// <b>not the rotation failing</b>: casts fall from 145 to 20 precisely because mobs die faster, so
-    /// the kills it does make get cheaper — the driver simply does not make more of them.</para>
+    /// <para>Two changes did it. The driver stopped walking past mobs it could already hit, which is where
+    /// a quarter of its engaged time was going; and mobs got their real <c>DetectCha</c>, so a weak weapon
+    /// is now genuinely punished rather than merely slow -- 2 kills is a character that cannot finish what
+    /// it starts, not one grinding patiently.</para>
     ///
-    /// <para>The cadence names the shape. Kills arrive in bursts of four inside ~17 seconds, then a
-    /// <b>~28-second gap</b>, repeating, after a 34.7-second cold start:</para>
-    ///
-    /// <code>
-    /// 34.7 34.9 43.6 51.4 | 79.1 99.7 108.8 116.2 | 143.8 164.2 172.6 180.7 | 208.7 ...
-    ///                gap 27.7s          gap 27.6s              gap 28.0s
-    /// </code>
-    ///
-    /// <para>So roughly <b>28 of every 64 seconds go somewhere that is not fighting</b>. The driver's own
-    /// log shows it thrashing <c>PHASE =&gt; xpgrind</c> / <c>PHASE =&gt; kill (quest mobs)</c> every tick
-    /// against <c>"no active quests KNOWN yet (n=0, lists still loading or genuinely none)"</c> — it
-    /// cannot tell an empty quest list from an unloaded one, and this simulation has no NPC to load one
-    /// from.</para>
-    ///
-    /// <para><b>This is a driver defect, not a simulation gap</b>, and the operator has said as much
-    /// ("our questing logic is pretty shit and wastes a ton of time, will need improvement"). It is pinned
-    /// here because the simulation is now the cheapest place to measure it: 400 simulated seconds per run,
-    /// and the number is exact.</para>
-    ///
-    /// <para>⚠️ It would also have passed a naive <c>strong &gt; weak</c> assertion on a margin of ONE
-    /// kill. That is the shape of green run this file exists to refuse.</para></summary>
+    /// <para>The assertion is therefore the ordinary one the control uses: more damage, more kills.</para></summary>
     [SkippableFact]
-    public void TheRealDriverIsPinnedAtItsOwnCeiling_KNOWN_LIMIT()
+    public void TheDriverKillsMoreWhenItHitsHarder()
     {
         var (shine, ressystem, driver) = (Shine(), Ressystem(), DriverPath());
         Skip.If(shine is null, "server data not present; set SHINE_DATA");
@@ -276,22 +279,14 @@ public class DriverFightsInTheSimulationTests(ITestOutputHelper output)
         Skip.If(driver is null, "level_quest.lua not present; set LEVEL_QUEST_LUA");
 
         var (weak, _) = Run(shine!, ressystem!, driver!, wcMin: 60, wcMax: 95);
-        var (absurd, _) = Run(shine!, ressystem!, driver!, wcMin: 50_000, wcMax: 60_000);
+        var (strong, _) = Run(shine!, ressystem!, driver!, wcMin: 50_000, wcMax: 60_000);
 
-        output.WriteLine($"level_quest.lua: weapon 60-95      -> kills={weak.Kills} casts={weak.Casts}");
-        output.WriteLine($"level_quest.lua: weapon 50k-60k    -> kills={absurd.Kills} casts={absurd.Casts}");
+        output.WriteLine($"level_quest.lua: weapon 60-95   -> kills={weak.Kills} casts={weak.Casts}");
+        output.WriteLine($"level_quest.lua: weapon 50k-60k -> kills={strong.Kills} casts={strong.Casts}");
 
-        // It out-kills bare melee at low damage, because it uses its rotation.
-        weak.Kills.ShouldBeGreaterThan(10, "even damage-starved, the rotation should beat bare melee");
-
-        // ...and a THOUSANDFOLD damage increase buys it almost nothing. THIS IS THE TRACKED DEFECT.
-        (absurd.Kills - weak.Kills).ShouldBeLessThan(10,
-            "if the driver has become damage-responsive, the phase thrash has been fixed -- delete this "
-            + "test and fold the real driver into AHarderHittingWeaponKillsMore");
-
-        // The same map yields far more to a simpler script, so the ceiling is the DRIVER's, not the map's.
-        absurd.Kills.ShouldBeLessThan(40,
-            "a walk-up-and-swing script reaches 62 kills here; if the driver passes 40 it has started "
-            + "closing that gap and these bounds need re-measuring");
+        strong.Kills.ShouldBeGreaterThan(weak.Kills * 2,
+            "the driver was pinned at a flat 24 kills across a 1000x damage range for months. If it is "
+            + "flat again, the phase thrash or the target selection has regressed -- read the driver log "
+            + "for PHASE => thrash before suspecting the simulation");
     }
 }

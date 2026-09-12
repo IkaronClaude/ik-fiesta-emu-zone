@@ -54,6 +54,12 @@ public sealed class SimMob : ICombatant
         NormalAttack = definition.NormalAttack;
         NormalAttackRule = definition.NormalAttackRule;
         Mob.Selector.Policy = definition.Policy;
+        // HOW FAR IT SEES, from `MobInfoServer.DetectCha`. Left at the MapSpawner placeholder of 60 this
+        // was SHORTER THAN A PLAYER'S OWN 100u REACH, so nothing ever noticed us first and every aggressor
+        // in the simulation was one we had attacked -- measured, 0 unprovoked aggros in a 400s run. The
+        // real values are 240-264 for the level-25 band, so the whole auto-aggro world the driver is
+        // written for (pull one, not four; kite a pack that came to you) could not be exercised at all.
+        Mob.so_getDetectRange = definition.Server.DetectCha;
         Arg.Combat.RunSpeed = definition.Info.RunSpeed;
         Arg.Combat.WalkSpeed = definition.Info.WalkSpeed;
         Arg.Combat.WalkChaseDistance = definition.Server.WalkChase;
