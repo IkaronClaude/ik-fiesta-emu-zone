@@ -923,9 +923,9 @@ public sealed class SimBotApi
     public bool cast(int skill, int target)
         => _sim.Cast(skill, (ushort)target) == CombatSimulation.CastRefusal.Accepted;
 
-    /// <summary>`bot.castAt` -- cast a ground-aimed skill at a POINT, with no target. The live protocol
+    /// <summary>`bot.castGround` -- cast a ground-aimed skill at a POINT, with no target. The live protocol
     /// calls this `NC_BAT_SKILLBASH_FLD_CAST_REQ` (0x2441), a different packet from the object cast.</summary>
-    public bool castAt(int skill, int x, int y)
+    public bool castGround(int skill, int x, int y)
         => _sim.CastAt(skill, x, y) == CombatSimulation.CastRefusal.Accepted;
 
     /// <summary>`bot.casting` - is a cast bar up right now.</summary>
