@@ -5,7 +5,7 @@ namespace Fiesta.Emu.Zone.Data;
 /// <summary>One equippable item as `ItemInfo.shn` describes it.</summary>
 public sealed record ItemDefinition(
     int Id, string InxName, string Name,
-    int EquipSlot, int UseClass, int DemandLv, int Grade,
+    int EquipSlot, int UseClass, int DemandLv, int Grade, int WeaponType,
     int MinWc, int MaxWc, int Ac, int MinMa, int MaxMa, int Mr, int Th, int Tb,
     int WcRate, int MaRate, int AcRate, int MrRate,
     int ShieldAc, int HitRatePlus, int EvaRatePlus, int CriRate,
@@ -137,7 +137,7 @@ public sealed class EquipmentCatalog
                 var b = bonuses.GetValueOrDefault(S(r, "InxName"));
                 return new ItemDefinition(
                     I(r, "ID"), S(r, "InxName"), S(r, "Name"),
-                    I(r, "Equip"), I(r, "UseClass"), I(r, "DemandLv"), I(r, "Grade"),
+                    I(r, "Equip"), I(r, "UseClass"), I(r, "DemandLv"), I(r, "Grade"), I(r, "WeaponType"),
                     I(r, "MinWC"), I(r, "MaxWC"), I(r, "AC"), I(r, "MinMA"), I(r, "MaxMA"), I(r, "MR"),
                     I(r, "TH"), I(r, "TB"),
                     I(r, "WCRate"), I(r, "MARate"), I(r, "ACRate"), I(r, "MRRate"),

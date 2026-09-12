@@ -123,6 +123,12 @@ public static class ScenarioRunner
                            spawnSeed: 7, maxRank: MapSpawner.NormalMobMaxRank);
 
         sim.Player.Become(table, level, equipment: loadout.Equipment, skills: skills);
+
+        // WHAT THE WEAPON REACHES. Without this every class fought at the 100u melee default, so the
+        // Ranger cell was measuring an archer shooting from inside a mob's own reach -- 9 kills against
+        // the Warrior's 40, and the only death in the matrix.
+        sim.Player.AttackRange = loadout.AttackRange;
+        sim.Worn = loadout.Worn;
         var (x, y) = map.BusiestArea();
         sim.Player.X = x;
         sim.Player.Y = y;

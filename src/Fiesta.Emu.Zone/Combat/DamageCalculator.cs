@@ -114,6 +114,20 @@ public static class DamageCalculator
     /// <see cref="RangedAttackThreshold"/> skips the ranged-evasion subtraction.</summary>
     public const int MeleeAttackRange = 100;
 
+    /// <summary>A bow or crossbow `AttackRange` -- 450. Read out of the binary with
+    /// <see cref="MeleeAttackRange"/>; the two are the only values a player weapon takes.</summary>
+    public const int ArcherAttackRange = 450;
+
+    /// <summary>`ItemInfo.WeaponType` for a bow and a crossbow. The only two that reach
+    /// <see cref="ArcherAttackRange"/>; every other type, and an empty weapon slot, is melee.</summary>
+    public const int WeaponTypeBow = 2;
+    public const int WeaponTypeCrossbow = 10;
+
+    /// <summary>Weapon reach for a `WeaponType`. 0 (nothing equipped) is melee, per the operator's rule:
+    /// bow or crossbow -> archer range, otherwise melee range, an archer with no weapon included.</summary>
+    public static int AttackRangeOf(int weaponType)
+        => weaponType is WeaponTypeBow or WeaponTypeCrossbow ? ArcherAttackRange : MeleeAttackRange;
+
     /// <summary>`roe_FreeStatHitRate+0x1E` compares the attack's range against <b>300</b>, STRICTLY
     /// greater. An Archer's 450 is over it; every other class's 100 is not.</summary>
     public const int RangedAttackThreshold = 300;

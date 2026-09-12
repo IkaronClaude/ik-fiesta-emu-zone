@@ -815,10 +815,37 @@ public sealed class SimBotApi
     /// papered over.</para></summary>
     public Table inventory() => new(_sim.Script);
 
-    /// <summary>`bot.equipment` — worn items. Empty for the same reason: the scenario equips a character
-    /// through <c>Become</c>, which takes `EquipmentPiece`s rather than item ids, so there are no ids to
-    /// report back.</summary>
-    public Table equipment() => new(_sim.Script);
+    /// <summary>`bot.equipment` — worn item ids by `Equip` slot, which is the shape the driver indexes
+    /// (<c>worn[12]</c> for the weapon).</summary>
+    public Table equipment()
+    {
+        var t = new Table(_sim.Script);
+        foreach (var (slot, item) in _sim.Worn) t.Set(DynValue.NewNumber(slot), DynValue.NewNumber(item.Id));
+        return t;
+    }
+
+    /// <summary>`bot.itemInfo` — one item's `ItemInfo.shn` row, for the ids `equipment` hands out.
+    ///
+    /// <para>Only the columns the catalogue carries are reported. The bag and shop columns a live bot uses
+    /// to decide what to sell (`type`, `itemClass`, `sellPrice`, `maxLot`) are absent rather than zeroed,
+    /// because the simulation has no loot and no shops and a 0 there would be an answer rather than a
+    /// gap.</para></summary>
+    public DynValue itemInfo(int id)
+    {
+        var item = _sim.Worn.Values.FirstOrDefault(i => i.Id == id);
+        if (item is null) return DynValue.Nil;
+        var t = new Table(_sim.Script)
+        {
+            ["id"] = item.Id,
+            ["name"] = item.Name,
+            ["equipSlot"] = item.EquipSlot,
+            ["demandLv"] = item.DemandLv,
+            ["useClass"] = item.UseClass,
+            ["grade"] = item.Grade,
+            ["weaponType"] = item.WeaponType,
+        };
+        return DynValue.NewTable(t);
+    }
 
     /// <summary>`bot.traveling` — is a cross-map journey under way. Always false: the simulation is one
     /// map, with no gates and no map transitions, so nothing can be travelling.</summary>

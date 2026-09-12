@@ -16,9 +16,14 @@ public sealed record Loadout(
     string ClassName,
     IReadOnlyList<EquipmentPiece> Equipment,
     IReadOnlyList<int> ItemIds,
+    IReadOnlyDictionary<int, ItemDefinition> Worn,
     IReadOnlyList<SkillDefinition> Skills,
-    int EmpowerPoints)
+    int EmpowerPoints,
+    int WeaponType = 0)
 {
+    /// <summary>What this loadout's weapon actually reaches - 450 with a bow or crossbow, 100 otherwise.</summary>
+    public int AttackRange => Combat.DamageCalculator.AttackRangeOf(WeaponType);
+
     public IReadOnlyList<SkillDefinition> Offensive => [.. Skills.Where(s => s.IsOffensive)];
 }
 
@@ -76,8 +81,10 @@ public static class LoadoutBuilder
             classId, className,
             [.. chosen.Select(i => i.ToPiece())],
             [.. chosen.Select(i => i.Id)],
+            best,
             skills.LearnedBy(classId, level),
-            table.At(level)?.SkillPwrPt ?? 0);
+            table.At(level)?.SkillPwrPt ?? 0,
+            best[WeaponSlot].WeaponType);
     }
 
     /// <summary>⭐ SPEND THE EMPOWER POINTS ON DAMAGE.

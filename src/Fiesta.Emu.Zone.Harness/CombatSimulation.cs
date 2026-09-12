@@ -689,6 +689,15 @@ public sealed class CombatSimulation
     /// supplies one, and `npcCoord` then answers nil exactly as the live call does without client data.</summary>
     public Data.MobCoordinateCatalog? Placements { get; set; }
 
+    /// <summary>What the character is wearing, by `Equip` slot, so `bot.equipment` and `bot.itemInfo` can
+    /// answer. Empty until a scenario sets it.
+    ///
+    /// <para>It was empty ALWAYS, and that quietly made every class melee: the driver reads its weapon's
+    /// `WeaponType` to decide whether it is holding a bow, an empty table answers 0, and 0 is not a bow.
+    /// So the Ranger cell ran an archer that walked to 45u and shot at 100u.</para></summary>
+    public IReadOnlyDictionary<int, Data.ItemDefinition> Worn { get; set; }
+        = new Dictionary<int, Data.ItemDefinition>();
+
     /// <summary>The map's `.shbd` walls, when loaded. Null means open ground everywhere, which is what the
     /// simulation did before this existed — and a kite validated against open ground is not validated.</summary>
     /// <para>⚠️ <b>THE PLAYER ONLY. Mobs do not pathfind — once aggro'd they phase straight through

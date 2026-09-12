@@ -171,7 +171,7 @@ public static class AbHarness
                 sb.AppendLine($"     {s.Variant,-15} kills/min {s.KillsPerMinute,6:F2}  deaths {s.Deaths}  "
                               + $"dead% {s.DeadTimePercent,5:F1}  badKite% {s.BadKitePercent,5:F1}  "
                               + $"lowHp {s.LowWaterHp,3:F0}  errors {s.Errors}");
-                sb.AppendLine($"     {"",-15}   dead time: walking {runs2.Average(r => r.Metrics.WastedWalkingPercent),4:F1} (closing {runs2.Average(r => r.Metrics.WastedWalkingCloserPercent),4:F1} kiting {runs2.Average(r => r.Metrics.WastedKitingWithAShotPercent),4:F1})  "
+                sb.AppendLine($"     {"",-15}   dead time: walking {runs2.Average(r => r.Metrics.WastedWalkingPercent),4:F1} (closing {runs2.Average(r => r.Metrics.WastedWalkingCloserPercent),4:F1} kiting {runs2.Average(r => r.Metrics.WastedKitingWithAShotPercent),4:F1})  pastAnother {runs2.Average(r => r.Metrics.WastedChasingPastPercent),4:F1}  "
                               + $"notEngaged {runs2.Average(r => r.Metrics.WastedNotEngagedPercent),4:F1}  "
                               + $"outOfReach {runs2.Average(r => r.Metrics.WastedOutOfReachPercent),4:F1}  "
                               + $"idle {runs2.Average(r => r.Metrics.WastedIdlePercent),4:F1}");

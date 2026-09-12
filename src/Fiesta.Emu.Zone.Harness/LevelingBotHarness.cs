@@ -247,11 +247,11 @@ public sealed class LevelingBotHarness
     /// sign the scanning approach had stopped earning its place.</para></summary>
     private static readonly HashSet<string> KnownTables = new(StringComparer.Ordinal)
     {
-        "inventory", "inventoryCounts", "equipment", "drops", "shopItems", "storageItems",
+        "inventory", "inventoryCounts", "drops", "shopItems", "storageItems",
         "activeQuests", "availableQuests", "eligibleQuests", "questStatics", "learnedSkills",
         "skillCooldowns", "selfAbstates", "aggressorSpawns", "gates", "instanceDoors",
         "scenarioAreas", "scenarioAckedAreas", "npcSeedList", "knownShopsOfKind", "npcLocation",
-        "npcCoord", "mobLocation", "entityPos", "itemInfo", "skillInfo", "coveragePath",
+        "npcCoord", "mobLocation", "entityPos", "skillInfo", "coveragePath",
     };
 
     private DynValue NeutralFor(string name, Script script)
@@ -301,6 +301,10 @@ public sealed class LevelingBotHarness
         ["hp"] = _ => DynValue.NewNumber(_sim.Player.Hp),
         ["maxHp"] = _ => DynValue.NewNumber(_sim.Player.MaxHp),
         ["hpPct"] = _ => DynValue.NewNumber(_api.hpPct()),
+        // The weapon, and the row behind it. Registered together because the driver only reads the item
+        // to reach its WeaponType, and with either one missing it concludes it is holding nothing.
+        ["equipment"] = _ => DynValue.NewTable(_api.equipment()),
+        ["itemInfo"] = a => _api.itemInfo((int)a[0].Number),
         ["level"] = _ => DynValue.NewNumber(_sim.Player.Level),
         ["dead"] = _ => DynValue.NewBoolean(!_sim.Player.IsAlive),
         ["selfHandle"] = _ => DynValue.NewNumber(_sim.Player.Handle),

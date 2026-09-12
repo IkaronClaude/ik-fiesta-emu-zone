@@ -59,6 +59,25 @@ public sealed class CombatMetrics
     /// is not a waste, it is not starting a fight we did not want.</summary>
     public int WastedKitingWithAShot { get; private set; }
 
+    /// <summary>Wasted ticks where the skill could have reached A MOB THAT IS NOT THE ONE WE ARE WALKING
+    /// TO. Chasing a chosen target while a different one is already in reach and already hitting us. This
+    /// is measured against the ENGAGED target, not the nearest mob, because that is what the script picked
+    /// and the two disagree exactly when this defect is happening.</summary>
+    public int WastedChasingPastAReachableMob { get; private set; }
+
+    /// <summary>Wasted ticks spent WALKING WITH THE TARGET ALREADY IN WEAPON REACH. The walk had nothing
+    /// left to accomplish; the tick should have been a swing or a cast.</summary>
+    public int WastedWalkingWhileInReach { get; private set; }
+
+    /// <summary>Sum of (destination-to-target distance) over wasted walking ticks, against the sum of our
+    /// own distance to it. If the destination is consistently FURTHER than we already are, the walk is
+    /// aimed at where the mob WAS - a standoff point computed once and never revised while the mob closed.</summary>
+    public long WalkDestToTargetSum { get; private set; }
+    public long WalkSelfToTargetSum { get; private set; }
+
+    /// <summary>The character's own weapon reach, recorded so a distance can be read against it.</summary>
+    public int AttackRangeSeen { get; private set; }
+
     /// <summary>Wasted with nothing locked on: the script had a usable skill and a reachable mob but was
     /// not engaged with anything. Target selection, not the rotation.</summary>
     public int WastedNotEngaged { get; private set; }
@@ -198,6 +217,7 @@ public sealed class CombatMetrics
             .FirstOrDefault();
         if (nearest.m is null) return;
 
+        AttackRangeSeen = p.AttackRange;
         var inWeaponReach = nearest.d2 <= (long)p.AttackRange * p.AttackRange;
         if (inWeaponReach) TicksWithTargetInReach++;
 
@@ -223,25 +243,38 @@ public sealed class CombatMetrics
         if (!engaged) return;
         TicksEngaged++;
 
+        // WHAT THE SCRIPT THINKS IT IS FIGHTING. Judge an approach against THIS, not against whatever
+        // happens to be nearest -- chasing A while B stands on us is the case worth naming, and measuring
+        // against the nearest mob renames it "kiting" and hides it.
+        var lockedOn = p.AutoAttackTarget is { } h ? sim.Mobs.FirstOrDefault(m => m.Mob.Handle == h && m.Mob.IsAlive) : null;
+        var reference = lockedOn ?? nearest.m;
+        var refD2 = MobTargetSelector.SquaredDistance(p, reference.Mob);
+
         // Casting counts as using the opportunity; so does being mid-cast.
         if (anyUsable && p.CastingSkill is null)
-            Wasted(p, inWeaponReach, nearest.d2, nearest.m.Mob.X, nearest.m.Mob.Y, aggressors > 0);
+            Wasted(p, inWeaponReach, refD2, reference.Mob.X, reference.Mob.Y, aggressors > 0,
+                   otherInReach: !ReferenceEquals(reference, nearest.m) && nearest.d2 < refD2);
         else if (!anyUsable && !inWeaponReach) TicksWithNothingPossible++;
     }
 
     /// <summary>Charge one wasted tick, and to exactly one reason. First match wins, so the categories
     /// partition the total and the scorecard's columns sum back to it.</summary>
     private void Wasted(SimPlayer p, bool inWeaponReach, long nearestD2, int mobX, int mobY,
-                        bool underFire)
+                        bool underFire, bool otherInReach)
     {
         TicksWithWastedSkill++;
+        if (otherInReach) WastedChasingPastAReachableMob++;
         if (p.WalkTarget is not null)
         {
             WastedWhileWalking++;
+            if (inWeaponReach) WastedWalkingWhileInReach++;
             if (nearestD2 >= 0 && p.FinalWalkTarget is { } dest)
             {
                 long dx = mobX - dest.X, dy = mobY - dest.Y;
-                if (dx * dx + dy * dy < nearestD2) WastedWalkingCloser++;
+                var destD2 = dx * dx + dy * dy;
+                WalkDestToTargetSum += (long)Math.Sqrt(destD2);
+                WalkSelfToTargetSum += (long)Math.Sqrt(nearestD2);
+                if (destD2 < nearestD2) WastedWalkingCloser++;
                 else if (underFire) WastedKitingWithAShot++;
             }
         }
@@ -274,6 +307,12 @@ public sealed class CombatMetrics
     public double WastedWalkingPercent => TicksEngaged == 0 ? 0 : 100.0 * WastedWhileWalking / TicksEngaged;
     public double WastedWalkingCloserPercent => TicksEngaged == 0 ? 0 : 100.0 * WastedWalkingCloser / TicksEngaged;
     public double WastedKitingWithAShotPercent => TicksEngaged == 0 ? 0 : 100.0 * WastedKitingWithAShot / TicksEngaged;
+    /// <summary>Mean distance from the WALK DESTINATION to the target over wasted walking ticks, and the
+    /// mean distance we ourselves stood at. Destination further than self = walking to a stale point.</summary>
+    public double MeanWalkDestDistance => WastedWhileWalking == 0 ? 0 : (double)WalkDestToTargetSum / WastedWhileWalking;
+    public double MeanSelfDistance => WastedWhileWalking == 0 ? 0 : (double)WalkSelfToTargetSum / WastedWhileWalking;
+
+    public double WastedChasingPastPercent => TicksEngaged == 0 ? 0 : 100.0 * WastedChasingPastAReachableMob / TicksEngaged;
     public double WastedNotEngagedPercent => TicksEngaged == 0 ? 0 : 100.0 * WastedNotEngaged / TicksEngaged;
     public double WastedOutOfReachPercent => TicksEngaged == 0 ? 0 : 100.0 * WastedOutOfWeaponReach / TicksEngaged;
     public double WastedIdlePercent => TicksEngaged == 0 ? 0 : 100.0 * WastedIdle / TicksEngaged;
