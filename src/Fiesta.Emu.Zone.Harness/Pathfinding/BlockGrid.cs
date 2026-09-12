@@ -5,8 +5,13 @@ public sealed class BlockGrid
     /// <summary>World units per tile (50 world per map-unit ÷ 8 tiles per map-unit)</summary>
     public const double WorldPerTile = 6.25;
 
-    // SHBD 1-TILE ORIGIN SHIFT (operator + godmode wall-hug trace, 2026-07-22) ────────────────────────── The .shbd blocked-bit at array index (i,j) physically represents the world cell one tile OVER in eac…
-    private const int ShbdTileShift = 1;
+    // SHBD ORIGIN SHIFT -- REMOVED 2026-09-12: `Zone.exe` does not have one.
+    // `mbi_IsMoveBlock` (0x0049DF70) is `tile = (v*8)*0x51EB851F >> 32 >> 4` with NO offset on either
+    // axis. Everything else in this class already matched the server exactly; the shift was the only
+    // divergence, and it cost 0.37-0.76% of positions across whole maps -- half refusing ground the
+    // server allows, half walking at walls. At 0: 0 disagreements in 1,048,576 samples on RouVal02.
+    // See MapBlockInformationTests, which pins this against the ported function.
+    private const int ShbdTileShift = 0;
     /// <summary>The same shift, for code outside this class that must place `.sbi` door boxes on the tile grid --
     /// the door bitmaps are indexed like the .shbd and inherit its one-tile origin offset.</summary>
     public const int ShbdTileShiftPublic = ShbdTileShift;

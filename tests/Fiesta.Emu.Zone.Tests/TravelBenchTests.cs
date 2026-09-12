@@ -67,10 +67,24 @@ public class TravelBenchTests(ITestOutputHelper output)
             if (a is null || b is null) continue;
             any = true;
 
-            if (!any || seed == 42) output.WriteLine(log.FirstOrDefault(l => l.StartsWith("travel:")) ?? "");
+            output.WriteLine(log.FirstOrDefault(l => l.StartsWith("travel:")) ?? "");
             output.WriteLine($"seed {seed}");
             output.WriteLine(Line("naive", a));
-            output.WriteLine(Line("clever", b));
+            output.WriteLine(Line("travel", b));
+
+            // ...and THE LEVELLER ITSELF, which is the only one that actually flies. Scoring a
+            // standalone script against a naive walker says nothing about the script the bots run.
+            var levellerPath = Environment.GetEnvironmentVariable("LEVEL_QUEST_LUA_B");
+            if (levellerPath is not null && File.Exists(levellerPath))
+            {
+                var c = TravelRunner.Run(shine!, res!, File.ReadAllText(levellerPath),
+                                         cls, level, map, seed: seed);
+                if (c is not null)
+                {
+                    output.WriteLine(Line("leveller", c));
+                    c.Errors.ShouldBe(0, $"leveller errored: {c.FirstError}");
+                }
+            }
 
             a.Errors.ShouldBe(0, $"naive script errored: {a.FirstError}");
             b.Errors.ShouldBe(0, $"travel script errored: {b.FirstError}");
