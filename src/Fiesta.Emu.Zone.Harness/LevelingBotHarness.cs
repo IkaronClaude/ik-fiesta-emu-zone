@@ -326,7 +326,13 @@ public sealed class LevelingBotHarness
         ["stopTravel"] = _ => { _api.commitStop(); return DynValue.Nil; },
         // The simulation has no mounts. FALSE is a reading, not a stub: a truthy stub makes the driver
         // spend every tick trying to dismount before it will attack.
-        ["mounted"] = _ => DynValue.NewBoolean(false),
+        // ⚠️ THIS WAS A HARDCODED `false`, so every mount decision in the driver was dead code and no
+        // journey in this harness was ever ridden. The registry is hand-written, so a real implementation
+        // on SimBotApi changes nothing until it is named here.
+        ["mounted"] = _ => DynValue.NewBoolean(_api.mounted()),
+        ["noMount"] = _ => DynValue.NewBoolean(_api.noMount()),
+        ["useItem"] = a => DynValue.NewBoolean(
+            _api.useItem((int)a[0].Number, a.Count > 1 ? (int)a[1].Number : 9)),
         // ⚠️ A NAME, not a number. The auto-stub's number made every map comparison in the driver false,
         // 45,849 times per run.
         ["map"] = _ => DynValue.NewString(_sim.MapName),

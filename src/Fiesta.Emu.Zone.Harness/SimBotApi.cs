@@ -130,6 +130,24 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
     /// handle. Null for an ordinary object cast.</summary>
     public (int X, int Y)? CastPoint { get; set; }
 
+    // ---- the MOVER (what the game calls a mount; `MoverMain`, `NC_MOVER_*`) ------------------------
+
+    /// <summary>The mover this character carries in its bag, if any, and which bag slot holds it.</summary>
+    public Data.MoverDefinition? CarriedMover { get; set; }
+    public int MoverSlot { get; set; } = -1;
+
+    /// <summary>The mover currently being RIDDEN. Null when on foot.</summary>
+    public Data.MoverDefinition? RidingMover { get; set; }
+
+    /// <summary>When an in-flight summon completes. 0 when none is in flight.</summary>
+    public uint MoverSummonEndsAt { get; set; }
+
+    /// <summary>When the mover may next be summoned -- `MoverMain.CoolTime` after the last attempt.</summary>
+    public uint MoverReadyAt { get; set; }
+
+    /// <summary>Speed multiplier from the mover being ridden. 1.0 on foot.</summary>
+    public double MoverSpeedFactor => RidingMover?.RunSpeedFactor ?? 1.0;
+
     /// <summary>When the in-flight cast lands.</summary>
     public uint CastEndsAt { get; set; }
 
@@ -265,7 +283,11 @@ public sealed class SimPlayer : IShineObject, Combat.ICombatant
         BlockedByGeometry = false;
         if (WalkTarget is not { } t) return;
 
-        var step = Math.Max(1, MoveSpeed * (int)elapsedMs / 1000);
+        // A MOVER IS A SPEED MULTIPLIER on the character's own, from `MoverMain.RunSpeed` in permille
+        // (1100 to 1500 against the unmounted 1000). Riding one is the whole reason to put up with its
+        // summon windup, so the speed has to actually arrive here.
+        var speed = (int)Math.Round(MoveSpeed * MoverSpeedFactor);
+        var step = Math.Max(1, speed * (int)elapsedMs / 1000);
         double dx = t.X - X, dy = t.Y - Y;
         var d = Math.Sqrt(dx * dx + dy * dy);
 
@@ -634,6 +656,23 @@ public sealed class SimBotApi
     /// <summary>`bot.walking` - is the character still on its way somewhere.</summary>
     public bool walking() => _sim.Player.WalkTarget is not null;
 
+    /// <summary>`bot.mounted` -- riding a mover right now. It was a stub returning false, so every mount
+    /// decision in the driver was dead code and no journey was ever ridden.</summary>
+    public bool mounted() => _sim.Player.RidingMover is not null;
+
+    /// <summary>`bot.noMount` -- the live travel driver's gate-hop suppressor. Nothing suppresses here.</summary>
+    public bool noMount() => false;
+
+    /// <summary>`bot.useItem` -- the only item the simulation carries is the mover, and using it TOGGLES,
+    /// which is what the live client does: the same bag item summons it and dismisses it.</summary>
+    public bool useItem(int slot, int invenType = 9)
+    {
+        var p = _sim.Player;
+        if (p.CarriedMover is null || slot != p.MoverSlot) return false;
+        if (p.RidingMover is not null || p.MoverSummonEndsAt != 0) { _sim.DismountMover(); return true; }
+        return _sim.SummonMover();
+    }
+
     /// <summary>`bot.commitStop` / `bot.stopTravel` — stop where you are.</summary>
     public void commitStop()
     {
@@ -817,7 +856,17 @@ public sealed class SimBotApi
     /// halts the entire quest loop live (hand-ins refuse, the board empties, exp goes to zero), so a
     /// simulation that can never fill its bag cannot exercise that failure at all. Recorded rather than
     /// papered over.</para></summary>
-    public Table inventory() => new(_sim.Script);
+    public Table inventory()
+    {
+        var t = new Table(_sim.Script);
+        // The MOVER is the one thing the bag carries. Everything else is empty for the reason recorded
+        // above -- no loot, no shops -- but `mountSlot()` scans this table for an item of Type 1 and
+        // Class 23, and without the entry the driver concludes it owns no mount and never rides.
+        var p = _sim.Player;
+        if (p.CarriedMover is not null && p.MoverSlot >= 0)
+            t.Set(DynValue.NewNumber(p.MoverSlot), DynValue.NewNumber(p.CarriedMover.ItemId));
+        return t;
+    }
 
     /// <summary>`bot.equipment` — worn item ids by `Equip` slot, which is the shape the driver indexes
     /// (<c>worn[12]</c> for the weapon).</summary>
@@ -836,6 +885,20 @@ public sealed class SimBotApi
     /// gap.</para></summary>
     public DynValue itemInfo(int id)
     {
+        if (_sim.Player.CarriedMover is { } mv && mv.ItemId == id)
+        {
+            // The mover, described the way `mountSlot()` asks about it.
+            return DynValue.NewTable(new Table(_sim.Script)
+            {
+                ["id"] = id,
+                ["name"] = mv.Idx,
+                ["type"] = Data.MoverCatalog.MoverItemType,
+                ["itemClass"] = Data.MoverCatalog.MoverItemClass,
+                ["demandLv"] = mv.DemandLv,
+                ["equipSlot"] = 0,
+            });
+        }
+
         var item = _sim.Worn.Values.FirstOrDefault(i => i.Id == id);
         if (item is null) return DynValue.Nil;
         var t = new Table(_sim.Script)
@@ -843,6 +906,8 @@ public sealed class SimBotApi
             ["id"] = item.Id,
             ["name"] = item.Name,
             ["equipSlot"] = item.EquipSlot,
+            ["type"] = item.Type,
+            ["itemClass"] = item.ItemClass,
             ["demandLv"] = item.DemandLv,
             ["useClass"] = item.UseClass,
             ["grade"] = item.Grade,

@@ -6,6 +6,8 @@ namespace Fiesta.Emu.Zone.Data;
 public sealed record ItemDefinition(
     int Id, string InxName, string Name,
     int EquipSlot, int UseClass, int DemandLv, int Grade, int WeaponType,
+    /// <param name="Type">`ItemInfo.Type` -- 1 for a usable, which with Class 23 is a MOVER.</param>
+    int Type, int ItemClass,
     int MinWc, int MaxWc, int Ac, int MinMa, int MaxMa, int Mr, int Th, int Tb,
     int WcRate, int MaRate, int AcRate, int MrRate,
     int ShieldAc, int HitRatePlus, int EvaRatePlus, int CriRate,
@@ -138,6 +140,7 @@ public sealed class EquipmentCatalog
                 return new ItemDefinition(
                     I(r, "ID"), S(r, "InxName"), S(r, "Name"),
                     I(r, "Equip"), I(r, "UseClass"), I(r, "DemandLv"), I(r, "Grade"), I(r, "WeaponType"),
+                    I(r, "Type"), I(r, "Class"),
                     I(r, "MinWC"), I(r, "MaxWC"), I(r, "AC"), I(r, "MinMA"), I(r, "MaxMA"), I(r, "MR"),
                     I(r, "TH"), I(r, "TB"),
                     I(r, "WCRate"), I(r, "MARate"), I(r, "ACRate"), I(r, "MRRate"),

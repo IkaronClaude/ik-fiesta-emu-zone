@@ -138,6 +138,16 @@ public static class ScenarioRunner
         // the Warrior's 40, and the only death in the matrix.
         sim.Player.AttackRange = loadout.AttackRange;
         sim.Worn = loadout.Worn;
+
+        // A MOVER IN THE BAG. The driver rides between objectives when it owns one, and until now it
+        // never owned one here, so the whole travel half of the script was unreachable in simulation.
+        // Best the level allows, which is what a bot that shops would end up carrying.
+        sim.Movers = MoverCatalog.Load(shineDirectory);
+        if (sim.Movers.BestFor(level) is { } mover)
+        {
+            sim.Player.CarriedMover = mover;
+            sim.Player.MoverSlot = 0;
+        }
         var (x, y) = map.BusiestArea();
         sim.Player.X = x;
         sim.Player.Y = y;

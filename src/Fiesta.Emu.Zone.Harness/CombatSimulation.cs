@@ -650,6 +650,7 @@ public sealed class CombatSimulation
         // The player keeps walking toward wherever `bot.walkTo` last pointed. Live, a walk continues
         // without the script asking again; a simulation that only moves when called makes the driver's own
         // movement detector read STANDING STILL. See SimPlayer.WalkTarget.
+        AdvanceMoverSummon();
         Player.AdvanceWalk(TickMs, Walkable);
         AdvanceQueuedStones();
         AdvanceAutoAttack();
@@ -793,6 +794,55 @@ public sealed class CombatSimulation
     public int WalkToRouted { get; set; }
     public int WalkToNoPath { get; set; }
     public int WalkToAlreadyThere { get; set; }
+
+    /// <summary>Is anything currently targeting the player -- the simulation's "taking damage".</summary>
+    public bool IsUnderFire => Mobs.Any(m => m.Mob.IsAlive && m.Arg.Target is SimPlayer);
+
+    /// <summary>Every mover in the game, when a scenario supplies one. Null leaves the character on foot.</summary>
+    public Data.MoverCatalog? Movers { get; set; }
+
+    /// <summary>⭐ SUMMONING A MOVER, with the two rules that actually decide whether it works.
+    ///
+    /// <para>It is not instantaneous: `MoverMain.CastingTime` is a windup (1000ms for most, 3000 for the
+    /// Wooden Horse) and `CoolTime` gates the next attempt. And <b>taking damage kills it</b> -- the
+    /// operator measured a summon refused 0 of 21 times while being hit, and the attempt still cancelled
+    /// the walk in progress, which is what made it the cause of every death in one earlier session. So a
+    /// summon is REFUSED outright while something is hitting us, and a summon already in flight is
+    /// CANCELLED by the first hit that lands.</para></summary>
+    public bool SummonMover()
+    {
+        var p = Player;
+        if (p.RidingMover is not null || p.CarriedMover is null) return false;
+        if (Now < p.MoverReadyAt) return false;
+        if (p.MoverSummonEndsAt != 0) return false;             // already summoning
+        if (IsUnderFire) return false;                          // refused while taking damage
+
+        p.MoverReadyAt = Now + (uint)Math.Max(0, p.CarriedMover.CoolTimeMs);
+        p.MoverSummonEndsAt = Now + (uint)Math.Max(1, p.CarriedMover.CastingTimeMs);
+        Log.Add($"[{Now,6}] summoning mover {p.CarriedMover.Idx} "
+                + $"({p.CarriedMover.CastingTimeMs}ms, x{p.CarriedMover.RunSpeedFactor:F2})");
+        return true;
+    }
+
+    /// <summary>Get off. Instant, and always allowed -- you cannot swing from a mover.</summary>
+    public void DismountMover()
+    {
+        if (Player.RidingMover is null && Player.MoverSummonEndsAt == 0) return;
+        Player.RidingMover = null;
+        Player.MoverSummonEndsAt = 0;
+        Log.Add($"[{Now,6}] dismounted");
+    }
+
+    /// <summary>Advance an in-flight summon. Called once a tick, before movement.</summary>
+    private void AdvanceMoverSummon()
+    {
+        if (Player.MoverSummonEndsAt == 0) return;
+        if (!Player.IsAlive) { Player.MoverSummonEndsAt = 0; return; }
+        if (Now < Player.MoverSummonEndsAt) return;
+        Player.RidingMover = Player.CarriedMover;
+        Player.MoverSummonEndsAt = 0;
+        Log.Add($"[{Now,6}] mounted {Player.RidingMover?.Idx} -- speed x{Player.MoverSpeedFactor:F2}");
+    }
 
     /// <summary>NPC and mob placements for this map, from `MobCoordinate.shn`. Null until a scenario
     /// supplies one, and `npcCoord` then answers nil exactly as the live call does without client data.</summary>
