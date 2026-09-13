@@ -721,3 +721,57 @@ was the last thing between 34/37 and 37/37.
 verified links does not verify the thing they are chained to; when that happens, suspect the step that
 feeds the components rather than the components.
 
+
+## Item enhancement and dismantle, ported (2026-09-13)
+
+`src/Fiesta.Emu.Zone/Item/` -- `ItemDataBox`, `UpgradeTables`, `ItemUpgrade`, `ItemDismantle`. 38 tests,
+full suite 772 green.
+
+**The roll** (`Item_Upgrade`, 0x53CA10). Row index is `level + 12*(Grade-1)` into `ItemUpgrade.shn` (72
+rows), and `CDataReader::GetRecord` (0x62A0F0) is `ptrArray[i]` -- a row INDEX, not a key lookup, so the
+file's `ID` column (which is the grade) never enters the lookup. Class 4 substitutes `AccUpgrade.shn` at
+the same index; Class 0x26 uses `GetBRAccUpgrade` instead.
+
+    failSum   = CriFail + DownFail + NormalFail          -- routinely > 1000, hence the renormalise
+    bonus     = nCon*failCount - DemandLv + 120 + stone.UpSucRatio + middle.UpSucRatio
+    threshold = failSum - bonus
+    roll > threshold -> success, else a second roll splits the failure
+
+`nCon * failCount` is a PITY term: `Item_AdjFailCount` is called with `(0, absolute)` on success and
+`(1, add)` on both failure outcomes, and the byte it writes (`SHINE_ITEM_STRUCT+4` / `+0xc`) is the byte
+`Item_Upgrade` reads (cell `+0xc` / `+0x14`, the struct sitting at cell+8). Left and right gems scale it
+13/12 then `/10` -- 1.3x, 1.2x, 2.5x -- into a LOCAL, never back to the item.
+
+**Slots are positional.** `Item_IsUpSourceLeftRight` takes no slot argument and accepts class 19 (RedEye),
+20 (BuleMile) or 25 (GoldNine) in any of the three. Left cancels CriFail, right cancels DownFail, middle
+adds `UpSucRatio` flat. The retail client locks the order to one red, one gold, one blue; the server does
+not check it, and a `Perfect` gem (UpSucRatio 1000) in the middle slot would drive the threshold negative
+at every grade and level. Untested against the live server -- see OPEN_QUESTIONS.
+
+**The +2** (0x53D127) is a second roll taken only after a success, against `UpLuckRatio` summed over the
+stone AND all three gem slots, and pays out only when `level + 2 <= UpLimit`. Only Lucky stones and
+GoldNine carry any. Skipped entirely when item and stone are both Grade 6+.
+
+**No Karis gate exists.** Karis fits any grade because its own `Grade` is 0 and the grade test has a
+zero-wildcard; its +9..+11 window is just its `UpLimit`/`UpResource`. There is no ItemLevel 1/2 branch and
+no level-60 constant anywhere in the chain. The two real hardcoded gates are `DemandLv > playerLevel`
+(error 0x8C9, in `sp_NC_ITEM_UPGRADE_REQ`) and the Grade>=6 carve-out that zeroes the pity term, the flat
+120 and CriFail.
+
+**Dismantle** (`sp_NC_ITEM_DISMANTLE_REQ`, 0x5293C0). Row = the item's CURRENT upgrade level (13 rows);
+the class picks one of five column blocks via the jump table at 0x5298DC (4=Amulet, 5=Weapon, 6=Armor,
+7=Shield, 8=Boot); `Grade` 1..5 picks within it. The value is a QUANTITY -- the product is always Karis,
+whose id is a single global the PDB names `sii_Karis` (`idb_specialid+0x3a`). Gates: `UpLimit <= 12` and
+`UpLimit >= level`. Boots are zero above +9 in the shipped data.
+
+**Bracelets.** `BRAccUpgrade.shn`, 45 rows as 3 grades of 10/15/20. `LoadBRAccUpgradeData` (0x43BB00)
+counts rows per grade into slots at `+0x58+4g` then runs only TWO prefix-sum steps, and `GetBRAccUpgrade`
+reads at `+0x54+4g` -- one slot below -- which turns the counts into exclusive start offsets. Only grades
+1-3 are addressable; a fourth grade in the data would index wrongly, and the port reproduces that. The
+bracelet threshold is `NormalFail - sucRatio` floored at 0, replacing the normal one, and arg2 (`demandLv`)
+is dead in the original.
+
+**Test note.** These are data and branch tests, not oracle differentials: `Item_Upgrade` reaches
+`ItemDataBox`, three `CDataReader` tables and an `ItemBag` through vtables, so an oracle run would mean
+rebuilding the server's data model in emulated memory. The self-contained arithmetic is checked against
+the shipped files, which is the same ground truth the binary reads.
