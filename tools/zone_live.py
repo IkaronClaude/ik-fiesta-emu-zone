@@ -81,14 +81,15 @@ def split_handle(handle):
 
 
 class Zone:
-    def __init__(self, pod, namespace="fiesta", pid=None):
-        self.pod, self.ns = pod, namespace
+    def __init__(self, pod, namespace="fiesta", pid=None, docker=None):
+        self.pod, self.ns, self.docker = pod, namespace, docker
         self.pid = pid or self._pid()
 
     def _sh(self, script):
-        out = subprocess.run(
-            ["kubectl", "exec", "-n", self.ns, "deploy/" + self.pod, "--", "bash", "-lc", script],
-            capture_output=True, text=True, timeout=180)
+        # --docker <container>: a local docker stack (e.g. Fiesta2026on2016's stack-zone00-1) instead of a k8s pod
+        cmd = (["docker", "exec", "--privileged", self.docker, "bash", "-lc", script] if self.docker else
+               ["kubectl", "exec", "-n", self.ns, "deploy/" + self.pod, "--", "bash", "-lc", script])
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         return out.stdout
 
     def _pid(self):
@@ -181,6 +182,7 @@ def main():
     ap.add_argument("--pod", default="zone01")
     ap.add_argument("--namespace", default="fiesta")
     ap.add_argument("--pid")
+    ap.add_argument("--docker", help="read a local docker container instead of a k8s pod")
     ap.add_argument("--handle", type=lambda s: int(s, 0))
     ap.add_argument("--kind", type=int)
     ap.add_argument("--list", action="store_true")
@@ -188,8 +190,8 @@ def main():
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
 
-    z = Zone(a.pod, a.namespace, a.pid)
-    print("# %s pid %s manager %#x" % (a.pod, z.pid, MANAGER))
+    z = Zone(a.pod, a.namespace, a.pid, a.docker)
+    print("# %s pid %s manager %#x" % (a.docker or a.pod, z.pid, MANAGER))
 
     if a.list:
         kinds = [a.kind] if a.kind is not None else sorted({k for _, k, _ in HANDLE_RANGES})
